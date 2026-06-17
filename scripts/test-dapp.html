@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Ember test dapp</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+      button { padding: 8px 14px; margin: 4px 4px 4px 0; font-size: 14px; cursor: pointer; }
+      pre { background: #f4f4f5; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
+      .hint { color: #666; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>Ember test dapp</h1>
+    <p>Detected wallet: <b id="wname">(none — load the extension, then reload this page)</b></p>
+    <button id="connect">Connect</button>
+    <button id="signmsg">Sign Message</button>
+    <button id="signtx">Sign Transaction</button>
+    <p class="hint">Sign Transaction triggers the Ember cover check (enroll cover in the popup first; run the cover proxy).</p>
+    <pre id="out">…</pre>
+    <script type="module">
+      import {
+        address,
+        blockhash,
+        compileTransaction,
+        createTransactionMessage,
+        getTransactionEncoder,
+        pipe,
+        setTransactionMessageFeePayer,
+        setTransactionMessageLifetimeUsingBlockhash,
+      } from 'https://esm.sh/@solana/kit@2.3.0'
+
+      const wallets = []
+      window.addEventListener('wallet-standard:register-wallet', (e) => e.detail((w) => wallets.push(w)))
+      window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', { detail: (w) => wallets.push(w) }))
+
+      const out = document.getElementById('out')
+      const log = (x) => {
+        out.textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 2)
+      }
+      let ember = null
+      let account = null
+
+      function findEmber() {
+        ember = wallets.find((w) => w.name === 'Ember')
+        document.getElementById('wname').textContent = ember ? 'Ember ✓' : '(none — load the extension, then reload)'
+        return ember
+      }
+      findEmber()
+
+      document.getElementById('connect').onclick = async () => {
+        if (!findEmber()) return log('Ember not found. Load .output/chrome-mv3 unpacked, then reload this page.')
+        try {
+          const res = await ember.features['standard:connect'].connect()
+          account = res.accounts[0]
+          log('connected: ' + account.address)
+        } catch (e) {
+          log('connect error: ' + (e?.message ?? e))
+        }
+      }
+
+      document.getElementById('signmsg').onclick = async () => {
+        if (!account) return log('connect first')
+        try {
+          const message = new TextEncoder().encode('Hello from the Ember test dapp')
+          const [res] = await ember.features['solana:signMessage'].signMessage({ account, message })
+          log('signed message — signature ' + res.signature.length + ' bytes')
+        } catch (e) {
+          log('signMessage error: ' + (e?.message ?? e))
+        }
+      }
+
+      document.getElementById('signtx').onclick = async () => {
+        if (!account) return log('connect first')
+        try {
+          const msg = pipe(
+            createTransactionMessage({ version: 0 }),
+            (m) => setTransactionMessageFeePayer(address(account.address), m),
+            (m) =>
+              setTransactionMessageLifetimeUsingBlockhash(
+                { blockhash: blockhash('11111111111111111111111111111111'), lastValidBlockHeight: 0n },
+                m,
+              ),
+          )
+          const transaction = new Uint8Array(getTransactionEncoder().encode(compileTransaction(msg)))
+          const [res] = await ember.features['solana:signTransaction'].signTransaction({ account, transaction })
+          log('signed transaction — ' + res.signedTransaction.length + ' bytes (the cover banner shows in the approval window)')
+        } catch (e) {
+          log('signTransaction error: ' + (e?.message ?? e))
+        }
+      }
+    </script>
+  </body>
+</html>

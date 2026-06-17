@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Ember test dapp</title></head>
+  <body>
+    <button id="connect">Connect</button>
+    <button id="sign">Sign</button>
+    <button id="signtx">Sign Tx</button>
+    <pre id="out"></pre>
+    <script>
+      const wallets = []
+      // App side of the wallet-standard handshake. Per @wallet-standard/app getWallets:
+      // the app exposes an `api` object whose `register(wallet)` the wallet calls; the
+      // register-wallet event detail is a callback invoked with that api, and app-ready's
+      // detail IS that api object (not a bare function).
+      const api = { register: (wallet) => wallets.push(wallet) }
+      window.addEventListener('wallet-standard:register-wallet', (e) => {
+        e.detail(api)
+      })
+      window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', { detail: api }))
+      const out = document.getElementById('out')
+      const MESSAGE_TEXT = 'ember-e2e-message'
+      let ember = null
+      let account = null
+      let txBytes = null
+      window.__getWallets = () => wallets.map((w) => w.name)
+      window.__expectedMessage = () => Array.from(new TextEncoder().encode(MESSAGE_TEXT))
+      window.__setTxBytes = (bytes) => { txBytes = new Uint8Array(bytes) }
+      document.getElementById('connect').addEventListener('click', async () => {
+        ember = wallets.find((w) => w.name === 'Ember')
+        try {
+          const res = await ember.features['standard:connect'].connect()
+          account = res.accounts[0]
+          out.dataset.address = account.address
+          out.dataset.pubkey = JSON.stringify(Array.from(account.publicKey))
+          out.textContent = 'connected:' + account.address
+        } catch (e) {
+          out.dataset.error = String((e && e.message) || e)
+          out.textContent = 'error'
+        }
+      })
+      document.getElementById('sign').addEventListener('click', async () => {
+        const message = new TextEncoder().encode(MESSAGE_TEXT)
+        const [res] = await ember.features['solana:signMessage'].signMessage({ account, message })
+        out.dataset.sig = JSON.stringify(Array.from(res.signature))
+        out.dataset.signed = JSON.stringify(Array.from(res.signedMessage))
+        out.textContent = 'signed:' + res.signature.length
+      })
+      document.getElementById('signtx').addEventListener('click', async () => {
+        try {
+          const [res] = await ember.features['solana:signTransaction'].signTransaction({ account, transaction: txBytes })
+          out.dataset.signedtx = JSON.stringify(Array.from(res.signedTransaction))
+          out.textContent = 'signedtx:' + res.signedTransaction.length
+        } catch (e) {
+          out.dataset.error = String((e && e.message) || e)
+          out.textContent = 'error'
+        }
+      })
+    </script>
+  </body>
+</html>
