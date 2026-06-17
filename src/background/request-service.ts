@@ -5,7 +5,7 @@ import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { browser } from 'wxt/browser'
 
-import type { CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
+import type { CoverDebugInfo, CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
 import { decodeTransportBytes } from '../messaging/transport-bytes.ts'
 import type {
   TransportConnectOutput,
@@ -27,6 +27,7 @@ export interface VaultSigner {
 export interface CoverSummary {
   coverStatus: CoverStatus
   riskBand: RiskBand
+  debug?: CoverDebugInfo
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -164,7 +165,11 @@ export class RequestService implements RequestApproval {
     const { type, data, origin } = this.#request
     const cover =
       this.#request.type === 'signTransaction' && this.#request.coverDecision
-        ? { coverStatus: this.#request.coverDecision.coverStatus, riskBand: this.#request.coverDecision.riskBand }
+        ? {
+            coverStatus: this.#request.coverDecision.coverStatus,
+            riskBand: this.#request.coverDecision.riskBand,
+            ...(this.#request.coverDecision.debug === undefined ? {} : { debug: this.#request.coverDecision.debug }),
+          }
         : undefined
     return {
       type,
@@ -195,7 +200,11 @@ export class RequestService implements RequestApproval {
     if (!request || request.type !== 'signMessage') {
       throw new Error('No signMessage request to approve')
     }
-    const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m))
+    const address = await this.#signer.getAddress()
+    if (!address) {
+      throw new Error('No vault')
+    }
+    const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address)
     request.resolve(outputs as unknown as TransportSignMessageOutput[])
     await this.#close()
   }
@@ -273,7 +282,21 @@ let realRequestService: RequestService | undefined
 /** SW only: construct + register the real instance; returns it so actions can call create(). */
 export function registerRequestService(signer: VaultSigner, cover?: CoverProvider): RequestService {
   realRequestService = new RequestService(signer, cover)
-  registerService(REQUEST_SERVICE_KEY, realRequestService)
+  const approval: RequestApproval = {
+    get: () => realRequestService?.get() ?? null,
+    approveConnect: () => realRequestService?.approveConnect() ?? Promise.reject(new Error('RequestService not registered')),
+    approveSignMessage: () =>
+      realRequestService?.approveSignMessage() ?? Promise.reject(new Error('RequestService not registered')),
+    approveSignTransaction: () =>
+      realRequestService?.approveSignTransaction() ?? Promise.reject(new Error('RequestService not registered')),
+    reject: () => {
+      if (!realRequestService) {
+        throw new Error('RequestService not registered')
+      }
+      realRequestService.reject()
+    },
+  }
+  registerService(REQUEST_SERVICE_KEY, approval)
   return realRequestService
 }
 

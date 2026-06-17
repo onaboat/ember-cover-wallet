@@ -36,13 +36,20 @@ export function App() {
   }, [view])
 
   async function onEnableCover() {
+    setError('')
     setCoverBusy(true)
     try {
-      setCoverEnrolled(await cover.enroll())
-    } catch {
+      const enrolled = await cover.enroll()
+      setCoverEnrolled(enrolled)
+      if (!enrolled) {
+        setError('Could not enable Ember Cover. Check the deployed cover service and try again.')
+      }
+    } catch (e) {
       setCoverEnrolled(false)
+      setError(e instanceof Error ? e.message : 'Could not enable Ember Cover')
+    } finally {
+      setCoverBusy(false)
     }
-    setCoverBusy(false)
   }
 
   async function onCreate() {
@@ -74,12 +81,18 @@ export function App() {
       <div style={{ padding: 16, width: 320 }}>
         <p data-testid="address">{address}</p>
         {coverEnrolled ? (
-          <p data-testid="cover-status">Ember Cover enabled</p>
+          <div>
+            <p data-testid="cover-status" style={{ margin: '4px 0' }}>Ember Cover enabled</p>
+            <button data-testid="reenable-cover" disabled={coverBusy} onClick={() => void onEnableCover()} style={{ fontSize: 12 }}>
+              {coverBusy ? 'Re-enabling…' : 'Re-enable'}
+            </button>
+          </div>
         ) : (
           <button data-testid="enable-cover" disabled={coverBusy} onClick={() => void onEnableCover()}>
             {coverBusy ? 'Enabling…' : 'Enable Ember Cover'}
           </button>
         )}
+        {error ? <p data-testid="cover-error" style={{ color: '#b91c1c', fontSize: 12 }}>{error}</p> : null}
         <button data-testid="lock" onClick={() => void vault.lock().then(refresh)}>Lock</button>
       </div>
     )

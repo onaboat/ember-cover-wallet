@@ -10,9 +10,13 @@ import { decodeTransportBytes } from '../messaging/transport-bytes.ts'
 export async function buildSignMessageOutputs(
   inputs: SolanaSignMessageInput[],
   sign: (message: Uint8Array) => Promise<Uint8Array>,
+  address: string,
 ): Promise<SolanaSignMessageOutput[]> {
   const outputs: SolanaSignMessageOutput[] = []
   for (const input of inputs) {
+    if (!input.account || input.account.address !== address) {
+      throw new Error('Account does not match vault')
+    }
     const message = decodeTransportBytes(input.message)
     const signature = await sign(message)
     outputs.push({ signedMessage: message, signature })

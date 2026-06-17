@@ -7,6 +7,6 @@ export default defineConfig({
   manifest: {
     name: 'Ember',
     permissions: ['storage'],
-    host_permissions: ['http://127.0.0.1:8787/*'],
+    host_permissions: ['https://ember-v4-api-devnet.fly.dev/*'],
   },
 })

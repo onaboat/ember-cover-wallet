@@ -18,7 +18,13 @@ export async function buildSignTransactionOutputs(
   const encoder = getTransactionEncoder()
   const outputs: SolanaSignTransactionOutput[] = []
   for (const input of inputs) {
+    if (!input.account || input.account.address !== address) {
+      throw new Error('Account does not match vault')
+    }
     const tx = decoder.decode(decodeTransportBytes(input.transaction))
+    if (!(address in tx.signatures)) {
+      throw new Error('Account is not a required signer')
+    }
     const signature = (await sign(new Uint8Array(tx.messageBytes))) as SignatureBytes
     const signed = { ...tx, signatures: { ...tx.signatures, [address as Address]: signature } }
     outputs.push({ signedTransaction: new Uint8Array(encoder.encode(signed)) })

@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { type BrowserContext, chromium, expect, test } from '@playwright/test'
@@ -78,7 +79,8 @@ test.afterAll(async () => {
 })
 
 async function launch(): Promise<{ context: BrowserContext; extensionId: string }> {
-  const context = await chromium.launchPersistentContext('', {
+  const userDataDir = await mkdtemp(path.join(tmpdir(), 'ember-cover-wallet-'))
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   })
@@ -93,6 +95,15 @@ async function createVault(context: BrowserContext, extensionId: string): Promis
   await popup.getByTestId('password').fill(PASSWORD)
   await popup.getByTestId('submit').click()
   await expect(popup.getByTestId('address')).toBeVisible({ timeout: 30000 })
+  await popup.close()
+}
+
+async function enableCover(context: BrowserContext, extensionId: string): Promise<void> {
+  const popup = await context.newPage()
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`)
+  await expect(popup.getByTestId('address')).toBeVisible({ timeout: 30000 })
+  await popup.getByTestId('enable-cover').click()
+  await expect(popup.getByTestId('cover-status')).toBeVisible({ timeout: 30000 })
   await popup.close()
 }
 
@@ -201,6 +212,7 @@ test('dapp signs a transaction and the vault signature verifies over its message
 test('signTransaction shows a real cover decision from the devnet engine', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
+  await enableCover(context, extensionId)
 
   const dapp = await context.newPage()
   await dapp.goto(dappUrl)
@@ -228,6 +240,7 @@ test('signTransaction shows a real cover decision from the devnet engine', async
   const label = await banner.textContent()
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
+  expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
   await signWin.getByTestId('approve').click()
