@@ -4,4 +4,5 @@ export default defineConfig({
   testDir: 'e2e',
   timeout: 60000,
   fullyParallel: false,
+  workers: 1,
 })

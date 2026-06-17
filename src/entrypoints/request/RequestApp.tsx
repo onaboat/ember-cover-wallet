@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import type { PendingRequestView } from '../../background/request-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
 import { getVaultService } from '../../background/vault-service.ts'
+import type { CoverDebugInfo } from '../../cover/ember-types.ts'
 import { bannerView } from '../../cover/cover-banner-view.ts'
 import { decodeMessages } from './decode-messages.ts'
 import { decodeTransactionSummary } from './decode-transaction.ts'
@@ -17,6 +18,7 @@ export function RequestApp() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [coverGaveUp, setCoverGaveUp] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -38,6 +40,8 @@ export function RequestApp() {
       // Keep polling until the signTransaction cover decision resolves (fail-open ~1.5s) or we give up.
       if (view?.type === 'signTransaction' && !view.cover && polls < 12) {
         setTimeout(() => void poll(), 400)
+      } else {
+        setCoverGaveUp(view?.type === 'signTransaction' && !view.cover)
       }
     }
     void poll()
@@ -97,6 +101,30 @@ export function RequestApp() {
     window.close()
   }
 
+  function CoverDebugPanel({ debug }: { debug: CoverDebugInfo }) {
+    return (
+      <details data-testid="cover-debug" open style={{ margin: '8px 0' }}>
+        <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Cover debug</summary>
+        <pre
+          style={{
+            background: '#f4f4f5',
+            borderRadius: 6,
+            fontSize: 11,
+            lineHeight: 1.35,
+            margin: '6px 0',
+            maxHeight: 180,
+            overflow: 'auto',
+            padding: 8,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {JSON.stringify(debug, null, 2)}
+        </pre>
+      </details>
+    )
+  }
+
   if (!pending) {
     return <p style={{ padding: 16 }}>No pending request.</p>
   }
@@ -150,11 +178,25 @@ export function RequestApp() {
         : null}
       {pending.type === 'signTransaction'
         ? (() => {
-            const banner = bannerView(pending.cover ?? null, !pending.cover)
+            const fallbackCover = coverGaveUp
+              ? ({
+                  coverStatus: 'unavailable',
+                  riskBand: 'severe',
+                  debug: {
+                    stage: 'approval_poll_timeout',
+                    apiAttempted: false,
+                  },
+                } as const)
+              : null
+            const cover = pending.cover ?? fallbackCover
+            const banner = bannerView(cover, !cover)
             return banner.label ? (
-              <p data-testid="cover" data-tone={banner.tone}>
-                {banner.label}
-              </p>
+              <>
+                <p data-testid="cover" data-tone={banner.tone}>
+                  {banner.label}
+                </p>
+                {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
+              </>
             ) : null
           })()
         : null}

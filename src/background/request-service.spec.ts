@@ -11,9 +11,11 @@ import {
 import { fakeBrowser } from 'wxt/testing'
 import { beforeEach, expect, test, vi } from 'vitest'
 
+import { buildConnectAccount } from './build-account.ts'
 import { RequestService } from './request-service.ts'
 
 const FEE_PAYER = 'So11111111111111111111111111111111111111112'
+const ACCOUNT = buildConnectAccount(FEE_PAYER)
 
 function dummyTxBytes(): Uint8Array {
   const message = pipe(
@@ -29,7 +31,7 @@ function dummyTxBytes(): Uint8Array {
 }
 
 const signer = {
-  getAddress: async () => 'So11111111111111111111111111111111111111112',
+  getAddress: async () => FEE_PAYER,
   sign: async (_m: Uint8Array) => new Uint8Array(64),
 }
 
@@ -49,7 +51,7 @@ test('rejects a second concurrent request', async () => {
 test('approveSignMessage settles with a 64-byte signature output', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signMessage', [{ message: Uint8Array.from([1, 2, 3]) } as never])
+  const pending = svc.create('signMessage', [{ account: ACCOUNT, message: Uint8Array.from([1, 2, 3]) }])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignMessage()
   const [out] = await pending
@@ -59,7 +61,7 @@ test('approveSignMessage settles with a 64-byte signature output', async () => {
 test('approveSignTransaction settles with a signed transaction', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ transaction: dummyTxBytes() } as never])
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   const [out] = await pending
@@ -99,7 +101,7 @@ test('attaches an opaque cover decision to a signTransaction request', async () 
   }
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ transaction: dummyTxBytes() } as never])
+  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
 })
 
@@ -114,7 +116,7 @@ test('a malformed signTransaction does not crash the cover fetch (fail-open)', a
   }
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ transaction: null } as never])
+  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: null } as never])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   // give the fire-and-forget cover fetch a tick; it must NOT throw or set a cover decision
   await new Promise((r) => setTimeout(r, 50))
@@ -136,7 +138,8 @@ test('never leaks reasonCodes into the view', async () => {
   }
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ transaction: dummyTxBytes() } as never])
+  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
   await vi.waitFor(() => expect(svc.get()?.cover).toBeDefined())
-  expect(JSON.stringify(svc.get())).not.toContain('SECRET_INTERNAL_CODE')
+  const view = svc.get()
+  expect(JSON.stringify(view)).not.toContain('SECRET_INTERNAL_CODE')
 })

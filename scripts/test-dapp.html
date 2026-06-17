@@ -16,7 +16,7 @@
     <button id="connect">Connect</button>
     <button id="signmsg">Sign Message</button>
     <button id="signtx">Sign Transaction</button>
-    <p class="hint">Sign Transaction triggers the Ember cover check (enroll cover in the popup first; run the cover proxy).</p>
+    <p class="hint">Sign Transaction triggers the Ember cover check (enroll cover in the popup first).</p>
     <pre id="out">…</pre>
     <script type="module">
       import {
@@ -31,8 +31,9 @@
       } from 'https://esm.sh/@solana/kit@2.3.0'
 
       const wallets = []
-      window.addEventListener('wallet-standard:register-wallet', (e) => e.detail((w) => wallets.push(w)))
-      window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', { detail: (w) => wallets.push(w) }))
+      const api = { register: (wallet) => wallets.push(wallet) }
+      window.addEventListener('wallet-standard:register-wallet', (e) => e.detail(api))
+      window.dispatchEvent(new CustomEvent('wallet-standard:app-ready', { detail: api }))
 
       const out = document.getElementById('out')
       const log = (x) => {

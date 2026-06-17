@@ -1,3 +1,5 @@
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { type BrowserContext, chromium, expect, test } from '@playwright/test'
@@ -5,7 +7,8 @@ import { type BrowserContext, chromium, expect, test } from '@playwright/test'
 const EXT = path.resolve('.output/chrome-mv3')
 
 async function launch(): Promise<{ context: BrowserContext; extensionId: string }> {
-  const context = await chromium.launchPersistentContext('', {
+  const userDataDir = await mkdtemp(path.join(tmpdir(), 'ember-cover-wallet-'))
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
   })

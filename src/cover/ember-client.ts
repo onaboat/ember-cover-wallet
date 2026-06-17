@@ -1,6 +1,7 @@
 import { base58Encode } from './ember-auth.ts'
+import { COVER_DEBUG, coverDebug } from './cover-debug.ts'
 import type { EmberConfig } from './ember-config.ts'
-import type { CoverDecision } from './ember-types.ts'
+import type { CoverDebugInfo, CoverDecision } from './ember-types.ts'
 
 /** Signs an arbitrary message with the wallet key (injected from vault/keypair). */
 export type SignMessage = (message: Uint8Array) => Promise<Uint8Array>
@@ -59,10 +60,46 @@ export class EmberClient {
     const payload = { ...req, chain: 'solana', cluster: this.cfg.cluster }
     try {
       const res = await this.post('/cover/pre-sign', payload, this.cfg.preSignTimeoutMs)
-      if (!res.ok) return unavailable()
-      return (await res.json()) as CoverDecision
-    } catch {
-      return unavailable()
+      if (!res.ok) {
+        const body = await res.text()
+        coverDebug('pre-sign non-ok', { status: res.status, body })
+        return unavailable(COVER_DEBUG ? [`pre-sign ${res.status}: ${body.slice(0, 140)}`] : [], {
+          stage: 'api_pre_sign_non_ok',
+          apiAttempted: true,
+          proxyBaseUrl: this.cfg.proxyBaseUrl,
+          walletAddress: req.walletPublicKey,
+          httpStatus: res.status,
+          error: `HTTP ${res.status}`,
+          ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+        })
+      }
+      const decision = (await res.json()) as CoverDecision
+      coverDebug('pre-sign ok', decision)
+      return {
+        ...decision,
+        debug: {
+          stage: 'api_pre_sign_ok',
+          apiAttempted: true,
+          proxyBaseUrl: this.cfg.proxyBaseUrl,
+          walletAddress: req.walletPublicKey,
+          requestId: decision.requestId,
+          coverStatus: decision.coverStatus,
+          riskBand: decision.riskBand,
+          decisionExpiresAt: decision.decisionExpiresAt,
+          reasonCodeCount: decision.reasonCodes.length,
+          ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+        },
+      }
+    } catch (err) {
+      coverDebug('pre-sign error', String(err))
+      return unavailable(COVER_DEBUG ? [`pre-sign error: ${String(err)}`] : [], {
+        stage: 'api_pre_sign_error',
+        apiAttempted: true,
+        proxyBaseUrl: this.cfg.proxyBaseUrl,
+        walletAddress: req.walletPublicKey,
+        error: String(err),
+        ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+      })
     }
   }
 
@@ -138,13 +175,14 @@ export class EmberClient {
   }
 }
 
-function unavailable(): CoverDecision {
+function unavailable(reasonCodes: string[] = [], debug?: CoverDebugInfo): CoverDecision {
   return {
     requestId: '',
     coverStatus: 'unavailable',
     riskBand: 'severe',
-    reasonCodes: [],
+    reasonCodes,
     decisionExpiresAt: new Date(0).toISOString(),
+    ...(debug === undefined ? {} : { debug }),
   }
 }
 
