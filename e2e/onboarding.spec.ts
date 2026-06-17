@@ -1,0 +1,33 @@
+import path from 'node:path'
+
+import { type BrowserContext, chromium, expect, test } from '@playwright/test'
+
+const EXT = path.resolve('.output/chrome-mv3')
+
+async function launch(): Promise<{ context: BrowserContext; extensionId: string }> {
+  const context = await chromium.launchPersistentContext('', {
+    headless: false,
+    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`],
+  })
+  let [sw] = context.serviceWorkers()
+  if (!sw) sw = await context.waitForEvent('serviceworker')
+  return { context, extensionId: new URL(sw.url()).host }
+}
+
+test('create a vault, lock, and unlock', async () => {
+  const { context, extensionId } = await launch()
+  const page = await context.newPage()
+  await page.goto(`chrome-extension://${extensionId}/popup.html`)
+
+  await page.getByTestId('password').fill('Str0ng-pass-correct-horse')
+  await page.getByTestId('submit').click()
+  const address = await page.getByTestId('address').textContent({ timeout: 30000 })
+  expect((address ?? '').length).toBeGreaterThan(31)
+
+  await page.getByTestId('lock').click()
+  await page.getByTestId('password').fill('Str0ng-pass-correct-horse')
+  await page.getByTestId('submit').click()
+  await expect(page.getByTestId('address')).toHaveText(address ?? '', { timeout: 30000 })
+
+  await context.close()
+})
