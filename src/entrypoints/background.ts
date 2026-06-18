@@ -4,6 +4,7 @@ import { EmberCoverProvider, registerCoverService } from '../background/cover-se
 import { registerMessageHandlers } from '../background/message-handlers.ts'
 import { registerRequestService } from '../background/request-service.ts'
 import { registerVaultService } from '../background/vault-service.ts'
+import { registerWalletDataService } from '../background/wallet-data-service.ts'
 
 export default defineBackground(() => {
   self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
@@ -12,6 +13,7 @@ export default defineBackground(() => {
   const controller = registerVaultService()
   const cover = new EmberCoverProvider(controller)
   registerCoverService(cover)
+  registerWalletDataService()
   registerRequestService(controller, cover)
   registerMessageHandlers()
 })

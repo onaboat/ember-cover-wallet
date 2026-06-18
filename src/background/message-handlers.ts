@@ -24,7 +24,7 @@ export function originOf(sender: Runtime.MessageSender): string | undefined {
 
 export function registerMessageHandlers(): void {
   onMessage('connect', async ({ data, sender }) => await connect(data, originOf(sender)))
-  onMessage('disconnect', async () => await disconnect())
+  onMessage('disconnect', async ({ sender }) => await disconnect(originOf(sender)))
   onMessage('signMessage', async ({ data, sender }) => await signMessage(data, originOf(sender)))
   onMessage('signTransaction', async ({ data, sender }) => await signTransaction(data, originOf(sender)))
 }

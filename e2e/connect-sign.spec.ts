@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { type BrowserContext, chromium, expect, test } from '@playwright/test'
+import { type BrowserContext, chromium, expect, type Page, test } from '@playwright/test'
 import {
   address as toAddress,
   blockhash as toBlockhash,
@@ -23,6 +23,7 @@ declare global {
     __getWallets?: () => string[]
     __expectedMessage?: () => number[]
     __setTxBytes?: (bytes: number[]) => void
+    __silentConnect?: () => Promise<number>
   }
 }
 
@@ -107,6 +108,19 @@ async function enableCover(context: BrowserContext, extensionId: string): Promis
   await popup.close()
 }
 
+async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
+  if (await page.getByTestId('tx').isVisible()) {
+    await expect(page.getByTestId('cover')).toBeVisible({ timeout: 7000 })
+    await expect(page.getByTestId('approve')).not.toHaveText('Checking cover...', { timeout: 7000 })
+  }
+  for (const testId of ['cover-ack', 'impact-ack', 'message-ack']) {
+    const checkbox = page.getByTestId(testId)
+    if (await checkbox.isVisible()) {
+      await checkbox.check()
+    }
+  }
+}
+
 test('dapp connects and gets a signature verifiable against the pubkey over the exact bytes', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
@@ -129,6 +143,7 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
   const signApproval = context.waitForEvent('page')
   await dapp.getByRole('button', { name: 'Sign', exact: true }).click()
   const signWin = await signApproval
+  await acknowledgeApprovalWarnings(signWin)
   await signWin.getByTestId('approve').click()
 
   await expect(dapp.locator('#out')).toContainText('signed:64', { timeout: 15000 })
@@ -163,6 +178,67 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
   await context.close()
 })
 
+test('risky readable messages require acknowledgement before signing', async () => {
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+
+  const dapp = await context.newPage()
+  await dapp.goto(dappUrl)
+  await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+
+  const connectApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Connect' }).click()
+  const connectWin = await connectApproval
+  await connectWin.getByTestId('approve').click()
+  await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+
+  const signApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Sign Risk Message' }).click()
+  const signWin = await signApproval
+
+  await expect(signWin.getByTestId('message-warning')).toHaveText('This message references a different site.')
+  await expect(signWin.getByTestId('approve')).toHaveText('Acknowledge message risk')
+  await expect(signWin.getByTestId('approve')).toBeDisabled()
+  await signWin.getByTestId('message-ack').check()
+  await expect(signWin.getByTestId('approve')).toHaveText('Sign message')
+  await signWin.getByTestId('approve').click()
+
+  await expect(dapp.locator('#out')).toContainText('signed-risk:64', { timeout: 15000 })
+
+  await context.close()
+})
+
+test('approved dapp silently reconnects after the vault is locked', async () => {
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+
+  const dapp = await context.newPage()
+  await dapp.goto(dappUrl)
+  await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+
+  const connectApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Connect' }).click()
+  const connectWin = await connectApproval
+  await connectWin.getByTestId('approve').click()
+  await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  const address = (await dapp.locator('#out').getAttribute('data-address')) as string
+
+  const popup = await context.newPage()
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`)
+  await popup.getByTestId('lock').click()
+  await expect(popup.getByTestId('submit')).toBeVisible({ timeout: 10000 })
+  await popup.close()
+
+  await dapp.reload()
+  await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+  const restored = await dapp.evaluate(() => window.__silentConnect?.() ?? Promise.resolve(0))
+
+  expect(restored).toBe(1)
+  expect(await dapp.locator('#out').getAttribute('data-address')).toBe(address)
+
+  await context.close()
+})
+
 test('dapp signs a transaction and the vault signature verifies over its messageBytes', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
@@ -187,8 +263,9 @@ test('dapp signs a transaction and the vault signature verifies over its message
 
   // sign the transaction (approve in the popup)
   const signApproval = context.waitForEvent('page')
-  await dapp.getByRole('button', { name: 'Sign Tx' }).click()
+  await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
   const signWin = await signApproval
+  await acknowledgeApprovalWarnings(signWin)
   await signWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
   const signedTx = JSON.parse((await dapp.locator('#out').getAttribute('data-signedtx')) ?? '[]') as number[]
@@ -205,6 +282,36 @@ test('dapp signs a transaction and the vault signature verifies over its message
     new Uint8Array(decoded.messageBytes),
   )
   expect(verified).toBe(true)
+
+  await context.close()
+})
+
+test('batch transaction requests are visible and cannot be approved', async () => {
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+
+  const dapp = await context.newPage()
+  await dapp.goto(dappUrl)
+  await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+
+  const connectApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Connect' }).click()
+  const connectWin = await connectApproval
+  await connectWin.getByTestId('approve').click()
+  await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  const address = (await dapp.locator('#out').getAttribute('data-address')) as string
+
+  await dapp.evaluate((bytes) => window.__setTxBytes?.(bytes), Array.from(buildTx(address)))
+
+  const signApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Sign Tx Batch' }).click()
+  const signWin = await signApproval
+
+  await expect(signWin.getByTestId('batch-warning')).toContainText('Multiple transactions')
+  await expect(signWin.getByTestId('approve')).toHaveText('Cannot sign batch')
+  await expect(signWin.getByTestId('approve')).toBeDisabled()
+  await signWin.getByTestId('reject').click()
+  await expect.poll(() => dapp.locator('#out').getAttribute('data-error'), { timeout: 10000 }).not.toBeNull()
 
   await context.close()
 })
@@ -231,18 +338,19 @@ test('signTransaction shows a real cover decision from the devnet engine', async
 
   // sign tx -> the approval window opens and the cover banner must RESOLVE (not stay "Checking…")
   const signApproval = context.waitForEvent('page')
-  await dapp.getByRole('button', { name: 'Sign Tx' }).click()
+  await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
   const signWin = await signApproval
 
   const banner = signWin.getByTestId('cover')
   await expect(banner).toBeVisible({ timeout: 15000 })
-  await expect(banner).not.toHaveText('Checking cover…', { timeout: 15000 })
+  await expect(banner).not.toHaveText('Checking cover...', { timeout: 15000 })
   const label = await banner.textContent()
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
   expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
+  await acknowledgeApprovalWarnings(signWin)
   await signWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
 
@@ -282,19 +390,20 @@ test('two-sig: cover shows a real engine decision while the vault is LOCKED (bef
   // 4. signTransaction -> approval opens LOCKED; cover must still resolve to a REAL decision.
   await dapp.evaluate((bytes) => window.__setTxBytes?.(bytes), Array.from(buildTx(address)))
   const signApproval = context.waitForEvent('page')
-  await dapp.getByRole('button', { name: 'Sign Tx' }).click()
+  await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
   const signWin = await signApproval
 
   await expect(signWin.getByTestId('password')).toBeVisible({ timeout: 10000 }) // vault is LOCKED here
   const banner = signWin.getByTestId('cover')
   await expect(banner).toBeVisible({ timeout: 20000 })
-  await expect(banner).not.toHaveText('Checking cover…', { timeout: 20000 })
+  await expect(banner).not.toHaveText('Checking cover...', { timeout: 20000 })
   const label = await banner.textContent()
   console.log(`[COVER DECISION B] label="${label}" (vault locked)`)
   expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
 
   // 5. Unlock + approve to finish.
   await signWin.getByTestId('password').fill(PASSWORD)
+  await acknowledgeApprovalWarnings(signWin)
   await signWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
 
