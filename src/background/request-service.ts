@@ -27,6 +27,7 @@ export interface VaultSigner {
 export interface CoverSummary {
   coverStatus: CoverStatus
   riskBand: RiskBand
+  decisionExpiresAt?: string
   debug?: CoverDebugInfo
 }
 
@@ -81,6 +82,7 @@ export interface PendingRequestView {
 /** The NARROW surface the approval popup may call. `create` is absent on purpose. */
 export interface RequestApproval {
   get(): PendingRequestView | null
+  refreshCover(): Promise<PendingRequestView | null>
   approveConnect(): Promise<void>
   approveSignMessage(): Promise<void>
   approveSignTransaction(): Promise<void>
@@ -129,8 +131,9 @@ export class RequestService implements RequestApproval {
         reject,
       } as PendingRequest
     })
-    if (type === 'signTransaction' && this.#cover && this.#request) {
-      void this.#fetchCover(this.#request)
+    const request = this.#request as PendingRequest | null
+    if (this.#cover && request?.type === 'signTransaction' && request.data.length === 1) {
+      void this.#fetchCover(request)
     }
     return await pending
   }
@@ -168,6 +171,7 @@ export class RequestService implements RequestApproval {
         ? {
             coverStatus: this.#request.coverDecision.coverStatus,
             riskBand: this.#request.coverDecision.riskBand,
+            decisionExpiresAt: this.#request.coverDecision.decisionExpiresAt,
             ...(this.#request.coverDecision.debug === undefined ? {} : { debug: this.#request.coverDecision.debug }),
           }
         : undefined
@@ -177,6 +181,23 @@ export class RequestService implements RequestApproval {
       ...(origin === undefined ? {} : { origin }),
       ...(cover === undefined ? {} : { cover }),
     }
+  }
+
+  async currentAddress(): Promise<string | null> {
+    return await this.#signer.getAddress()
+  }
+
+  async refreshCover(): Promise<PendingRequestView | null> {
+    const request = this.#request
+    if (!request || request.type !== 'signTransaction') {
+      return this.get()
+    }
+    if (request.data.length !== 1) {
+      return this.get()
+    }
+    delete request.coverDecision
+    await this.#fetchCover(request)
+    return this.get()
   }
 
   /** SW-side: build the account from the vault and resolve the dapp promise. */
@@ -200,6 +221,9 @@ export class RequestService implements RequestApproval {
     if (!request || request.type !== 'signMessage') {
       throw new Error('No signMessage request to approve')
     }
+    if (request.data.length !== 1) {
+      throw new Error('Multiple message signing is not supported')
+    }
     const address = await this.#signer.getAddress()
     if (!address) {
       throw new Error('No vault')
@@ -214,15 +238,22 @@ export class RequestService implements RequestApproval {
     if (!request || request.type !== 'signTransaction') {
       throw new Error('No signTransaction request to approve')
     }
+    if (request.data.length !== 1) {
+      throw new Error('Multiple transaction signing is not supported')
+    }
     const address = await this.#signer.getAddress()
     if (!address) {
       throw new Error('No vault')
     }
+    const decision = request.coverDecision
+    if (decision?.coverStatus === 'covered' && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
+      throw new Error('Cover decision expired')
+    }
     const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address)
     request.resolve(outputs as unknown as TransportSignTransactionOutput[])
-    const decision = request.coverDecision
     const signedTransaction = outputs[0]?.signedTransaction
-    if (this.#cover && decision && decision.requestId && signedTransaction) {
+    const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
+    if (this.#cover && decision && decisionIsFresh && decision.requestId && signedTransaction) {
       void this.#cover.postSign({
         requestId: decision.requestId,
         signedBytes: toBase64(new Uint8Array(signedTransaction)),
@@ -282,9 +313,10 @@ let realRequestService: RequestService | undefined
 /** SW only: construct + register the real instance; returns it so actions can call create(). */
 export function registerRequestService(signer: VaultSigner, cover?: CoverProvider): RequestService {
   realRequestService = new RequestService(signer, cover)
-  const approval: RequestApproval = {
-    get: () => realRequestService?.get() ?? null,
-    approveConnect: () => realRequestService?.approveConnect() ?? Promise.reject(new Error('RequestService not registered')),
+    const approval: RequestApproval = {
+      get: () => realRequestService?.get() ?? null,
+      refreshCover: () => realRequestService?.refreshCover() ?? Promise.resolve(null),
+      approveConnect: () => realRequestService?.approveConnect() ?? Promise.reject(new Error('RequestService not registered')),
     approveSignMessage: () =>
       realRequestService?.approveSignMessage() ?? Promise.reject(new Error('RequestService not registered')),
     approveSignTransaction: () =>

@@ -67,6 +67,23 @@ function notCovered(debug?: CoverDebugInfo): CoverDecision {
   }
 }
 
+async function activeEnrollmentForWallet(walletAddress: string): Promise<Enrollment | null> {
+  const e = await storage.getItem<Enrollment>(ENROLL_KEY)
+  if (!e || e.walletAddress !== walletAddress) {
+    return null
+  }
+  const sessionPublicKey = await getSessionPublicKey()
+  if (e.sessionPublicKey !== sessionPublicKey) {
+    return null
+  }
+  return e
+}
+
+export async function coverSessionHeaderForWallet(walletAddress: string): Promise<string | undefined> {
+  const e = await activeEnrollmentForWallet(walletAddress)
+  return e ? `${e.sessionPublicKey}.${e.walletAuthSig}` : undefined
+}
+
 /**
  * Two-sig cover provider. Cover requests are signed by the SESSION key (silent, no unlock) and
  * carry the wallet's one-time authorization; walletPublicKey is the VAULT address (the tx signer).
@@ -90,19 +107,11 @@ export class EmberCoverProvider implements CoverProvider {
   }
 
   async #activeEnrollment(walletAddress?: string): Promise<Enrollment | null> {
-    const e = await storage.getItem<Enrollment>(ENROLL_KEY)
-    if (!e) {
-      return null
-    }
     const currentWalletAddress = walletAddress ?? (await this.#signer.getAddress())
-    if (!currentWalletAddress || e.walletAddress !== currentWalletAddress) {
+    if (!currentWalletAddress) {
       return null
     }
-    const sessionPublicKey = await getSessionPublicKey()
-    if (e.sessionPublicKey !== sessionPublicKey) {
-      return null
-    }
-    return e
+    return await activeEnrollmentForWallet(currentWalletAddress)
   }
 
   async isEnrolled(): Promise<boolean> {

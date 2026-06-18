@@ -6,17 +6,36 @@ import type {
   TransportSignMessageOutput,
   TransportSignTransactionOutput,
 } from '../messaging/transport.ts'
+import { buildConnectAccount } from './build-account.ts'
+import { dappConnections } from './dapp-connections.ts'
 import { requestService } from './request-service.ts'
+
+function connectedAccount(address: string): TransportConnectOutput {
+  return { accounts: [buildConnectAccount(address)] } as unknown as TransportConnectOutput
+}
 
 export async function connect(
   input: StandardConnectInput | undefined,
   origin?: string,
 ): Promise<TransportConnectOutput> {
-  return await requestService().create('connect', input, origin)
+  if (input?.silent) {
+    const address = await requestService().currentAddress()
+    const connection = origin ? await dappConnections.get(origin, address) : null
+    return connection ? connectedAccount(connection.address) : { accounts: [] }
+  }
+
+  const output = await requestService().create('connect', input, origin)
+  const address = output.accounts[0]?.address
+  if (origin && address) {
+    await dappConnections.authorize(origin, address)
+  }
+  return output
 }
 
-export async function disconnect(): Promise<void> {
-  // Stateless in this slice: the dapp clears its own accounts; the SW holds no session yet.
+export async function disconnect(origin?: string): Promise<void> {
+  if (origin) {
+    await dappConnections.disconnect(origin)
+  }
 }
 
 export async function signMessage(
