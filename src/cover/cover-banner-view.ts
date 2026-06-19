@@ -61,7 +61,7 @@ export function bannerView(
     case 'unavailable':
       return {
         label: 'Cover unavailable',
-        body: 'Ember cannot check this transaction right now.',
+        body: 'Ember cannot check this approval right now.',
         tone: 'unavailable',
         showAck: true,
         ackLabel: 'I understand cover is unavailable.',
@@ -70,7 +70,7 @@ export function bannerView(
     case 'unsupported':
       return {
         label: 'Not covered',
-        body: 'This transaction is outside Ember Cover.',
+        body: 'This approval is outside Ember Cover.',
         tone: 'none',
         showAck: true,
         ackLabel: 'I understand I am signing without cover.',
@@ -79,7 +79,7 @@ export function bannerView(
     default:
       return {
         label: 'Not covered',
-        body: 'Ember will not protect this transaction.',
+        body: 'Ember will not protect this approval.',
         tone: 'none',
         showAck: true,
         ackLabel: 'I understand I am signing without cover.',

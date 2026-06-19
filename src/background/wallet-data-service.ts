@@ -4,9 +4,6 @@ import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
-import { COVER_CONFIG } from './cover-config.ts'
-import { coverSessionHeaderForWallet } from './cover-service.ts'
-import { signWithSession } from './session-key.ts'
 import {
   DEFAULT_WALLET_CLUSTER,
   explorerTransactionUrl,
@@ -18,7 +15,6 @@ import type { WalletCluster } from './wallet-data-config.ts'
 const CLUSTER_KEY = 'local:ember-wallet-data-cluster' as const
 const DEFAULT_ACTIVITY_LIMIT = 10
 const MAX_ACTIVITY_LIMIT = 50
-const ACTIVITY_TIMEOUT_MS = 4000
 const TOKEN_PROGRAM_ADDRESS = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 const TOKEN_2022_PROGRAM_ADDRESS = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 
@@ -64,12 +60,24 @@ type WalletTokenAccountsRpcResponse = Readonly<{
   value: readonly WalletRpcTokenAccount[]
 }>
 
+type WalletParsedTransactionResponse = Readonly<{
+  transaction?: {
+    message?: {
+      instructions?: readonly unknown[]
+    }
+  }
+}> | null
+
 interface WalletDataRpcClient {
   getBalance(address: Address, config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<WalletBalanceRpcResponse>
   getSignaturesForAddress(
     address: Address,
     config?: Readonly<{ commitment: 'confirmed'; limit: number }>,
   ): RpcSend<readonly WalletRpcActivityItem[]>
+  getTransaction?(
+    signature: string,
+    config: Readonly<{ commitment: 'confirmed'; encoding: 'jsonParsed'; maxSupportedTransactionVersion: 0 }>,
+  ): RpcSend<WalletParsedTransactionResponse>
   getTokenAccountsByOwner(
     owner: Address,
     filter: Readonly<{ programId: Address }>,
@@ -84,6 +92,10 @@ export interface WalletActivityItem {
   confirmationStatus: string | null
   failed: boolean
   explorerUrl: string
+  direction: 'sent' | 'received' | 'unknown'
+  title: string
+  amount: string | null
+  counterparty: string | null
 }
 
 export interface WalletTokenBalance {
@@ -136,8 +148,6 @@ export interface WalletDataUI {
 
 interface WalletDataProviderDeps {
   rpcFactory?: (cluster: WalletCluster) => WalletDataRpcClient
-  fetch?: typeof fetch
-  now?: () => number
 }
 
 function rpcUrlFor(cluster: WalletCluster) {
@@ -200,7 +210,59 @@ export function normalizeActivity(
     confirmationStatus: item.confirmationStatus,
     failed: item.err !== null,
     explorerUrl: explorerTransactionUrl(item.signature, cluster),
+    direction: 'unknown',
+    title: item.err === null ? 'On-chain transaction' : 'Failed transaction',
+    amount: null,
+    counterparty: null,
   }))
+}
+
+function lamportsFrom(value: unknown): bigint | null {
+  if (typeof value === 'bigint') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return BigInt(Math.trunc(value))
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value)
+  return null
+}
+
+function parsedInstructionOf(value: unknown): Record<string, unknown> | null {
+  const row = recordOf(value)
+  if (row['program'] !== 'system') return null
+  const parsed = recordOf(row['parsed'])
+  if (parsed['type'] !== 'transfer') return null
+  return recordOf(parsed['info'])
+}
+
+function activityDetailFromTransaction(
+  transaction: WalletParsedTransactionResponse,
+  walletAddress: string,
+): Pick<WalletActivityItem, 'amount' | 'counterparty' | 'direction' | 'title'> | null {
+  const instructions = transaction?.transaction?.message?.instructions
+  if (!Array.isArray(instructions)) return null
+  for (const instruction of instructions) {
+    const info = parsedInstructionOf(instruction)
+    if (!info) continue
+    const source = stringOrNull(info['source'])
+    const destination = stringOrNull(info['destination'])
+    const lamports = lamportsFrom(info['lamports'])
+    if (!source || !destination || lamports === null) continue
+    if (source === walletAddress) {
+      return {
+        amount: `${formatLamportsAsSol(lamports)} SOL`,
+        counterparty: destination,
+        direction: 'sent',
+        title: `Sent ${formatLamportsAsSol(lamports)} SOL`,
+      }
+    }
+    if (destination === walletAddress) {
+      return {
+        amount: `${formatLamportsAsSol(lamports)} SOL`,
+        counterparty: source,
+        direction: 'received',
+        title: `Received ${formatLamportsAsSol(lamports)} SOL`,
+      }
+    }
+  }
+  return null
 }
 
 function shortMint(mint: string): string {
@@ -232,10 +294,6 @@ export function normalizeTokenBalances(accounts: readonly WalletRpcTokenAccount[
     .filter((item): item is WalletTokenBalance => item !== null)
 }
 
-function isWalletCoverStatus(value: unknown): value is WalletCoverStatus {
-  return value === 'covered' || value === 'not_covered' || value === 'unavailable' || value === 'unknown'
-}
-
 function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
@@ -244,55 +302,11 @@ function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
 }
 
-function normalizeEmberActivityItems(payload: unknown): WalletEmberActivityItem[] {
-  const record = recordOf(payload)
-  const rawItems = Array.isArray(record['items'])
-    ? record['items']
-    : Array.isArray(record['activity'])
-      ? record['activity']
-      : Array.isArray(payload)
-        ? payload
-        : []
-  return rawItems.map((raw, index) => {
-    const row = recordOf(raw)
-    const summary = recordOf(row['summary'])
-    const coverStatus = isWalletCoverStatus(row['coverStatus']) ? row['coverStatus'] : 'unknown'
-    return {
-      id: stringOrNull(row['id']) ?? stringOrNull(row['requestId']) ?? `activity-${index}`,
-      type: stringOrNull(row['type']) ?? 'sign_transaction',
-      timestamp: stringOrNull(row['timestamp']) ?? stringOrNull(row['walletTimestamp']) ?? '',
-      dappOrigin: stringOrNull(row['dappOrigin']) ?? stringOrNull(row['dappUrl']),
-      requestId: stringOrNull(row['requestId']),
-      signature: stringOrNull(row['signature']),
-      coverStatus,
-      riskBand: stringOrNull(row['riskBand']),
-      title: stringOrNull(summary['action']) ?? stringOrNull(row['title']) ?? 'Wallet activity',
-      amount: stringOrNull(summary['amount']) ?? stringOrNull(row['amount']),
-      tokenSymbol: stringOrNull(summary['tokenSymbol']) ?? stringOrNull(row['tokenSymbol']),
-      tokenMint: stringOrNull(summary['tokenMint']) ?? stringOrNull(row['tokenMint']),
-      recipient: stringOrNull(summary['recipient']) ?? stringOrNull(row['recipient']),
-      onchainStatus: stringOrNull(row['onchainStatus']),
-    }
-  })
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary)
-}
-
 export class WalletDataProvider implements WalletDataUI {
   #rpcFactory: (cluster: WalletCluster) => WalletDataRpcClient
-  #fetch: typeof fetch
-  #now: () => number
 
   constructor(deps: WalletDataProviderDeps = {}) {
     this.#rpcFactory = deps.rpcFactory ?? createWalletRpc
-    this.#fetch = deps.fetch ?? globalThis.fetch.bind(globalThis)
-    this.#now = deps.now ?? Date.now
   }
 
   async getCluster(): Promise<WalletCluster> {
@@ -311,13 +325,16 @@ export class WalletDataProvider implements WalletDataUI {
     const cluster = await this.getCluster()
     const rpc = this.#rpcFactory(cluster)
     const publicKey = toAddress(walletAddress)
-    const [balance, activity, tokenBalances, emberActivity] = await Promise.all([
+    const [balance, activity, tokenBalances] = await Promise.all([
       rpc.getBalance(publicKey, { commitment: 'confirmed' }).send(),
       rpc.getSignaturesForAddress(publicKey, { commitment: 'confirmed', limit: activityLimit(limit) }).send(),
       this.#getTokenBalances(rpc, publicKey).catch(() => null),
-      this.#getEmberActivity(walletAddress, cluster, activityLimit(limit)).catch(() => null),
     ])
     const lamports = asBigInt(balance.value)
+    const normalizedActivity = normalizeActivity(activity, cluster)
+    const detailedActivity = await this.#getActivityDetails(rpc, normalizedActivity, walletAddress).catch(
+      () => normalizedActivity,
+    )
     return {
       cluster,
       address: walletAddress,
@@ -325,10 +342,35 @@ export class WalletDataProvider implements WalletDataUI {
       lamports: lamports.toString(),
       tokenBalances: tokenBalances ?? [],
       tokenBalancesUnavailable: tokenBalances === null,
-      activity: normalizeActivity(activity, cluster),
-      emberActivity: emberActivity ?? [],
-      emberActivityUnavailable: emberActivity === null,
+      activity: detailedActivity,
+      emberActivity: [],
+      emberActivityUnavailable: false,
     }
+  }
+
+  async #getActivityDetails(
+    rpc: WalletDataRpcClient,
+    activity: WalletActivityItem[],
+    walletAddress: string,
+  ): Promise<WalletActivityItem[]> {
+    if (!rpc.getTransaction || activity.length === 0) {
+      return activity
+    }
+    const getTransaction = rpc.getTransaction
+    return await Promise.all(
+      activity.map(async (item) => {
+        const transaction = await getTransaction
+          .call(rpc, item.signature, {
+            commitment: 'confirmed',
+            encoding: 'jsonParsed',
+            maxSupportedTransactionVersion: 0,
+          })
+          .send()
+          .catch(() => null)
+        const detail = activityDetailFromTransaction(transaction, walletAddress)
+        return detail ? { ...item, ...detail } : item
+      }),
+    )
   }
 
   async #getTokenBalances(rpc: WalletDataRpcClient, owner: Address): Promise<WalletTokenBalance[]> {
@@ -341,47 +383,6 @@ export class WalletDataProvider implements WalletDataUI {
         .send(),
     ])
     return normalizeTokenBalances([...tokenAccounts.value, ...token2022Accounts.value])
-  }
-
-  async #authHeader(method: string, path: string, body: string): Promise<string> {
-    const ts = new Date(this.#now()).toISOString()
-    const payload = `${method}\n${path}\n${ts}\n${body}`
-    const sig = await signWithSession(new TextEncoder().encode(payload))
-    return `${ts}.${toBase64(sig)}`
-  }
-
-  async #getEmberActivity(
-    walletAddress: string,
-    cluster: WalletCluster,
-    limit: number,
-  ): Promise<WalletEmberActivityItem[]> {
-    const sessionHeader = await coverSessionHeaderForWallet(walletAddress)
-    if (!sessionHeader) {
-      return []
-    }
-    const path = '/wallets/activity'
-    const body = JSON.stringify({ walletPublicKey: walletAddress, cluster, limit })
-    const headers = {
-      'content-type': 'application/json',
-      'x-ember-auth': await this.#authHeader('POST', path, body),
-      'x-ember-session': sessionHeader,
-    }
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), ACTIVITY_TIMEOUT_MS)
-    try {
-      const response = await this.#fetch(COVER_CONFIG.proxyBaseUrl + path, {
-        method: 'POST',
-        headers,
-        body,
-        signal: controller.signal,
-      })
-      if (!response.ok) {
-        throw new Error(`activity HTTP ${response.status}`)
-      }
-      return normalizeEmberActivityItems(await response.json())
-    } finally {
-      clearTimeout(timer)
-    }
   }
 }
 

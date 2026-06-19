@@ -5,7 +5,9 @@ import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { browser } from 'wxt/browser'
 
-import type { CoverDebugInfo, CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
+import { base58Encode } from '../cover/ember-auth.ts'
+import type { CoverCapContext, CoverDebugInfo, CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
+import { isCoverable } from '../cover/ember-types.ts'
 import { decodeTransportBytes } from '../messaging/transport-bytes.ts'
 import type {
   TransportConnectOutput,
@@ -28,6 +30,8 @@ export interface CoverSummary {
   coverStatus: CoverStatus
   riskBand: RiskBand
   decisionExpiresAt?: string
+  capContext?: CoverCapContext
+  coveredTxCountImpact?: number
   debug?: CoverDebugInfo
 }
 
@@ -37,6 +41,17 @@ function toBase64(bytes: Uint8Array): string {
     s += String.fromCharCode(byte)
   }
   return btoa(s)
+}
+
+function coverSummary(decision: CoverDecision): CoverSummary {
+  return {
+    coverStatus: decision.coverStatus,
+    riskBand: decision.riskBand,
+    decisionExpiresAt: decision.decisionExpiresAt,
+    ...(decision.capContext === undefined ? {} : { capContext: decision.capContext }),
+    ...(decision.coveredTxCountImpact === undefined ? {} : { coveredTxCountImpact: decision.coveredTxCountImpact }),
+    ...(decision.debug === undefined ? {} : { debug: decision.debug }),
+  }
 }
 
 type PendingRequest =
@@ -55,6 +70,7 @@ type PendingRequest =
       origin?: string
       resolve: (data: TransportSignMessageOutput[]) => void
       reject: (reason: Error) => void
+      coverDecision?: CoverDecision | null
     }
   | {
       type: 'signTransaction'
@@ -132,7 +148,11 @@ export class RequestService implements RequestApproval {
       } as PendingRequest
     })
     const request = this.#request as PendingRequest | null
-    if (this.#cover && request?.type === 'signTransaction' && request.data.length === 1) {
+    if (
+      this.#cover &&
+      (request?.type === 'signTransaction' || request?.type === 'signMessage') &&
+      request.data.length === 1
+    ) {
       void this.#fetchCover(request)
     }
     return await pending
@@ -141,20 +161,38 @@ export class RequestService implements RequestApproval {
   /** Fire pre-sign in parallel and attach the OPAQUE decision. Fail-open: never throws. */
   async #fetchCover(request: PendingRequest): Promise<void> {
     try {
-      if (request.type !== 'signTransaction' || !this.#cover) {
+      if (!this.#cover) {
         return
       }
-      const first = request.data[0]
-      if (!first || first.transaction == null) {
-        return
+      if (request.type === 'signTransaction') {
+        const first = request.data[0]
+        if (!first || first.transaction == null) {
+          return
+        }
+        const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
+        const decision = await this.#cover.preSign({
+          transactionBytes,
+          ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
+        })
+        if (this.#request === request) {
+          request.coverDecision = decision
+        }
       }
-      const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
-      const decision = await this.#cover.preSign({
-        transactionBytes,
-        ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
-      })
-      if (this.#request === request) {
-        request.coverDecision = decision
+      if (request.type === 'signMessage') {
+        const first = request.data[0]
+        if (!first || first.message == null) {
+          return
+        }
+        const messageBytes = toBase64(decodeTransportBytes(first.message))
+        const decision = await this.#cover.preSignMessage({
+          messageBytes,
+          walletMethod: 'signMessage',
+          messageKind: 'wallet_standard_sign_message',
+          ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
+        })
+        if (this.#request === request) {
+          request.coverDecision = decision
+        }
       }
     } catch {
       // fail-open: leave coverDecision unset
@@ -167,13 +205,8 @@ export class RequestService implements RequestApproval {
     }
     const { type, data, origin } = this.#request
     const cover =
-      this.#request.type === 'signTransaction' && this.#request.coverDecision
-        ? {
-            coverStatus: this.#request.coverDecision.coverStatus,
-            riskBand: this.#request.coverDecision.riskBand,
-            decisionExpiresAt: this.#request.coverDecision.decisionExpiresAt,
-            ...(this.#request.coverDecision.debug === undefined ? {} : { debug: this.#request.coverDecision.debug }),
-          }
+      (this.#request.type === 'signTransaction' || this.#request.type === 'signMessage') && this.#request.coverDecision
+        ? coverSummary(this.#request.coverDecision)
         : undefined
     return {
       type,
@@ -189,7 +222,7 @@ export class RequestService implements RequestApproval {
 
   async refreshCover(): Promise<PendingRequestView | null> {
     const request = this.#request
-    if (!request || request.type !== 'signTransaction') {
+    if (!request || (request.type !== 'signTransaction' && request.type !== 'signMessage')) {
       return this.get()
     }
     if (request.data.length !== 1) {
@@ -228,8 +261,33 @@ export class RequestService implements RequestApproval {
     if (!address) {
       throw new Error('No vault')
     }
+    const decision = request.coverDecision
+    if (decision && isCoverable(decision) && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
+      throw new Error('Cover decision expired')
+    }
     const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address)
     request.resolve(outputs as unknown as TransportSignMessageOutput[])
+    const first = outputs[0]
+    const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
+    if (
+      this.#cover &&
+      decision &&
+      decision.coverStatus !== 'unavailable' &&
+      decisionIsFresh &&
+      decision.requestId &&
+      first?.signedMessage &&
+      first.signature
+    ) {
+      const timestamp = new Date().toISOString()
+      void this.#cover.postSignMessage({
+        requestId: decision.requestId,
+        signedMessage: toBase64(new Uint8Array(first.signedMessage)),
+        signature: base58Encode(new Uint8Array(first.signature)),
+        signingWalletPublicKey: address,
+        walletTimestamp: timestamp,
+        ...(decision.riskBand === 'high' || decision.riskBand === 'severe' ? { highRiskAckAt: timestamp } : {}),
+      })
+    }
     await this.#close()
   }
 
@@ -246,19 +304,21 @@ export class RequestService implements RequestApproval {
       throw new Error('No vault')
     }
     const decision = request.coverDecision
-    if (decision?.coverStatus === 'covered' && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
+    if (decision && isCoverable(decision) && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
       throw new Error('Cover decision expired')
     }
     const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address)
     request.resolve(outputs as unknown as TransportSignTransactionOutput[])
     const signedTransaction = outputs[0]?.signedTransaction
     const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
-    if (this.#cover && decision && decisionIsFresh && decision.requestId && signedTransaction) {
+    if (this.#cover && decision && isCoverable(decision) && decisionIsFresh && decision.requestId && signedTransaction) {
+      const timestamp = new Date().toISOString()
       void this.#cover.postSign({
         requestId: decision.requestId,
         signedBytes: toBase64(new Uint8Array(signedTransaction)),
         signingWalletPublicKey: address,
-        walletTimestamp: new Date().toISOString(),
+        walletTimestamp: timestamp,
+        ...(decision.riskBand === 'high' || decision.riskBand === 'severe' ? { highRiskAckAt: timestamp } : {}),
       })
     }
     await this.#close()
@@ -313,10 +373,10 @@ let realRequestService: RequestService | undefined
 /** SW only: construct + register the real instance; returns it so actions can call create(). */
 export function registerRequestService(signer: VaultSigner, cover?: CoverProvider): RequestService {
   realRequestService = new RequestService(signer, cover)
-    const approval: RequestApproval = {
-      get: () => realRequestService?.get() ?? null,
-      refreshCover: () => realRequestService?.refreshCover() ?? Promise.resolve(null),
-      approveConnect: () => realRequestService?.approveConnect() ?? Promise.reject(new Error('RequestService not registered')),
+  const approval: RequestApproval = {
+    get: () => realRequestService?.get() ?? null,
+    refreshCover: () => realRequestService?.refreshCover() ?? Promise.resolve(null),
+    approveConnect: () => realRequestService?.approveConnect() ?? Promise.reject(new Error('RequestService not registered')),
     approveSignMessage: () =>
       realRequestService?.approveSignMessage() ?? Promise.reject(new Error('RequestService not registered')),
     approveSignTransaction: () =>

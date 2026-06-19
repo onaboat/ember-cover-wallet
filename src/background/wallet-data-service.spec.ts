@@ -124,6 +124,10 @@ test('normalizes activity into JSON-safe popup rows', () => {
       confirmationStatus: 'confirmed',
       failed: false,
       explorerUrl: explorerTransactionUrl('abc', 'devnet'),
+      direction: 'unknown',
+      title: 'On-chain transaction',
+      amount: null,
+      counterparty: null,
     },
     {
       signature: 'def',
@@ -132,6 +136,10 @@ test('normalizes activity into JSON-safe popup rows', () => {
       confirmationStatus: null,
       failed: true,
       explorerUrl: explorerTransactionUrl('def', 'devnet'),
+      direction: 'unknown',
+      title: 'Failed transaction',
+      amount: null,
+      counterparty: null,
     },
   ])
 })
@@ -202,4 +210,74 @@ test('builds a snapshot from the selected cluster RPC', async () => {
   expect(snapshot.emberActivity).toEqual([])
   expect(snapshot.emberActivityUnavailable).toBe(false)
   expect(snapshot.activity[0]?.explorerUrl).toBe(explorerTransactionUrl('sig1', 'mainnet-beta'))
+})
+
+test('classifies recent system transfers when transaction details are available', async () => {
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({
+        send: async () => ({ value: 5_000_000_000n }),
+      }),
+      getSignaturesForAddress: () => ({
+        send: async () => [
+          {
+            blockTime: 1_772_000_000n,
+            confirmationStatus: 'confirmed',
+            err: null,
+            memo: null,
+            signature: 'sig-send',
+            slot: 470_000_000n,
+          },
+          {
+            blockTime: 1_772_000_100n,
+            confirmationStatus: 'confirmed',
+            err: null,
+            memo: null,
+            signature: 'sig-receive',
+            slot: 470_000_001n,
+          },
+        ],
+      }),
+      getTransaction: (signature: string) => ({
+        send: async () => ({
+          transaction: {
+            message: {
+              instructions: [
+                {
+                  program: 'system',
+                  parsed: {
+                    type: 'transfer',
+                    info:
+                      signature === 'sig-send'
+                        ? { source: ADDRESS, destination: 'Recipient111111111111111111111111111111111', lamports: 250_000_000 }
+                        : { source: 'Sender111111111111111111111111111111111111', destination: ADDRESS, lamports: 500_000_000 },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      }),
+      getTokenAccountsByOwner: () => ({
+        send: async () => ({ value: [] }),
+      }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 2)
+
+  expect(snapshot.activity[0]).toMatchObject({
+    signature: 'sig-send',
+    direction: 'sent',
+    title: 'Sent 0.25 SOL',
+    amount: '0.25 SOL',
+    counterparty: 'Recipient111111111111111111111111111111111',
+  })
+  expect(snapshot.activity[1]).toMatchObject({
+    signature: 'sig-receive',
+    direction: 'received',
+    title: 'Received 0.5 SOL',
+    amount: '0.5 SOL',
+    counterparty: 'Sender111111111111111111111111111111111111',
+  })
 })

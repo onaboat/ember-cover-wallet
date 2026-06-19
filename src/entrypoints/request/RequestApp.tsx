@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import type { PendingRequestView } from '../../background/request-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
 import { getVaultService } from '../../background/vault-service.ts'
+import { coverCapReviewText } from '../../cover/cover-cap-view.ts'
 import type { CoverDebugInfo } from '../../cover/ember-types.ts'
 import { bannerView } from '../../cover/cover-banner-view.ts'
 import { decodeMessages } from './decode-messages.ts'
@@ -104,6 +105,8 @@ function approvalLabel(args: {
   checkingCover: boolean
   coverExpired: boolean
   coverApproveLabel: string | null
+  coverAckRequired: boolean
+  coverAcknowledged: boolean
   impactAckRequired: boolean
   impactAcknowledged: boolean
   messageAckRequired: boolean
@@ -122,6 +125,15 @@ function approvalLabel(args: {
     return 'Connect'
   }
   if (args.pending.type === 'signMessage') {
+    if (args.coverExpired) {
+      return 'Recheck cover'
+    }
+    if (args.checkingCover) {
+      return 'Checking cover...'
+    }
+    if (args.coverAckRequired && !args.coverAcknowledged && args.coverApproveLabel) {
+      return args.coverApproveLabel
+    }
     return args.messageAckRequired && !args.messageAcknowledged ? 'Acknowledge message risk' : 'Sign message'
   }
   if (args.coverExpired) {
@@ -194,11 +206,11 @@ export function RequestApp() {
       }
       setPending(view)
       polls += 1
-      // Keep polling until the signTransaction cover decision resolves (fail-open ~1.5s) or we give up.
-      if (view?.type === 'signTransaction' && !view.cover && polls < 5) {
+      // Keep polling until the cover decision resolves (fail-open ~1.5s) or we give up.
+      if ((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover && polls < 5) {
         setTimeout(() => void poll(), 400)
       } else {
-        setCoverGaveUp(view?.type === 'signTransaction' && !view.cover)
+        setCoverGaveUp((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover)
       }
     }
     void poll()
@@ -220,8 +232,8 @@ export function RequestApp() {
   const signingAddress = requestAccountAddress(pending) ?? address
   const transactionImpact =
     pending?.type === 'signTransaction' ? estimateWalletImpact(transactionSummary, signingAddress) : null
-  const fallbackCover =
-    pending?.type === 'signTransaction' && coverGaveUp
+  const fallbackCover: NonNullable<PendingRequestView['cover']> | null =
+    (pending?.type === 'signTransaction' || pending?.type === 'signMessage') && coverGaveUp
       ? ({
           coverStatus: 'unavailable',
           riskBand: 'severe',
@@ -230,15 +242,24 @@ export function RequestApp() {
             stage: 'approval_poll_timeout',
             apiAttempted: false,
           },
-        } as const)
+        } as NonNullable<PendingRequestView['cover']>)
       : null
-  const cover = pending?.type === 'signTransaction' ? pending.cover ?? fallbackCover : null
+  const cover =
+    pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? pending.cover ?? fallbackCover : null
   const coverExpired =
     cover?.coverStatus === 'covered' &&
     cover.decisionExpiresAt !== undefined &&
     nowMs >= Date.parse(cover.decisionExpiresAt)
-  const checkingCover = pending?.type === 'signTransaction' && !cover && !batchUnsupported
-  const coverBanner = pending?.type === 'signTransaction' ? bannerView(cover, checkingCover) : null
+  const checkingCover =
+    (pending?.type === 'signTransaction' || pending?.type === 'signMessage') && !cover && !batchUnsupported
+  const coverBanner =
+    pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? bannerView(cover, checkingCover) : null
+  const coverCapText =
+    cover?.capContext
+      ? coverCapReviewText(cover.coverStatus, cover.capContext, cover.coveredTxCountImpact ?? 0)
+      : cover?.coverStatus === 'covered'
+        ? 'Cover cap unavailable.'
+        : ''
   const decodedMessage =
     pending?.type === 'signMessage'
       ? decodeMessages(pending.data as { message: Uint8Array | Record<string, number> }[])
@@ -265,6 +286,8 @@ export function RequestApp() {
         checkingCover,
         coverExpired,
         coverApproveLabel: coverBanner?.approveLabel ?? null,
+        coverAckRequired,
+        coverAcknowledged,
         impactAckRequired,
         impactAcknowledged,
         messageAckRequired,
@@ -290,7 +313,10 @@ export function RequestApp() {
   }, [pending?.type, pending?.origin])
 
   useEffect(() => {
-    if (pending?.type !== 'signTransaction' || !cover?.decisionExpiresAt) {
+    if (
+      (pending?.type !== 'signTransaction' && pending?.type !== 'signMessage') ||
+      !cover?.decisionExpiresAt
+    ) {
       return
     }
     const timer = setInterval(() => setNowMs(Date.now()), 1000)
@@ -304,7 +330,7 @@ export function RequestApp() {
     try {
       const view = await request.refreshCover()
       setPending(view)
-      if (view?.type === 'signTransaction' && !view.cover) {
+      if ((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover) {
         setCoverGaveUp(true)
       }
     } catch (e) {
@@ -427,9 +453,24 @@ export function RequestApp() {
               <section data-testid="message-overview">
                 <h2>No transaction</h2>
                 <p>This will not move funds, but it may prove ownership or authorize access.</p>
-                <p>Ember Cover applies to transactions only.</p>
                 {messageRiskView.warning ? <p data-testid="message-warning">{messageRiskView.warning}</p> : null}
               </section>
+              {coverBanner?.label ? (
+                <section data-testid="cover-section">
+                  <h2>Cover</h2>
+                  <p data-testid="cover" data-tone={coverExpired ? 'unavailable' : coverBanner.tone}>
+                    {coverExpired ? 'Cover expired' : coverBanner.label}
+                  </p>
+                  <p data-testid="cover-body">
+                    {coverExpired ? 'Recheck cover before signing.' : coverBanner.body}
+                  </p>
+                  {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
+                  {cover?.debug?.stage === 'not_enrolled' ? (
+                    <p data-testid="cover-next-step">Enable Ember Cover from the wallet before signing protected approvals.</p>
+                  ) : null}
+                  {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
+                </section>
+              ) : null}
               <div role="tablist" aria-label="Message request">
                 <button type="button" aria-selected={messageTab === 'message'} onClick={() => setMessageTab('message')}>
                   Message
@@ -482,8 +523,9 @@ export function RequestApp() {
               <p data-testid="cover-body">
                 {coverExpired ? 'Recheck cover before signing.' : coverBanner.body}
               </p>
+              {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
               {cover?.debug?.stage === 'not_enrolled' ? (
-                <p data-testid="cover-next-step">Enable Ember Cover from the wallet before signing protected transactions.</p>
+                <p data-testid="cover-next-step">Enable Ember Cover from the wallet before signing protected approvals.</p>
               ) : null}
               {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
             </section>

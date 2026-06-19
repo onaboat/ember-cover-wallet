@@ -109,7 +109,10 @@ async function enableCover(context: BrowserContext, extensionId: string): Promis
 }
 
 async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
-  if (await page.getByTestId('tx').isVisible()) {
+  const hasCoverSurface =
+    (await page.getByTestId('tx').isVisible().catch(() => false)) ||
+    (await page.getByTestId('message-overview').isVisible().catch(() => false))
+  if (hasCoverSurface) {
     await expect(page.getByTestId('cover')).toBeVisible({ timeout: 7000 })
     await expect(page.getByTestId('approve')).not.toHaveText('Checking cover...', { timeout: 7000 })
   }
@@ -196,7 +199,11 @@ test('risky readable messages require acknowledgement before signing', async () 
   await dapp.getByRole('button', { name: 'Sign Risk Message' }).click()
   const signWin = await signApproval
 
+  await expect(signWin.getByTestId('cover')).toBeVisible({ timeout: 7000 })
   await expect(signWin.getByTestId('message-warning')).toHaveText('This message references a different site.')
+  await expect(signWin.getByTestId('approve')).toHaveText('Sign without cover')
+  await expect(signWin.getByTestId('approve')).toBeDisabled()
+  await signWin.getByTestId('cover-ack').check()
   await expect(signWin.getByTestId('approve')).toHaveText('Acknowledge message risk')
   await expect(signWin.getByTestId('approve')).toBeDisabled()
   await signWin.getByTestId('message-ack').check()
@@ -348,6 +355,9 @@ test('signTransaction shows a real cover decision from the devnet engine', async
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
   expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
+  const cap = signWin.getByTestId('cover-cap')
+  await expect(cap).toContainText('Ember Cover check', { timeout: 15000 })
+  console.log(`[COVER CAP] ${await cap.textContent()}`)
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
   await acknowledgeApprovalWarnings(signWin)

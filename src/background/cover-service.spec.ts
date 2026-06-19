@@ -48,6 +48,82 @@ test('enroll then preSign sends the vault address with a session-authorization h
   expect(presignHeaders?.get('x-ember-session')).toBeTruthy()
 })
 
+test('status uses the enrolled wallet session and returns the cap snapshot', async () => {
+  let statusHeaders: Headers | undefined
+  const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url)
+    if (u.endsWith('/wallets/register/nonce')) {
+      return new Response('{"nonce":"abc"}', { status: 200 })
+    }
+    if (u.endsWith('/wallets/register')) {
+      return new Response('{"registered":true}', { status: 200 })
+    }
+    if (u.endsWith('/cover/status')) {
+      statusHeaders = new Headers(init?.headers)
+      return new Response(
+        JSON.stringify({
+          subscriptionActive: true,
+          walletRegistered: true,
+          tier: 'demo',
+          month: '2026-06',
+          coveredTxPerMonth: 100,
+          usedCoveredTxThisMonth: 1,
+          remainingCoveredTxThisMonth: 99,
+          monthlyLossCapUsd: 10000,
+          usedLossCapUsd: 0,
+          remainingLossCapUsd: 10000,
+        }),
+        { status: 200 },
+      )
+    }
+    return new Response('{}', { status: 200 })
+  }) as unknown as typeof fetch
+
+  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
+  expect(await provider.enroll()).toBe(true)
+  const snapshot = await provider.status()
+  expect(snapshot?.remainingCoveredTxThisMonth).toBe(99)
+  expect(statusHeaders?.get('x-ember-session')).toBeTruthy()
+})
+
+test('message pre-sign uses the message cover route', async () => {
+  let messageHeaders: Headers | undefined
+  const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url)
+    if (u.endsWith('/wallets/register/nonce')) {
+      return new Response('{"nonce":"abc"}', { status: 200 })
+    }
+    if (u.endsWith('/wallets/register')) {
+      return new Response('{"registered":true}', { status: 200 })
+    }
+    if (u.endsWith('/cover/message/pre-sign')) {
+      messageHeaders = new Headers(init?.headers)
+      return new Response(
+        JSON.stringify({
+          requestId: 'msg-r',
+          coverStatus: 'unsupported',
+          riskBand: 'high',
+          reasonCodes: ['unknown_message_schema'],
+          decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        }),
+        { status: 200 },
+      )
+    }
+    return new Response('{}', { status: 200 })
+  }) as unknown as typeof fetch
+
+  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
+  expect(await provider.enroll()).toBe(true)
+  const decision = await provider.preSignMessage({
+    messageBytes: 'AQID',
+    walletMethod: 'signMessage',
+    messageKind: 'wallet_standard_sign_message',
+    dappUrl: 'https://x',
+  })
+  expect(decision.coverStatus).toBe('unsupported')
+  expect(messageHeaders?.get('x-ember-session')).toBeTruthy()
+})
+
 test('fails open to unavailable when the proxy errors', async () => {
   const fetchStub = (async (url: string | URL | Request) => {
     const u = String(url)
