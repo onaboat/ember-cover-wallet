@@ -3,7 +3,7 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import { EmberClient } from '../cover/ember-client.ts'
-import type { CoverDebugInfo, CoverDecision } from '../cover/ember-types.ts'
+import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
 
 import { COVER_CONFIG } from './cover-config.ts'
@@ -22,9 +22,29 @@ export interface PostSignArgs {
   walletTimestamp: string
 }
 
+export interface MessagePreSignArgs {
+  messageBytes: string
+  dappUrl?: string
+  walletMethod: 'signMessage'
+  messageKind: string
+  declaredIntent?: string
+}
+
+export interface MessagePostSignArgs {
+  requestId: string
+  signedMessage: string
+  signature: string
+  signingWalletPublicKey: string
+  walletTimestamp: string
+  highRiskAckAt?: string
+}
+
 export interface CoverProvider {
   preSign(args: PreSignArgs): Promise<CoverDecision>
   postSign(args: PostSignArgs): Promise<void>
+  status(): Promise<CoverStatusSnapshot | null>
+  preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision>
+  postSignMessage(args: MessagePostSignArgs): Promise<void>
   enroll(): Promise<boolean>
   isEnrolled(): Promise<boolean>
 }
@@ -183,9 +203,74 @@ export class EmberCoverProvider implements CoverProvider {
     }
   }
 
+  async status(): Promise<CoverStatusSnapshot | null> {
+    try {
+      const walletAddress = await this.#signer.getAddress()
+      if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
+        return null
+      }
+      return await this.#client.status({ walletPublicKey: walletAddress, userRef: '' })
+    } catch {
+      return null
+    }
+  }
+
+  async preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision> {
+    try {
+      const walletAddress = await this.#signer.getAddress()
+      if (!walletAddress) {
+        return unavailable({
+          stage: 'no_wallet',
+          apiAttempted: false,
+          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+        })
+      }
+      if (!(await this.#activeEnrollment(walletAddress))) {
+        return notCovered({
+          stage: 'not_enrolled',
+          apiAttempted: false,
+          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+          walletAddress,
+          enrolled: false,
+          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+        })
+      }
+      const decision = await this.#client.messagePreSign({
+        walletPublicKey: walletAddress,
+        userRef: '',
+        messageBytes: args.messageBytes,
+        walletMethod: args.walletMethod,
+        messageKind: args.messageKind,
+        ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+        ...(args.declaredIntent === undefined ? {} : { declaredIntent: args.declaredIntent }),
+      })
+      return {
+        ...decision,
+        debug: {
+          ...decision.debug,
+          enrolled: true,
+        } as CoverDebugInfo,
+      }
+    } catch {
+      return unavailable({
+        stage: 'provider_error',
+        apiAttempted: false,
+        proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+      })
+    }
+  }
+
   async postSign(args: PostSignArgs): Promise<void> {
     try {
       await this.#client.postSign(args)
+    } catch {
+      // best-effort
+    }
+  }
+
+  async postSignMessage(args: MessagePostSignArgs): Promise<void> {
+    try {
+      await this.#client.messagePostSign(args)
     } catch {
       // best-effort
     }
@@ -196,6 +281,7 @@ export class EmberCoverProvider implements CoverProvider {
 export interface CoverUI {
   enroll(): Promise<boolean>
   isEnrolled(): Promise<boolean>
+  status(): Promise<CoverStatusSnapshot | null>
 }
 
 const COVER_SERVICE_KEY = 'ember.CoverService' as ProxyServiceKey<CoverUI>
@@ -205,6 +291,7 @@ export function registerCoverService(provider: CoverProvider): void {
   const facade: CoverUI = {
     enroll: () => provider.enroll(),
     isEnrolled: () => provider.isEnrolled(),
+    status: () => provider.status(),
   }
   registerService(COVER_SERVICE_KEY, facade)
 }

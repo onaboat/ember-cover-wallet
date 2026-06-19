@@ -64,6 +64,8 @@ async function forwardOf(path: string, bodyObj: Record<string, unknown>): Promis
 
 test('recognizes proxy paths', () => {
   expect(isProxyPath('/cover/pre-sign')).toBe(true)
+  expect(isProxyPath('/cover/status')).toBe(true)
+  expect(isProxyPath('/cover/message/pre-sign')).toBe(true)
 })
 
 test('leaves non-proxy paths alone', () => {
@@ -72,6 +74,16 @@ test('leaves non-proxy paths alone', () => {
 
 test('forwards to the upstream Ember API path', async () => {
   expect((await forwardOf('/cover/pre-sign', { transactionBytes: 'AA==' })).url).toBe('https://api.test/v1/cover/pre-sign')
+})
+
+test('forwards status and message paths to the upstream v1 API', async () => {
+  expect((await forwardOf('/cover/status', {})).url).toBe('https://api.test/v1/cover/status')
+  expect((await forwardOf('/cover/message/pre-sign', { messageBytes: 'AA==' })).url).toBe(
+    'https://api.test/v1/cover/message/pre-sign',
+  )
+  expect((await forwardOf('/cover/message/post-sign', { signingWalletPublicKey: 'ignored' })).url).toBe(
+    'https://api.test/v1/cover/message/post-sign',
+  )
 })
 
 test('injects the partner key as a Bearer header (never in the client)', async () => {

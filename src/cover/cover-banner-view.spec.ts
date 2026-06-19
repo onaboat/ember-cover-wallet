@@ -26,7 +26,7 @@ test('covered + high risk asks for an acknowledgment', () => {
 test('not_covered reads as not covered and requires no-cover acknowledgment', () => {
   expect(bannerView({ coverStatus: 'not_covered', riskBand: 'severe' }, false)).toMatchObject({
     label: 'Not covered',
-    body: 'Ember will not protect this transaction.',
+    body: 'Ember will not protect this approval.',
     tone: 'none',
     showAck: true,
     ackLabel: 'I understand I am signing without cover.',
@@ -37,7 +37,7 @@ test('not_covered reads as not covered and requires no-cover acknowledgment', ()
 test('unsupported is opaque to the user (also "not covered")', () => {
   expect(bannerView({ coverStatus: 'unsupported', riskBand: 'high' }, false)).toMatchObject({
     label: 'Not covered',
-    body: 'This transaction is outside Ember Cover.',
+    body: 'This approval is outside Ember Cover.',
     showAck: true,
     approveLabel: 'Sign without cover',
   })
@@ -46,7 +46,7 @@ test('unsupported is opaque to the user (also "not covered")', () => {
 test('unavailable reads as cover unavailable', () => {
   expect(bannerView({ coverStatus: 'unavailable', riskBand: 'severe' }, false)).toMatchObject({
     label: 'Cover unavailable',
-    body: 'Ember cannot check this transaction right now.',
+    body: 'Ember cannot check this approval right now.',
     tone: 'unavailable',
     showAck: true,
     ackLabel: 'I understand cover is unavailable.',
