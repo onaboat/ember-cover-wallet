@@ -258,7 +258,7 @@ export function RequestApp() {
     cover?.capContext
       ? coverCapReviewText(cover.coverStatus, cover.capContext, cover.coveredTxCountImpact ?? 0)
       : cover?.coverStatus === 'covered'
-        ? 'Cover cap unavailable.'
+        ? 'Cover usage unavailable.'
         : ''
   const decodedMessage =
     pending?.type === 'signMessage'
@@ -466,7 +466,7 @@ export function RequestApp() {
                   </p>
                   {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
                   {cover?.debug?.stage === 'not_enrolled' ? (
-                    <p data-testid="cover-next-step">Enable Ember Cover from the wallet before signing protected approvals.</p>
+                    <p data-testid="cover-next-step">Activate Ember Cover from the wallet before signing protected approvals.</p>
                   ) : null}
                   {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
                 </section>
@@ -525,7 +525,7 @@ export function RequestApp() {
               </p>
               {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
               {cover?.debug?.stage === 'not_enrolled' ? (
-                <p data-testid="cover-next-step">Enable Ember Cover from the wallet before signing protected approvals.</p>
+                <p data-testid="cover-next-step">Activate Ember Cover from the wallet before signing protected approvals.</p>
               ) : null}
               {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
             </section>

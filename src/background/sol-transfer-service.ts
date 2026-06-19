@@ -78,6 +78,7 @@ export interface SolTransferSigner {
 
 export interface SolTransferInput {
   amountSol: string
+  cluster?: WalletCluster
   destination: string
 }
 
@@ -336,7 +337,7 @@ export class WalletTransferProvider implements WalletTransferUI {
 
     return {
       signature,
-      explorerUrl: explorerTransactionUrl(signature, this.#cluster),
+      explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
       cover,
     }
   }
@@ -352,7 +353,8 @@ export class WalletTransferProvider implements WalletTransferUI {
     if (destination === source) {
       throw new Error('Recipient is this wallet')
     }
-    const rpc = this.#rpcFactory(this.#cluster)
+    const cluster = input.cluster ?? this.#cluster
+    const rpc = this.#rpcFactory(cluster)
     const [balanceResponse, latestBlockhashResponse] = await Promise.all([
       rpc.getBalance(source, { commitment: 'confirmed' }).send(),
       rpc.getLatestBlockhash({ commitment: 'confirmed' }).send(),
@@ -424,6 +426,7 @@ export class WalletTransferProvider implements WalletTransferUI {
         totalDebitSol: formatLamportsAsSol(totalDebit),
       } satisfies SolTransferPreview,
       rpc,
+      cluster,
       transactionMessage,
       walletAddress,
     }

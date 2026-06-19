@@ -99,6 +99,20 @@ test('preview shows cover and estimated debits', async () => {
   expect(preview.balanceAfterSol).toBe('1.749995')
 })
 
+test('preview uses the requested wallet cluster', async () => {
+  let requestedCluster = ''
+  const provider = new WalletTransferProvider(signerStub(), coverStub('covered'), {
+    rpcFactory: (cluster) => {
+      requestedCluster = cluster
+      return rpcStub()
+    },
+  })
+
+  await provider.previewSolTransfer({ amountSol: '0.25', cluster: 'mainnet-beta', destination: DESTINATION })
+
+  expect(requestedCluster).toBe('mainnet-beta')
+})
+
 test('not covered sends require acknowledgement before signing', async () => {
   const signer = signerStub()
   const provider = new WalletTransferProvider(signer, coverStub('not_covered'), { rpcFactory: () => rpcStub() })

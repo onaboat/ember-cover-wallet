@@ -30,6 +30,23 @@ export interface CoverStatusRequest {
   userRef: string
 }
 
+export interface SubscriptionEntitlementActivationRequest {
+  walletAddress: string
+  cluster: string
+  planTier: string
+  billingPeriod: string
+  programId: string
+  paymentMint: string
+  merchantWallet: string
+  pullerWallet: string
+  planId: string
+  planPda: string
+  subscriptionAuthorityPda: string
+  subscriptionPda: string
+  setupSignature?: string
+  subscriptionSignature: string
+}
+
 export interface MessagePreSignRequest {
   walletPublicKey: string
   userRef: string
@@ -167,6 +184,15 @@ export class EmberClient {
     } catch (err) {
       coverDebug('status error', String(err))
       return null
+    }
+  }
+
+  async activateSubscriptionEntitlement(req: SubscriptionEntitlementActivationRequest): Promise<boolean> {
+    try {
+      const res = await this.post('/entitlements/subscriptions/activate', req, POST_SIGN_TIMEOUT_MS)
+      return res.ok
+    } catch {
+      return false
     }
   }
 

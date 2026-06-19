@@ -20,10 +20,14 @@ async function genKey(): Promise<{ pub: string; sign: (m: Uint8Array) => Promise
   return { pub, sign }
 }
 
-async function signedRequest(path: string, bodyObj: Record<string, unknown>): Promise<Request> {
+async function signedRequest(
+  path: string,
+  bodyObj: Record<string, unknown>,
+  walletField: 'walletAddress' | 'walletPublicKey' = 'walletPublicKey',
+): Promise<Request> {
   const wallet = await genKey()
   const session = await genKey()
-  const body = JSON.stringify({ ...bodyObj, walletPublicKey: wallet.pub })
+  const body = JSON.stringify({ ...bodyObj, [walletField]: wallet.pub })
   const walletAuthSig = await wallet.sign(sessionAuthorizationPayload(session.pub, wallet.pub))
   const sessionHeader = `${session.pub}.${b64(walletAuthSig)}`
   const ts = new Date().toISOString()
@@ -47,8 +51,12 @@ interface Forward {
   forwarded: Record<string, unknown>
 }
 
-async function forwardOf(path: string, bodyObj: Record<string, unknown>): Promise<Forward> {
-  const request = await signedRequest(path, bodyObj)
+async function forwardOf(
+  path: string,
+  bodyObj: Record<string, unknown>,
+  walletField: 'walletAddress' | 'walletPublicKey' = 'walletPublicKey',
+): Promise<Forward> {
+  const request = await signedRequest(path, bodyObj, walletField)
   let captured: Omit<Forward, 'status'> = { url: '', auth: null, forwarded: {} }
   const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
     captured = {
@@ -84,6 +92,14 @@ test('forwards status and message paths to the upstream v1 API', async () => {
   expect((await forwardOf('/cover/message/post-sign', { signingWalletPublicKey: 'ignored' })).url).toBe(
     'https://api.test/v1/cover/message/post-sign',
   )
+})
+
+test('accepts walletAddress for subscription entitlement handoff', async () => {
+  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+
+  expect(forwarded.status).toBe(200)
+  expect(forwarded.url).toBe('https://api.test/v1/entitlements/subscriptions/activate')
+  expect(typeof forwarded.forwarded['walletAddress']).toBe('string')
 })
 
 test('injects the partner key as a Bearer header (never in the client)', async () => {

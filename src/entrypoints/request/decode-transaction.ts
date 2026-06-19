@@ -338,13 +338,26 @@ export function decodeTransactionSummary(
 ): TxSummary | null {
   try {
     const tx = getTransactionDecoder().decode(decodeTransportBytes(transaction))
-    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes)
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as {
+      staticAccounts: readonly unknown[]
+      instructions?: readonly {
+        accountIndices?: readonly number[]
+        data?: Uint8Array
+        programAddressIndex: number
+      }[]
+      compiledInstructions?: readonly {
+        accountIndices?: readonly number[]
+        data?: Uint8Array
+        programAddressIndex: number
+      }[]
+    }
     const accounts = message.staticAccounts
+    const compiledInstructions = message.instructions ?? message.compiledInstructions ?? []
     const feePayer = accounts[0]
     if (!feePayer) {
       return null
     }
-    const instructions = message.instructions.map((ix) => {
+    const instructions = compiledInstructions.map((ix) => {
       const program = accounts[ix.programAddressIndex] ?? '(unknown)'
       const instructionAccounts = (ix.accountIndices ?? []).map((index) => String(accounts[index] ?? '(unknown)'))
       const programAddress = String(program)
@@ -356,7 +369,7 @@ export function decodeTransactionSummary(
         accounts: instructionAccounts,
       }
     })
-    const materialInstructions = message.instructions.filter((ix) => String(accounts[ix.programAddressIndex]) !== COMPUTE_BUDGET_PROGRAM)
+    const materialInstructions = compiledInstructions.filter((ix) => String(accounts[ix.programAddressIndex]) !== COMPUTE_BUDGET_PROGRAM)
     const actions = materialInstructions
       .map((ix) => {
         const program = String(accounts[ix.programAddressIndex] ?? '')
