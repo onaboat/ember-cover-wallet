@@ -4,6 +4,7 @@ import { EmberCoverProvider, registerCoverService } from '../background/cover-se
 import { registerMessageHandlers } from '../background/message-handlers.ts'
 import { registerRequestService } from '../background/request-service.ts'
 import { registerWalletTransferService, WalletTransferProvider } from '../background/sol-transfer-service.ts'
+import { registerSubscriptionService, SolanaSubscriptionProvider } from '../background/subscription-service.ts'
 import { registerVaultService } from '../background/vault-service.ts'
 import { registerWalletDataService } from '../background/wallet-data-service.ts'
 
@@ -16,6 +17,7 @@ export default defineBackground(() => {
   registerCoverService(cover)
   registerWalletDataService()
   registerWalletTransferService(new WalletTransferProvider(controller, cover))
+  registerSubscriptionService(new SolanaSubscriptionProvider(controller, cover))
   registerRequestService(controller, cover)
   registerMessageHandlers()
 })

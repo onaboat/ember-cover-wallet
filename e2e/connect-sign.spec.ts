@@ -99,12 +99,12 @@ async function createVault(context: BrowserContext, extensionId: string): Promis
   await popup.close()
 }
 
-async function enableCover(context: BrowserContext, extensionId: string): Promise<void> {
+async function openCoverActivation(context: BrowserContext, extensionId: string): Promise<void> {
   const popup = await context.newPage()
   await popup.goto(`chrome-extension://${extensionId}/popup.html`)
   await expect(popup.getByTestId('address')).toBeVisible({ timeout: 30000 })
-  await popup.getByTestId('enable-cover').click()
-  await expect(popup.getByTestId('cover-status')).toBeVisible({ timeout: 30000 })
+  await popup.getByTestId('activate-cover').click()
+  await expect(popup.getByTestId('cover-activation')).toBeVisible({ timeout: 30000 })
   await popup.close()
 }
 
@@ -323,10 +323,10 @@ test('batch transaction requests are visible and cannot be approved', async () =
   await context.close()
 })
 
-test('signTransaction shows a real cover decision from the devnet engine', async () => {
+test('signTransaction shows not covered while cover subscription is inactive', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
-  await enableCover(context, extensionId)
+  await openCoverActivation(context, extensionId)
 
   const dapp = await context.newPage()
   await dapp.goto(dappUrl)
@@ -354,10 +354,8 @@ test('signTransaction shows a real cover decision from the devnet engine', async
   const label = await banner.textContent()
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
-  expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
-  const cap = signWin.getByTestId('cover-cap')
-  await expect(cap).toContainText('Ember Cover check', { timeout: 15000 })
-  console.log(`[COVER CAP] ${await cap.textContent()}`)
+  expect(label).toBe('Not covered')
+  await expect(signWin.getByTestId('cover-next-step')).toContainText('Activate Ember Cover')
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
   await acknowledgeApprovalWarnings(signWin)
@@ -367,17 +365,17 @@ test('signTransaction shows a real cover decision from the devnet engine', async
   await context.close()
 })
 
-test('two-sig: cover shows a real engine decision while the vault is LOCKED (before unlock)', async () => {
+test('inactive cover resolves while the vault is LOCKED (before unlock)', async () => {
   const { context, extensionId } = await launch()
 
-  // 1. Create + unlock, enable cover (one-time enroll: vault authorizes the session key + registers).
+  // 1. Create + unlock, then open the activation cockpit.
   const popup = await context.newPage()
   await popup.goto(`chrome-extension://${extensionId}/popup.html`)
   await popup.getByTestId('password').fill(PASSWORD)
   await popup.getByTestId('submit').click()
   await expect(popup.getByTestId('address')).toBeVisible({ timeout: 30000 })
-  await popup.getByTestId('enable-cover').click()
-  await expect(popup.getByTestId('cover-status')).toBeVisible({ timeout: 30000 }) // enroll succeeded (registered)
+  await popup.getByTestId('activate-cover').click()
+  await expect(popup.getByTestId('cover-activation')).toBeVisible({ timeout: 30000 })
   await popup.close()
 
   // 2. Connect while unlocked.
@@ -397,7 +395,7 @@ test('two-sig: cover shows a real engine decision while the vault is LOCKED (bef
   await expect(popup2.getByTestId('submit')).toBeVisible({ timeout: 10000 }) // back to the unlock view
   await popup2.close()
 
-  // 4. signTransaction -> approval opens LOCKED; cover must still resolve to a REAL decision.
+  // 4. signTransaction -> approval opens LOCKED; cover must still resolve without needing unlock.
   await dapp.evaluate((bytes) => window.__setTxBytes?.(bytes), Array.from(buildTx(address)))
   const signApproval = context.waitForEvent('page')
   await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
@@ -409,7 +407,7 @@ test('two-sig: cover shows a real engine decision while the vault is LOCKED (bef
   await expect(banner).not.toHaveText('Checking cover...', { timeout: 20000 })
   const label = await banner.textContent()
   console.log(`[COVER DECISION B] label="${label}" (vault locked)`)
-  expect(label, 'cover must be a real engine decision, not a fail-open').not.toBe('Cover unavailable')
+  expect(label).toBe('Not covered')
 
   // 5. Unlock + approve to finish.
   await signWin.getByTestId('password').fill(PASSWORD)

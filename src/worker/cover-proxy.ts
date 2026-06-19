@@ -1,6 +1,6 @@
 import { verifySessionAuth } from '../cover/session-auth.ts'
 
-const PROXY_PREFIXES = ['/cover/', '/wallets/']
+const PROXY_PREFIXES = ['/cover/', '/wallets/', '/entitlements/']
 
 /** Paths the Ember cover proxy handles (everything else falls through to the Effect API). */
 export function isProxyPath(pathname: string): boolean {
@@ -39,7 +39,7 @@ export async function coverProxy(request: Request, env: CoverProxyEnv, deps: Cov
     return jsonResponse({ error: 'invalid_request' }, 400)
   }
 
-  const walletPublicKey = String(parsed['walletPublicKey'] ?? parsed['signingWalletPublicKey'] ?? '')
+  const walletPublicKey = String(parsed['walletPublicKey'] ?? parsed['walletAddress'] ?? parsed['signingWalletPublicKey'] ?? '')
   const verified =
     walletPublicKey.length > 0 &&
     (await verifySessionAuth({

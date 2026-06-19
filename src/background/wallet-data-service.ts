@@ -15,6 +15,8 @@ import type { WalletCluster } from './wallet-data-config.ts'
 const CLUSTER_KEY = 'local:ember-wallet-data-cluster' as const
 const DEFAULT_ACTIVITY_LIMIT = 10
 const MAX_ACTIVITY_LIMIT = 50
+const CORE_RPC_TIMEOUT_MS = 8_000
+const ENRICHMENT_TIMEOUT_MS = 3_000
 const TOKEN_PROGRAM_ADDRESS = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 const TOKEN_2022_PROGRAM_ADDRESS = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 
@@ -136,6 +138,7 @@ export interface WalletDataSnapshot {
   tokenBalances: WalletTokenBalance[]
   tokenBalancesUnavailable: boolean
   activity: WalletActivityItem[]
+  activityUnavailable: boolean
   emberActivity: WalletEmberActivityItem[]
   emberActivityUnavailable: boolean
 }
@@ -147,6 +150,8 @@ export interface WalletDataUI {
 }
 
 interface WalletDataProviderDeps {
+  coreRpcTimeoutMs?: number
+  enrichmentTimeoutMs?: number
   rpcFactory?: (cluster: WalletCluster) => WalletDataRpcClient
 }
 
@@ -175,6 +180,22 @@ function activityLimit(limit: number | undefined): number {
     return DEFAULT_ACTIVITY_LIMIT
   }
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.trunc(limit)))
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('wallet_data_timeout')), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
 }
 
 export function formatLamportsAsSol(value: bigint | number | string): string {
@@ -303,9 +324,13 @@ function recordOf(value: unknown): Record<string, unknown> {
 }
 
 export class WalletDataProvider implements WalletDataUI {
+  #coreRpcTimeoutMs: number
+  #enrichmentTimeoutMs: number
   #rpcFactory: (cluster: WalletCluster) => WalletDataRpcClient
 
   constructor(deps: WalletDataProviderDeps = {}) {
+    this.#coreRpcTimeoutMs = deps.coreRpcTimeoutMs ?? CORE_RPC_TIMEOUT_MS
+    this.#enrichmentTimeoutMs = deps.enrichmentTimeoutMs ?? ENRICHMENT_TIMEOUT_MS
     this.#rpcFactory = deps.rpcFactory ?? createWalletRpc
   }
 
@@ -326,15 +351,21 @@ export class WalletDataProvider implements WalletDataUI {
     const rpc = this.#rpcFactory(cluster)
     const publicKey = toAddress(walletAddress)
     const [balance, activity, tokenBalances] = await Promise.all([
-      rpc.getBalance(publicKey, { commitment: 'confirmed' }).send(),
-      rpc.getSignaturesForAddress(publicKey, { commitment: 'confirmed', limit: activityLimit(limit) }).send(),
-      this.#getTokenBalances(rpc, publicKey).catch(() => null),
+      withTimeout(rpc.getBalance(publicKey, { commitment: 'confirmed' }).send(), this.#coreRpcTimeoutMs),
+      withTimeout(
+        rpc.getSignaturesForAddress(publicKey, { commitment: 'confirmed', limit: activityLimit(limit) }).send(),
+        this.#enrichmentTimeoutMs,
+      ).catch(() => null),
+      withTimeout(this.#getTokenBalances(rpc, publicKey), this.#enrichmentTimeoutMs).catch(() => null),
     ])
     const lamports = asBigInt(balance.value)
-    const normalizedActivity = normalizeActivity(activity, cluster)
-    const detailedActivity = await this.#getActivityDetails(rpc, normalizedActivity, walletAddress).catch(
-      () => normalizedActivity,
-    )
+    const normalizedActivity = activity === null ? [] : normalizeActivity(activity, cluster)
+    const detailedActivity =
+      activity === null
+        ? []
+        : await withTimeout(this.#getActivityDetails(rpc, normalizedActivity, walletAddress), this.#enrichmentTimeoutMs).catch(
+            () => normalizedActivity,
+          )
     return {
       cluster,
       address: walletAddress,
@@ -343,6 +374,7 @@ export class WalletDataProvider implements WalletDataUI {
       tokenBalances: tokenBalances ?? [],
       tokenBalancesUnavailable: tokenBalances === null,
       activity: detailedActivity,
+      activityUnavailable: activity === null,
       emberActivity: [],
       emberActivityUnavailable: false,
     }

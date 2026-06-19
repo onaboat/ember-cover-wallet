@@ -210,6 +210,55 @@ test('builds a snapshot from the selected cluster RPC', async () => {
   expect(snapshot.emberActivity).toEqual([])
   expect(snapshot.emberActivityUnavailable).toBe(false)
   expect(snapshot.activity[0]?.explorerUrl).toBe(explorerTransactionUrl('sig1', 'mainnet-beta'))
+  expect(snapshot.activityUnavailable).toBe(false)
+})
+
+test('does not block SOL balance when token account lookup stalls', async () => {
+  const provider = new WalletDataProvider({
+    enrichmentTimeoutMs: 1,
+    rpcFactory: () => ({
+      getBalance: () => ({
+        send: async () => ({ value: 5_000_000_000n }),
+      }),
+      getSignaturesForAddress: () => ({
+        send: async () => [],
+      }),
+      getTokenAccountsByOwner: () => ({
+        send: async () => await new Promise<never>(() => {}),
+      }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.solBalance).toBe('5')
+  expect(snapshot.tokenBalances).toEqual([])
+  expect(snapshot.tokenBalancesUnavailable).toBe(true)
+  expect(snapshot.activityUnavailable).toBe(false)
+})
+
+test('does not block SOL balance when transaction history lookup stalls', async () => {
+  const provider = new WalletDataProvider({
+    enrichmentTimeoutMs: 1,
+    rpcFactory: () => ({
+      getBalance: () => ({
+        send: async () => ({ value: 5_000_000_000n }),
+      }),
+      getSignaturesForAddress: () => ({
+        send: async () => await new Promise<never>(() => {}),
+      }),
+      getTokenAccountsByOwner: () => ({
+        send: async () => ({ value: [] }),
+      }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.solBalance).toBe('5')
+  expect(snapshot.activity).toEqual([])
+  expect(snapshot.activityUnavailable).toBe(true)
+  expect(snapshot.tokenBalancesUnavailable).toBe(false)
 })
 
 test('classifies recent system transfers when transaction details are available', async () => {

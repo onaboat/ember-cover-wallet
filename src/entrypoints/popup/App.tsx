@@ -4,6 +4,13 @@ import { address as toAddress } from '@solana/kit'
 import { getCoverService } from '../../background/cover-service.ts'
 import { getWalletTransferService, parseSolAmountToLamports } from '../../background/sol-transfer-service.ts'
 import type { SolTransferPreview, SolTransferResult } from '../../background/sol-transfer-service.ts'
+import { getSubscriptionService } from '../../background/subscription-service.ts'
+import type {
+  LocalSubscriptionState,
+  SubscriptionActivationResult,
+  SubscriptionPreview,
+} from '../../background/subscription-service.ts'
+import type { EmberBillingPeriod, EmberCoverPlan, EmberCoverPlanId } from '../../background/subscription-config.ts'
 import { getVaultService } from '../../background/vault-service.ts'
 import { formatLamportsAsSol } from '../../background/wallet-data-service.ts'
 import type { WalletDataSnapshot } from '../../background/wallet-data-service.ts'
@@ -16,7 +23,7 @@ import { QrCode } from './qr-code.tsx'
 
 type View = 'loading' | 'create' | 'unlock' | 'account'
 type MainTab = 'assets' | 'activity'
-type AccountScreen = 'home' | 'receive' | 'send'
+type AccountScreen = 'home' | 'receive' | 'send' | 'cover'
 type SendStep = 'form' | 'review' | 'complete'
 
 const BASE_FEE_LAMPORTS = 5_000n
@@ -30,7 +37,7 @@ function coverStatusLabel(status: string): string {
 }
 
 function coverAccountStatus(snapshot: CoverStatusSnapshot | null): string {
-  if (!snapshot) return 'Ember Cover enabled'
+  if (!snapshot) return 'No Ember Cover'
   if (!snapshot.subscriptionActive) return 'Cover subscription inactive'
   if (!snapshot.walletRegistered) return 'Wallet registration incomplete'
   return 'Ember Cover enabled'
@@ -81,6 +88,7 @@ function amountValidation(amount: string, snapshot: WalletDataSnapshot | null): 
 export function App() {
   const vault = getVaultService()
   const cover = getCoverService()
+  const subscriptions = getSubscriptionService()
   const walletData = getWalletDataService()
   const transfers = getWalletTransferService()
   const [view, setView] = useState<View>('loading')
@@ -93,7 +101,15 @@ export function App() {
   const [coverEnrolled, setCoverEnrolled] = useState<boolean | null>(null)
   const [coverStatusSnapshot, setCoverStatusSnapshot] = useState<CoverStatusSnapshot | null>(null)
   const [coverStatusLoading, setCoverStatusLoading] = useState(false)
-  const [coverBusy, setCoverBusy] = useState(false)
+  const [coverPlans, setCoverPlans] = useState<readonly EmberCoverPlan[]>([])
+  const [selectedPlanId, setSelectedPlanId] = useState<EmberCoverPlanId>('core')
+  const [selectedBillingPeriod, setSelectedBillingPeriod] = useState<EmberBillingPeriod>('monthly')
+  const [subscriptionPreview, setSubscriptionPreview] = useState<SubscriptionPreview | null>(null)
+  const [subscriptionState, setSubscriptionState] = useState<LocalSubscriptionState | null>(null)
+  const [subscriptionResult, setSubscriptionResult] = useState<SubscriptionActivationResult | null>(null)
+  const [subscriptionBusy, setSubscriptionBusy] = useState(false)
+  const [subscriptionError, setSubscriptionError] = useState('')
+  const [subscriptionNotice, setSubscriptionNotice] = useState('')
   const [cluster, setCluster] = useState<WalletCluster>('devnet')
   const [snapshot, setSnapshot] = useState<WalletDataSnapshot | null>(null)
   const [walletDataLoading, setWalletDataLoading] = useState(false)
@@ -101,6 +117,7 @@ export function App() {
   const [copied, setCopied] = useState(false)
   const [sendStep, setSendStep] = useState<SendStep>('form')
   const [sendRecipient, setSendRecipient] = useState('')
+  const [sendRecipientFromClipboard, setSendRecipientFromClipboard] = useState(false)
   const [sendAmount, setSendAmount] = useState('')
   const [sendPreview, setSendPreview] = useState<SolTransferPreview | null>(null)
   const [sendResult, setSendResult] = useState<SolTransferResult | null>(null)
@@ -109,7 +126,6 @@ export function App() {
   const [sendPreviewLoading, setSendPreviewLoading] = useState(false)
   const [uncoveredAck, setUncoveredAck] = useState(false)
   const [highRiskAck, setHighRiskAck] = useState(false)
-  const [selectedActivitySignature, setSelectedActivitySignature] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(Date.now())
   const tokenBalances = arrayOrEmpty(snapshot?.tokenBalances)
   const emberActivity = arrayOrEmpty(snapshot?.emberActivity)
@@ -157,6 +173,22 @@ export function App() {
       void refreshCoverState()
     }
   }, [view])
+
+  async function refreshSubscriptionState() {
+    if (!address) return
+    try {
+      setCoverPlans(await subscriptions.plans())
+      setSubscriptionState(await subscriptions.localSubscription(address))
+    } catch {
+      setSubscriptionError('Subscription state unavailable')
+    }
+  }
+
+  useEffect(() => {
+    if (view === 'account') {
+      void refreshSubscriptionState()
+    }
+  }, [view, address])
 
   async function refreshWalletData(walletAddress = address) {
     if (!walletAddress) return
@@ -215,6 +247,7 @@ export function App() {
     setSendError('')
     try {
       setSendRecipient((await navigator.clipboard.readText()).trim())
+      setSendRecipientFromClipboard(true)
     } catch {
       setSendError('Could not read clipboard. Paste the address manually.')
     }
@@ -226,27 +259,6 @@ export function App() {
       await navigator.share({ text: address, title: 'Ember wallet address' })
     } catch {
       // User cancellation should not become an error state.
-    }
-  }
-
-  async function onEnableCover() {
-    setError('')
-    setCoverBusy(true)
-    try {
-      const enrolled = await cover.enroll()
-      setCoverEnrolled(enrolled)
-      if (enrolled) {
-        setCoverStatusSnapshot(await cover.status())
-        void refreshWalletData()
-      }
-      if (!enrolled) {
-        setError('Could not enable Ember Cover. Check the deployed cover service and try again.')
-      }
-    } catch (e) {
-      setCoverEnrolled(false)
-      setError(errorMessage(e, 'Could not enable Ember Cover'))
-    } finally {
-      setCoverBusy(false)
     }
   }
 
@@ -284,12 +296,109 @@ export function App() {
     setMainTab('assets')
     setSendStep('form')
     setSendRecipient('')
+    setSendRecipientFromClipboard(false)
     setSendAmount('')
     setSendPreview(null)
     setSendResult(null)
     setSendError('')
     setUncoveredAck(false)
     setHighRiskAck(false)
+  }
+
+  function openCoverActivation() {
+    setAccountScreen('cover')
+    setMainTab('assets')
+    setSubscriptionPreview(null)
+    setSubscriptionResult(null)
+    setSubscriptionError('')
+    setSubscriptionNotice('')
+  }
+
+  async function previewSelectedSubscription() {
+    setSubscriptionBusy(true)
+    setSubscriptionError('')
+    setSubscriptionNotice('')
+    setSubscriptionPreview(null)
+    setSubscriptionResult(null)
+    try {
+      setSubscriptionPreview(
+        await subscriptions.previewSubscription({
+          planId: selectedPlanId,
+          billingPeriod: selectedBillingPeriod,
+          cluster,
+        }),
+      )
+    } catch (e) {
+      setSubscriptionError(errorMessage(e, 'Could not review subscription'))
+    } finally {
+      setSubscriptionBusy(false)
+    }
+  }
+
+  async function setupSelectedSubscription() {
+    setSubscriptionBusy(true)
+    setSubscriptionError('')
+    setSubscriptionNotice('')
+    try {
+      const result = await subscriptions.setupSubscription({
+        planId: selectedPlanId,
+        billingPeriod: selectedBillingPeriod,
+        cluster,
+      })
+      setSubscriptionState(result.state)
+      setSubscriptionPreview(null)
+      setSubscriptionResult(null)
+      setSubscriptionNotice('Setup confirmed. Fund the USDC account, then review the subscription again.')
+      await refreshSubscriptionState()
+    } catch (e) {
+      setSubscriptionError(errorMessage(e, 'Could not complete subscription setup'))
+    } finally {
+      setSubscriptionBusy(false)
+    }
+  }
+
+  async function activateSelectedSubscription() {
+    setSubscriptionBusy(true)
+    setSubscriptionError('')
+    setSubscriptionNotice('')
+    try {
+      const result = await subscriptions.activateSubscription({
+        planId: selectedPlanId,
+        billingPeriod: selectedBillingPeriod,
+        cluster,
+      })
+      setSubscriptionResult(result)
+      setSubscriptionState(result.state)
+      setSubscriptionPreview(result.preview)
+      await refreshCoverState()
+      await refreshSubscriptionState()
+    } catch (e) {
+      setSubscriptionError(errorMessage(e, 'Could not approve subscription'))
+    } finally {
+      setSubscriptionBusy(false)
+    }
+  }
+
+  async function syncSubscriptionEntitlement() {
+    setSubscriptionBusy(true)
+    setSubscriptionError('')
+    setSubscriptionNotice('')
+    try {
+      const state = await subscriptions.syncEntitlement(address ?? undefined)
+      setSubscriptionState(state)
+      await refreshCoverState()
+      if (state?.status === 'active') {
+        setSubscriptionNotice('Cover entitlement synced.')
+      } else if (state) {
+        setSubscriptionNotice('Subscription is still pending API entitlement activation.')
+      } else {
+        setSubscriptionError('No subscription found for this wallet.')
+      }
+    } catch (e) {
+      setSubscriptionError(errorMessage(e, 'Could not sync cover entitlement'))
+    } finally {
+      setSubscriptionBusy(false)
+    }
   }
 
   async function loadSendPreview() {
@@ -300,7 +409,7 @@ export function App() {
     setHighRiskAck(false)
     setNowMs(Date.now())
     try {
-      setSendPreview(await transfers.previewSolTransfer({ amountSol: sendAmount, destination: recipientTrimmed }))
+      setSendPreview(await transfers.previewSolTransfer({ amountSol: sendAmount, cluster, destination: recipientTrimmed }))
       void refreshCoverState()
     } catch (e) {
       setSendError(errorMessage(e, 'Could not review send'))
@@ -315,6 +424,7 @@ export function App() {
     try {
       const result = await transfers.sendSolTransfer({
         amountSol: sendAmount,
+        cluster,
         destination: recipientTrimmed,
         acknowledgeHighRisk: highRiskAck,
         acknowledgeUncovered: uncoveredAck,
@@ -339,7 +449,6 @@ export function App() {
           onClick={() => {
             setMainTab('assets')
             setAccountScreen('home')
-            setSelectedActivitySignature(null)
           }}
         >
           Assets
@@ -350,12 +459,53 @@ export function App() {
           onClick={() => {
             setMainTab('activity')
             setAccountScreen('home')
-            setSelectedActivitySignature(null)
           }}
         >
           Activity
         </button>
       </div>
+    )
+  }
+
+  function renderCoverStatusCard() {
+    const coverActive = !!coverStatusSnapshot?.subscriptionActive && !!coverStatusSnapshot.walletRegistered
+    const pendingSubscription = subscriptionState && subscriptionState.status !== 'active'
+    return (
+      <section data-testid="wallet-cover-status">
+        <h2>Ember Cover</h2>
+        {coverActive ? (
+          <div>
+            <p data-testid="cover-status">{coverAccountStatus(coverStatusSnapshot)}</p>
+            {coverStatusLoading ? <p data-testid="cover-cap-status">Loading cover cap...</p> : null}
+            {!coverStatusLoading ? (
+              <>
+                <p data-testid="cover-cap-status">{formatCoverStatusSnapshot(coverStatusSnapshot)}</p>
+                <p data-testid="cover-loss-cap">{formatLossCapSnapshot(coverStatusSnapshot)}</p>
+              </>
+            ) : null}
+            <button data-testid="manage-cover" onClick={openCoverActivation}>
+              Manage Cover
+            </button>
+          </div>
+        ) : (
+          <div>
+            <p data-testid="cover-status">
+              {coverStatusLoading
+                ? 'Checking cover status...'
+                : pendingSubscription
+                  ? 'Cover setup pending'
+                  : 'No Ember Cover'}
+            </p>
+            {!coverStatusLoading && pendingSubscription ? (
+              <p data-testid="cover-cap-status">Finish activation to start cover.</p>
+            ) : null}
+            <button data-testid="activate-cover" onClick={openCoverActivation}>
+              Activate Cover
+            </button>
+          </div>
+        )}
+        {error ? <p data-testid="cover-error" style={{ color: '#b91c1c', fontSize: 12 }}>{error}</p> : null}
+      </section>
     )
   }
 
@@ -377,35 +527,8 @@ export function App() {
             </button>
           </div>
         </section>
-        <section data-testid="wallet-cover-status">
-          <h2>Ember Cover</h2>
-          {coverEnrolled ? (
-            <div>
-              <p data-testid="cover-status">{coverAccountStatus(coverStatusSnapshot)}</p>
-              {coverStatusLoading ? <p data-testid="cover-cap-status">Loading cover cap...</p> : null}
-              {!coverStatusLoading && coverStatusSnapshot ? (
-                <>
-                  <p data-testid="cover-cap-status">{formatCoverStatusSnapshot(coverStatusSnapshot)}</p>
-                  <p data-testid="cover-loss-cap">{formatLossCapSnapshot(coverStatusSnapshot)}</p>
-                </>
-              ) : null}
-              {!coverStatusLoading && !coverStatusSnapshot ? (
-                <p data-testid="cover-cap-status">Cover cap unavailable.</p>
-              ) : null}
-              <button data-testid="reenable-cover" disabled={coverBusy} onClick={() => void onEnableCover()}>
-                {coverBusy ? 'Re-enabling...' : 'Re-enable'}
-              </button>
-            </div>
-          ) : (
-            <button data-testid="enable-cover" disabled={coverBusy} onClick={() => void onEnableCover()}>
-              {coverBusy ? 'Enabling...' : 'Enable Ember Cover'}
-            </button>
-          )}
-          {error ? <p data-testid="cover-error" style={{ color: '#b91c1c', fontSize: 12 }}>{error}</p> : null}
-        </section>
         <section data-testid="wallet-tokens">
           <h2>Tokens</h2>
-          {snapshot?.tokenBalancesUnavailable ? <p>Token balances unavailable.</p> : null}
           {snapshot && tokenBalances.length > 0 ? (
             <ul>
               {tokenBalances.map((token) => (
@@ -415,11 +538,177 @@ export function App() {
                 </li>
               ))}
             </ul>
-          ) : snapshot && !snapshot.tokenBalancesUnavailable && !walletDataLoading ? (
-            <p>No tokens found.</p>
+          ) : snapshot && !walletDataLoading ? (
+            <p>No tokens to show yet.</p>
           ) : null}
         </section>
       </>
+    )
+  }
+
+  function planPrice(plan: EmberCoverPlan): string {
+    return selectedBillingPeriod === 'monthly' ? `${plan.monthlyPriceUsdc} USDC / month` : `${plan.annualPriceUsdc} USDC / year`
+  }
+
+  function renderCoverActivation() {
+    const selectedPlan = coverPlans.find((plan) => plan.id === selectedPlanId) ?? coverPlans[0]
+    const canActivate =
+      !!subscriptionPreview &&
+      subscriptionPreview.errors.length === 0 &&
+      subscriptionPreview.simulation.status === 'success' &&
+      !subscriptionBusy
+    const canSetup =
+      !!subscriptionPreview &&
+      subscriptionPreview.setupRequired &&
+      !subscriptionBusy &&
+      !subscriptionPreview.errors.includes('Not enough SOL for network fees.')
+    const canSyncEntitlement =
+      !!subscriptionState?.subscriptionSignature &&
+      subscriptionState.status !== 'active' &&
+      !subscriptionBusy
+    return (
+      <section data-testid="cover-activation">
+        <button onClick={() => setAccountScreen('home')}>Back</button>
+        <h2>Activate Cover</h2>
+        {subscriptionState ? (
+          <section data-testid="local-subscription-state">
+            <h3>Subscription</h3>
+            <dl>
+              <dt>Status</dt>
+              <dd>{subscriptionState.status}</dd>
+              <dt>Wallet</dt>
+              <dd>{shortAddress(subscriptionState.walletAddress)}</dd>
+              <dt>Plan PDA</dt>
+              <dd>{shortAddress(subscriptionState.planPda)}</dd>
+              <dt>Subscription PDA</dt>
+              <dd>{shortAddress(subscriptionState.subscriptionPda)}</dd>
+            </dl>
+            {canSyncEntitlement ? (
+              <button data-testid="sync-subscription-entitlement" disabled={subscriptionBusy} onClick={() => void syncSubscriptionEntitlement()}>
+                Sync cover entitlement
+              </button>
+            ) : null}
+          </section>
+        ) : null}
+        <div data-testid="billing-period" style={{ display: 'flex', gap: 8 }}>
+          <button
+            aria-selected={selectedBillingPeriod === 'monthly'}
+            onClick={() => {
+              setSelectedBillingPeriod('monthly')
+              setSubscriptionPreview(null)
+              setSubscriptionResult(null)
+              setSubscriptionNotice('')
+            }}
+          >
+            Monthly
+          </button>
+          <button
+            aria-selected={selectedBillingPeriod === 'annual'}
+            onClick={() => {
+              setSelectedBillingPeriod('annual')
+              setSubscriptionPreview(null)
+              setSubscriptionResult(null)
+              setSubscriptionNotice('')
+            }}
+          >
+            Annual
+          </button>
+        </div>
+        <div data-testid="cover-plan-options">
+          {coverPlans.map((plan) => (
+            <button
+              aria-selected={selectedPlanId === plan.id}
+              data-testid={`cover-plan-${plan.id}`}
+              key={plan.id}
+              onClick={() => {
+                setSelectedPlanId(plan.id)
+                setSubscriptionPreview(null)
+                setSubscriptionResult(null)
+                setSubscriptionNotice('')
+              }}
+              style={{ display: 'block', margin: '8px 0', textAlign: 'left', width: '100%' }}
+            >
+              <strong>{plan.name}</strong>
+              <span> {planPrice(plan)}</span>
+              <br />
+              <span>${plan.coverCapUsd.toLocaleString()} cap · {plan.coveredTxAllowance} covered tx</span>
+            </button>
+          ))}
+        </div>
+        {selectedPlan ? (
+          <p data-testid="subscription-copy">
+            This approves an onchain USDC subscription for Ember Cover. Ember can collect only according to this plan.
+          </p>
+        ) : null}
+        <button data-testid="review-subscription" disabled={subscriptionBusy || !selectedPlan} onClick={() => void previewSelectedSubscription()}>
+          {subscriptionBusy && !subscriptionPreview ? 'Checking...' : 'Review subscription'}
+        </button>
+        {subscriptionPreview ? (
+          <section data-testid="subscription-review">
+            <h3>Subscription approval</h3>
+            <dl>
+              <dt>Merchant</dt>
+              <dd>Ember Cover</dd>
+              <dt>Plan</dt>
+              <dd>{subscriptionPreview.plan.name}</dd>
+              <dt>Amount</dt>
+              <dd>{subscriptionPreview.amountUsdc} USDC</dd>
+              <dt>Billing period</dt>
+              <dd>{subscriptionPreview.renewalPeriod}</dd>
+              <dt>Token</dt>
+              <dd>USDC</dd>
+              <dt>Approved collector</dt>
+              <dd>{shortAddress(subscriptionPreview.approvedPuller)}</dd>
+              <dt>User wallet</dt>
+              <dd>{shortAddress(subscriptionPreview.walletAddress)}</dd>
+              <dt>Subscription program</dt>
+              <dd>{shortAddress(subscriptionPreview.subscriptionProgram)}</dd>
+            </dl>
+            {subscriptionPreview.setupRequired ? (
+              <p data-testid="subscription-setup-note">Setup transaction required before subscription approval.</p>
+            ) : null}
+            <p data-testid="subscription-balances">
+              USDC {subscriptionPreview.usdcBalance} · SOL lamports {subscriptionPreview.solBalanceLamports}
+            </p>
+            {subscriptionPreview.errors.length > 0 ? (
+              <ul data-testid="subscription-errors">
+                {subscriptionPreview.errors.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            ) : null}
+            {subscriptionPreview.simulation.status === 'failure' ? (
+              <p data-testid="subscription-simulation-error">Simulation failed: {subscriptionPreview.simulation.error}</p>
+            ) : null}
+          </section>
+        ) : null}
+        {subscriptionPreview?.setupRequired ? (
+          <button data-testid="setup-subscription" disabled={!canSetup} onClick={() => void setupSelectedSubscription()}>
+            {subscriptionBusy ? 'Setting up...' : 'Create USDC setup'}
+          </button>
+        ) : null}
+        <button data-testid="approve-subscription" disabled={!canActivate} onClick={() => void activateSelectedSubscription()}>
+          {subscriptionBusy && subscriptionPreview ? 'Approving...' : 'Approve subscription'}
+        </button>
+        <button disabled={subscriptionBusy} onClick={() => setAccountScreen('home')}>
+          Cancel
+        </button>
+        {subscriptionResult ? (
+          <section data-testid="subscription-result">
+            <h3>{subscriptionResult.apiCoverActive ? 'Cover active' : 'Subscription confirmed'}</h3>
+            <p>
+              <a href={subscriptionResult.explorerUrl} rel="noreferrer" target="_blank">
+                {shortAddress(subscriptionResult.signature)}
+              </a>
+            </p>
+            {!subscriptionResult.apiCoverActive ? (
+              <p>API entitlement is pending. Ember Cover decisions remain API-controlled.</p>
+            ) : null}
+          </section>
+        ) : null}
+        {subscriptionNotice ? <p data-testid="subscription-notice">{subscriptionNotice}</p> : null}
+        {subscriptionError ? <p data-testid="subscription-error" style={{ color: '#b91c1c' }}>{subscriptionError}</p> : null}
+      </section>
     )
   }
 
@@ -482,7 +771,7 @@ export function App() {
               sendPreview.cover.coveredTxCountImpact ?? 0,
             )
           : sendPreview.cover.coverStatus === 'covered'
-            ? 'Cover cap unavailable.'
+            ? 'Cover usage unavailable.'
             : ''
         : ''
       const canSend =
@@ -506,7 +795,7 @@ export function App() {
                 <dt>From</dt>
                 <dd>{shortAddress(sendPreview.source)}</dd>
                 <dt>To</dt>
-                <dd>{shortAddress(sendPreview.destination)}</dd>
+                <dd data-testid="send-review-destination" style={{ overflowWrap: 'anywhere' }}>{sendPreview.destination}</dd>
                 <dt>Network fee</dt>
                 <dd>{sendPreview.feeSol} SOL</dd>
                 <dt>Network</dt>
@@ -581,6 +870,7 @@ export function App() {
             data-testid="send-recipient-input"
             onChange={(event) => {
               setSendError('')
+              setSendRecipientFromClipboard(false)
               setSendRecipient(event.currentTarget.value)
             }}
             placeholder="Wallet address"
@@ -590,6 +880,11 @@ export function App() {
         <button data-testid="paste-recipient" onClick={() => void onPasteRecipient()}>
           Paste
         </button>
+        {sendRecipientFromClipboard && recipientTrimmed ? (
+          <p data-testid="paste-recipient-warning" style={{ overflowWrap: 'anywhere' }}>
+            Pasted from clipboard. Verify this matches the address you copied: {recipientTrimmed}
+          </p>
+        ) : null}
         {recipientError ? <p data-testid="send-recipient-error" style={{ color: '#b91c1c' }}>{recipientError}</p> : null}
         {selfSendError ? <p data-testid="send-self-error" style={{ color: '#b91c1c' }}>{selfSendError}</p> : null}
         <label>
@@ -612,7 +907,7 @@ export function App() {
               ? 'Loading cover cap...'
               : coverStatusSnapshot
                 ? formatCoverStatusSnapshot(coverStatusSnapshot)
-                : 'Cover cap unavailable.'}
+                : 'No active cover.'}
           </p>
         ) : null}
         {sendAmountError ? <p data-testid="send-amount-error" style={{ color: '#b91c1c' }}>{sendAmountError}</p> : null}
@@ -637,73 +932,21 @@ export function App() {
   function renderActivity() {
     const onchainSignatures = new Set(activity.map((item) => item.signature))
     const pendingEmber = emberActivity.filter((item) => !item.signature || !onchainSignatures.has(item.signature))
-    const selectedActivity = selectedActivitySignature
-      ? activity.find((item) => item.signature === selectedActivitySignature)
-      : null
-    const selectedCover = selectedActivity
-      ? emberActivity.find((item) => item.signature === selectedActivity.signature)
-      : null
-    if (selectedActivity) {
-      return (
-        <section data-testid="activity-detail">
-          <button onClick={() => setSelectedActivitySignature(null)}>Back</button>
-          <h2>{selectedActivity.title}</h2>
-          <dl>
-            <dt>Status</dt>
-            <dd>{selectedActivity.failed ? 'Failed' : selectedActivity.confirmationStatus ?? 'Pending'}</dd>
-            {selectedActivity.amount ? (
-              <>
-                <dt>Amount</dt>
-                <dd>{selectedActivity.amount}</dd>
-              </>
-            ) : null}
-            {selectedActivity.counterparty ? (
-              <>
-                <dt>{selectedActivity.direction === 'received' ? 'From' : 'To'}</dt>
-                <dd>{shortAddress(selectedActivity.counterparty)}</dd>
-              </>
-            ) : null}
-            <dt>Signature</dt>
-            <dd>
-              <a href={selectedActivity.explorerUrl} rel="noreferrer" target="_blank">
-                {shortAddress(selectedActivity.signature)}
-              </a>
-            </dd>
-            <dt>Ember Cover</dt>
-            <dd>
-              {selectedCover
-                ? coverStatusLabel(selectedCover.coverStatus)
-                : selectedActivity.direction === 'received'
-                  ? 'Receiving funds does not require a signature.'
-                  : 'No cover record'}
-            </dd>
-          </dl>
-        </section>
-      )
-    }
     return (
       <section data-testid="wallet-activity">
         <h2>Activity</h2>
-        <p>Cover is attached to signed transactions. Receiving funds and copying your address do not create cover records.</p>
         {walletDataError ? <p data-testid="wallet-data-error">{walletDataError}</p> : null}
         {walletDataLoading && snapshot ? <p>Refreshing transactions...</p> : null}
+        {snapshot?.activityUnavailable ? <p data-testid="wallet-activity-unavailable">Transaction history unavailable.</p> : null}
         {snapshot && activity.length > 0 ? (
           <ul>
             {activity.map((tx) => {
               const emberRecord = emberActivity.find((item) => item.signature === tx.signature)
               return (
                 <li key={tx.signature} data-testid="wallet-activity-item">
-                  <button data-testid="activity-detail-open" onClick={() => setSelectedActivitySignature(tx.signature)}>
-                    {tx.title}
-                  </button>{' '}
+                  <span>{tx.title}</span>{' '}
                   <span>{tx.failed ? 'Failed' : tx.confirmationStatus ?? 'Pending'}</span>{' '}
-                  <span>
-                    {emberRecord
-                      ? coverStatusLabel(emberRecord.coverStatus)
-                      : tx.direction === 'received'
-                        ? 'Not signed by you'
-                        : 'No cover record'}
-                  </span>
+                  {emberRecord ? <span>{coverStatusLabel(emberRecord.coverStatus)}</span> : null}
                   {emberRecord?.amount ? <span> {emberRecord.amount}</span> : null}
                   {!emberRecord?.amount && tx.amount ? <span> {tx.amount}</span> : null}
                   {emberRecord?.recipient ? <span> to {shortAddress(emberRecord.recipient)}</span> : null}
@@ -711,11 +954,17 @@ export function App() {
                     <span> to {shortAddress(tx.counterparty)}</span>
                   ) : null}
                   {tx.blockTime ? <span> {new Date(tx.blockTime * 1000).toLocaleDateString()}</span> : null}
+                  <span>
+                    {' '}
+                    <a href={tx.explorerUrl} rel="noreferrer" target="_blank">
+                      {shortAddress(tx.signature)}
+                    </a>
+                  </span>
                 </li>
               )
             })}
           </ul>
-        ) : snapshot && !walletDataLoading ? (
+        ) : snapshot && !walletDataLoading && !snapshot.activityUnavailable ? (
           <p>No transactions found.</p>
         ) : null}
         {snapshot?.emberActivityUnavailable ? <p>Ember activity unavailable.</p> : null}
@@ -742,6 +991,7 @@ export function App() {
   if (view === 'account') {
     return (
       <div style={{ padding: 16, width: 360 }}>
+        {mainTab === 'assets' && accountScreen === 'home' ? renderCoverStatusCard() : null}
         <p data-testid="address" style={{ overflowWrap: 'anywhere' }}>{address}</p>
         <div data-testid="wallet-cluster">
           <label>
@@ -759,6 +1009,7 @@ export function App() {
         {mainTab === 'assets' && accountScreen === 'home' ? renderAssets() : null}
         {mainTab === 'assets' && accountScreen === 'receive' ? renderReceive() : null}
         {mainTab === 'assets' && accountScreen === 'send' ? renderSend() : null}
+        {mainTab === 'assets' && accountScreen === 'cover' ? renderCoverActivation() : null}
         {mainTab === 'activity' ? renderActivity() : null}
         <button data-testid="lock" onClick={() => void vault.lock().then(refresh)}>Lock</button>
       </div>
@@ -769,9 +1020,9 @@ export function App() {
       <h1>{view === 'create' ? 'Create your Ember wallet' : 'Unlock'}</h1>
       <input data-testid="password" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
       <button data-testid="submit" onClick={() => void (view === 'create' ? onCreate() : onUnlock())}>
-        {authBusy ? (view === 'create' ? 'Creating...' : 'Unlocking...') : view === 'create' ? 'Create' : 'Unlock'}
+        {authBusy ? (view === 'create' ? 'Creating...' : 'Secure unlocking...') : view === 'create' ? 'Create' : 'Unlock'}
       </button>
-      {authBusy ? <p data-testid="auth-busy">{view === 'create' ? 'Creating wallet...' : 'Unlocking...'}</p> : null}
+      {authBusy ? <p data-testid="auth-busy">{view === 'create' ? 'Creating wallet...' : 'Secure unlocking...'}</p> : null}
       {error ? <p data-testid="error">{error}</p> : null}
     </div>
   )

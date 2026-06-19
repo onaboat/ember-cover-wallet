@@ -3,6 +3,7 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import { EmberClient } from '../cover/ember-client.ts'
+import type { SubscriptionEntitlementActivationRequest } from '../cover/ember-client.ts'
 import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
 
@@ -47,6 +48,7 @@ export interface CoverProvider {
   postSignMessage(args: MessagePostSignArgs): Promise<void>
   enroll(): Promise<boolean>
   isEnrolled(): Promise<boolean>
+  activateSubscriptionEntitlement?(args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>): Promise<boolean>
 }
 
 /** The SW-side VAULT signer the cover provider needs for one-time enrollment. */
@@ -136,6 +138,19 @@ export class EmberCoverProvider implements CoverProvider {
 
   async isEnrolled(): Promise<boolean> {
     return (await this.#activeEnrollment()) !== null
+  }
+
+  async activateSubscriptionEntitlement(
+    args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>,
+  ): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
+      return false
+    }
+    return await this.#client.activateSubscriptionEntitlement({
+      ...args,
+      walletAddress,
+    })
   }
 
   /** One-time: vault authorizes the session key + registers the vault address. Needs unlock. */

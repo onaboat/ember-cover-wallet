@@ -149,3 +149,35 @@ test('register signs the nonce then posts to register', async () => {
   const client = new EmberClient(cfg, signMessage, { fetch: f })
   expect(await client.register('WALLET')).toBe(true)
 })
+
+test('subscription entitlement activation posts walletAddress to the entitlement route', async () => {
+  let requestedUrl = ''
+  let requestedBody: Record<string, unknown> = {}
+  const f = (async (url: string | URL | Request, init?: RequestInit) => {
+    requestedUrl = String(url)
+    requestedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return new Response('{}', { status: 200 })
+  }) as unknown as typeof fetch
+  const client = new EmberClient(cfg, signMessage, { fetch: f })
+
+  expect(
+    await client.activateSubscriptionEntitlement({
+      walletAddress: 'WALLET',
+      cluster: 'devnet',
+      planTier: 'core',
+      billingPeriod: 'monthly',
+      programId: 'program',
+      paymentMint: 'mint',
+      merchantWallet: 'merchant',
+      pullerWallet: 'puller',
+      planId: '1',
+      planPda: 'plan',
+      subscriptionAuthorityPda: 'authority',
+      subscriptionPda: 'subscription',
+      subscriptionSignature: 'signature',
+    }),
+  ).toBe(true)
+  expect(requestedUrl).toBe('https://proxy.test/entitlements/subscriptions/activate')
+  expect(requestedBody['walletAddress']).toBe('WALLET')
+  expect(requestedBody['walletPublicKey']).toBeUndefined()
+})
