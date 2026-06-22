@@ -102,12 +102,21 @@ test('accepts walletAddress for subscription entitlement handoff', async () => {
   expect(typeof forwarded.forwarded['walletAddress']).toBe('string')
 })
 
+test('forwards a canonical walletPublicKey even when the client sent walletAddress', async () => {
+  // activate sends only walletAddress, but the engine's ActivateRequest requires
+  // walletPublicKey — the proxy must supply the verified key so it does not 422.
+  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+
+  expect(forwarded.forwarded['walletPublicKey']).toBe(forwarded.forwarded['walletAddress'])
+})
+
 test('injects the partner key as a Bearer header (never in the client)', async () => {
   expect((await forwardOf('/cover/pre-sign', {})).auth).toBe('Bearer secret-key')
 })
 
-test('overrides userRef with the configured demo value', async () => {
-  expect((await forwardOf('/cover/pre-sign', { userRef: 'spoofed' })).forwarded['userRef']).toBe('user-1')
+test('overrides userRef with the verified wallet pubkey (ignores client value)', async () => {
+  const { forwarded } = await forwardOf('/cover/pre-sign', { userRef: 'spoofed' })
+  expect(forwarded['userRef']).toBe(forwarded['walletPublicKey'])
 })
 
 test('rejects a request with no signature (401)', async () => {

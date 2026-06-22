@@ -1,0 +1,138 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - paragraph [ref=e4]: ASSETS
+    - generic [ref=e6]:
+      - banner [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e14]:
+            - generic [ref=e15]: Ember
+            - generic [ref=e16]: Cover wallet
+        - generic [ref=e17]: PROTECTED
+      - main [ref=e18]:
+        - generic [ref=e19]:
+          - button "85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]: 85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU
+          - combobox [ref=e23]:
+            - option "Devnet" [selected]
+          - button "Lock" [ref=e24] [cursor=pointer]
+        - generic [ref=e25]:
+          - generic [ref=e26]:
+            - generic [ref=e27]:
+              - generic [ref=e28]: Balance
+              - button "Refresh" [ref=e29] [cursor=pointer]
+            - paragraph [ref=e30]: 2.56119784 SOL
+            - generic [ref=e31]:
+              - button "Send" [ref=e32] [cursor=pointer]
+              - button "Receive" [ref=e33] [cursor=pointer]
+          - generic [ref=e34]:
+            - generic [ref=e35]:
+              - img [ref=e37]
+              - generic [ref=e41]:
+                - heading "Coverage" [level=2] [ref=e42]
+                - paragraph [ref=e43]: Ember Cover is active for this wallet.
+            - generic [ref=e44]:
+              - generic [ref=e45]: PROTECTED
+              - button "Manage Cover" [ref=e46] [cursor=pointer]
+            - generic [ref=e47]:
+              - generic [ref=e48]:
+                - term [ref=e49]: Plan
+                - definition [ref=e50]: core
+              - generic [ref=e51]:
+                - term [ref=e52]: Checks
+                - definition [ref=e53]: 67 of 100
+              - generic [ref=e54]:
+                - term [ref=e55]: Loss cap
+                - definition [ref=e56]: $10,000 of $10,000
+          - list [ref=e58]:
+            - listitem [ref=e59]:
+              - generic [ref=e60]: "7"
+              - generic [ref=e61]:
+                - generic [ref=e62]: Token 7TJs…STZ2
+                - generic [ref=e63]: 7TJsF3ps…WSTZ2
+              - generic [ref=e64]: "10000"
+      - navigation [ref=e65]:
+        - button "Assets" [ref=e66] [cursor=pointer]
+        - button "Activity" [ref=e67] [cursor=pointer]
+  - generic [ref=e68]:
+    - paragraph [ref=e69]: ACTIVITY
+    - generic [ref=e71]:
+      - banner [ref=e72]:
+        - generic [ref=e73]:
+          - img [ref=e75]
+          - generic [ref=e79]:
+            - generic [ref=e80]: Ember
+            - generic [ref=e81]: Cover wallet
+        - generic [ref=e82]: PROTECTED
+      - main [ref=e83]:
+        - generic [ref=e84]:
+          - button "85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU" [ref=e85] [cursor=pointer]:
+            - generic [ref=e86]: 85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU
+          - combobox [ref=e88]:
+            - option "Devnet" [selected]
+          - button "Lock" [ref=e89] [cursor=pointer]
+        - generic [ref=e90]:
+          - heading "Activity" [level=2] [ref=e91]
+          - list [ref=e92]:
+            - listitem [ref=e93]:
+              - generic [ref=e94]:
+                - generic [ref=e95]: Sent 0.01 SOL
+                - generic [ref=e96]: confirmed · 22/06/2026 · to eUS7iQNN…BN39fptu
+              - generic [ref=e97]:
+                - generic [ref=e98]: 0.01 SOL
+                - generic [ref=e99]: Covered
+                - generic [ref=e100]: Explorer
+            - listitem [ref=e101]:
+              - generic [ref=e102]:
+                - generic [ref=e103]: Sent 0.01 SOL
+                - generic [ref=e104]: Finalized · 21/06/2026 · to eUS7iQNN…BN39fptu
+              - generic [ref=e105]:
+                - generic [ref=e106]: 0.01 SOL
+                - generic [ref=e107]: Covered
+                - generic [ref=e108]: Explorer
+            - listitem [ref=e109]:
+              - generic [ref=e110]:
+                - generic [ref=e111]: Sent 0.01 SOL
+                - generic [ref=e112]: Finalized · 21/06/2026 · to eUS7iQNN…BN39fptu
+              - generic [ref=e113]:
+                - generic [ref=e114]: 0.01 SOL
+                - generic [ref=e115]: Covered
+                - generic [ref=e116]: Explorer
+      - navigation [ref=e117]:
+        - button "Assets" [ref=e118] [cursor=pointer]
+        - button "Activity" [ref=e119] [cursor=pointer]
+  - generic [ref=e120]:
+    - paragraph [ref=e121]: APPROVAL
+    - generic [ref=e123]:
+      - banner [ref=e124]:
+        - generic [ref=e125]:
+          - img [ref=e127]
+          - generic [ref=e131]:
+            - generic [ref=e132]: Ember
+            - generic [ref=e133]: Approval
+        - generic [ref=e134]: COVERED
+      - heading "Send SOL" [level=1] [ref=e135]
+      - generic [ref=e136]:
+        - paragraph [ref=e137]: http://localhost:5173
+        - paragraph [ref=e138]: 85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU
+      - generic [ref=e139]:
+        - generic [ref=e140]:
+          - heading "Estimated changes" [level=2] [ref=e141]
+          - generic [ref=e142]:
+            - generic [ref=e143]:
+              - term [ref=e144]: You send
+              - definition [ref=e145]: "-0.01 SOL"
+            - generic [ref=e146]:
+              - term [ref=e147]: To
+              - definition [ref=e148]: eUS7iQNNMBxj521MUcBAxSzDF33u6DBtFM7BN39fptu
+            - generic [ref=e149]:
+              - term [ref=e150]: Network fee
+              - definition [ref=e151]: "-0.000005 SOL"
+        - generic [ref=e153]:
+          - img [ref=e155]
+          - generic [ref=e159]:
+            - generic [ref=e160]: Covered
+            - generic [ref=e161]: Cover is available for this approval.
+        - generic [ref=e162]:
+          - button "Approve and sign" [ref=e163] [cursor=pointer]
+          - button "Cancel" [ref=e164] [cursor=pointer]

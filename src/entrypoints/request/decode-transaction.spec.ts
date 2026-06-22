@@ -75,8 +75,8 @@ test('summarizes a simple SOL transfer amount and recipient', () => {
   expect(summary?.estimatedNetworkFee).toBe('0.000005 SOL')
   expect(estimateWalletImpact(summary, FEE_PAYER)).toMatchObject({
     rows: [
-      { label: 'You send', value: '-0.25 SOL', tone: 'negative' },
-      { label: 'To', value: '11111111...111112', tone: 'neutral' },
+      { label: 'Outgoing', value: '-0.25 SOL', tone: 'negative' },
+      { label: 'To', value: RECIPIENT, tone: 'neutral' },
       { label: 'Network fee', value: '-0.000005 SOL', tone: 'negative' },
     ],
     isComplete: true,
@@ -84,8 +84,8 @@ test('summarizes a simple SOL transfer amount and recipient', () => {
   })
   expect(estimateWalletImpact(summary, RECIPIENT)).toMatchObject({
     rows: [
-      { label: 'You receive', value: '+0.25 SOL', tone: 'positive' },
-      { label: 'From', value: 'So111111...111112', tone: 'neutral' },
+      { label: 'Incoming', value: '+0.25 SOL', tone: 'positive' },
+      { label: 'From', value: FEE_PAYER, tone: 'neutral' },
     ],
     isComplete: true,
     warning: null,

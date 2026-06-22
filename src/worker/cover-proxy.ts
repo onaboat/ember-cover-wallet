@@ -55,8 +55,13 @@ export async function coverProxy(request: Request, env: CoverProxyEnv, deps: Cov
     return jsonResponse({ error: 'invalid_signature' }, 401)
   }
 
-  // Inject the demo userRef + partner key, relay upstream status/body verbatim.
-  const forwardBody = JSON.stringify({ ...parsed, userRef: env.EMBER_USER_REF })
+  // The subscriber identity is the VERIFIED wallet pubkey (wallet-native: the
+  // engine keys registration/status/entitlement by wallet, matching the
+  // /entitlements/subscriptions/activate convention). We forward it as the
+  // canonical `walletPublicKey` (activate sends only `walletAddress`, but the
+  // engine requires `walletPublicKey`) and as `userRef`. Client-supplied values
+  // are overridden so they can't be spoofed. Partner key is injected server-side.
+  const forwardBody = JSON.stringify({ ...parsed, walletPublicKey, userRef: walletPublicKey })
   const upstream = await fetchFn(`${env.EMBER_API}/v1${url.pathname}`, {
     method: request.method,
     headers: {

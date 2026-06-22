@@ -10,6 +10,7 @@ import {
   isWalletCluster,
   walletClusterConfig,
 } from './wallet-data-config.ts'
+import { coverRecords } from './cover-records.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
 
 const CLUSTER_KEY = 'local:ember-wallet-data-cluster' as const
@@ -122,7 +123,9 @@ export interface WalletEmberActivityItem {
   signature: string | null
   coverStatus: WalletCoverStatus
   riskBand: string | null
-  title: string
+  // Null for cover records (a cover decision has no transfer metadata); the matched
+  // on-chain row supplies the title via `emberRecord?.title ?? tx.title` in the popup.
+  title: string | null
   amount: string | null
   tokenSymbol: string | null
   tokenMint: string | null
@@ -366,6 +369,28 @@ export class WalletDataProvider implements WalletDataUI {
         : await withTimeout(this.#getActivityDetails(rpc, normalizedActivity, walletAddress), this.#enrichmentTimeoutMs).catch(
             () => normalizedActivity,
           )
+    const emberRecords = await coverRecords.list(walletAddress).catch(() => null)
+    const emberActivity: WalletEmberActivityItem[] =
+      emberRecords === null
+        ? []
+        : emberRecords.map((record) => ({
+            id: record.signature,
+            type: 'signTransaction',
+            timestamp: record.recordedAt,
+            dappOrigin: record.dappOrigin,
+            requestId: record.requestId,
+            // Equals the on-chain WalletActivityItem.signature, so App.tsx matches by signature.
+            signature: record.signature,
+            coverStatus: record.coverStatus,
+            riskBand: record.riskBand,
+            // The cover decision carries no transfer metadata; App falls back to the on-chain row's.
+            title: null,
+            amount: null,
+            tokenSymbol: null,
+            tokenMint: null,
+            recipient: null,
+            onchainStatus: null,
+          }))
     return {
       cluster,
       address: walletAddress,
@@ -375,8 +400,8 @@ export class WalletDataProvider implements WalletDataUI {
       tokenBalancesUnavailable: tokenBalances === null,
       activity: detailedActivity,
       activityUnavailable: activity === null,
-      emberActivity: [],
-      emberActivityUnavailable: false,
+      emberActivity,
+      emberActivityUnavailable: emberRecords === null,
     }
   }
 

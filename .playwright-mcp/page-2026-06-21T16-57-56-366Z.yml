@@ -1,0 +1,93 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - paragraph [ref=e4]: WALLET — ASSETS
+    - generic [ref=e6]:
+      - banner [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e14]:
+            - generic [ref=e15]: Ember
+            - generic [ref=e16]: Cover wallet
+        - generic [ref=e17]: PROTECTED
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - button "85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU" [ref=e20] [cursor=pointer]:
+            - generic [ref=e21]: 85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU
+            - img [ref=e23]
+          - combobox [ref=e27]:
+            - option "Devnet" [selected]
+          - button "Lock" [ref=e28] [cursor=pointer]
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - generic [ref=e31]: Balance
+            - button "Refresh" [ref=e32] [cursor=pointer]
+          - paragraph [ref=e33]: 4.82636168 SOL
+          - generic [ref=e34]:
+            - button "Send" [ref=e35] [cursor=pointer]
+            - button "Receive" [ref=e36] [cursor=pointer]
+        - generic [ref=e37]:
+          - generic [ref=e38]:
+            - img [ref=e40]
+            - generic [ref=e44]:
+              - heading "Coverage" [level=2] [ref=e45]
+              - paragraph [ref=e46]: Ember Cover is active for this wallet.
+          - generic [ref=e47]:
+            - generic [ref=e48]: PROTECTED
+            - button "Manage Cover" [ref=e49] [cursor=pointer]
+          - generic [ref=e50]:
+            - generic [ref=e51]:
+              - term [ref=e52]: Plan
+              - definition [ref=e53]: core
+            - generic [ref=e54]:
+              - term [ref=e55]: Checks
+              - definition [ref=e56]: 93 of 100
+            - generic [ref=e57]:
+              - term [ref=e58]: Loss cap
+              - definition [ref=e59]: $10,000 of $10,000
+        - list [ref=e61]:
+          - listitem [ref=e62]:
+            - generic [ref=e63]: "7"
+            - generic [ref=e64]:
+              - generic [ref=e65]: Token 7TJs…STZ2
+              - generic [ref=e66]: 7TJsF3ps…WSTZ2
+            - generic [ref=e67]: "10000"
+      - navigation [ref=e68]:
+        - button "Assets" [ref=e69] [cursor=pointer]
+        - button "Activity" [ref=e70] [cursor=pointer]
+  - generic [ref=e71]:
+    - paragraph [ref=e72]: WALLET — ACTIVITY
+    - generic [ref=e74]:
+      - banner [ref=e75]:
+        - generic [ref=e76]:
+          - img [ref=e78]
+          - generic [ref=e82]:
+            - generic [ref=e83]: Ember
+            - generic [ref=e84]: Cover wallet
+        - generic [ref=e85]: PROTECTED
+      - generic [ref=e86]:
+        - heading "Activity" [level=2] [ref=e87]
+        - list [ref=e88]:
+          - listitem [ref=e89]:
+            - generic [ref=e90]:
+              - generic [ref=e91]: Sent 0.01 SOL
+              - generic [ref=e92]: Finalized · 21/06/2026 · to eUS7iQNN…BN39fptu
+            - generic [ref=e93]:
+              - generic [ref=e94]: 0.01 SOL
+              - generic [ref=e95]: Covered
+              - generic [ref=e96]: Explorer
+          - listitem [ref=e97]:
+            - generic [ref=e98]:
+              - generic [ref=e99]: Sent 0.03 SOL
+              - generic [ref=e100]: Finalized · 21/06/2026 · to 96BLnJnB…ygj9cfDq
+            - generic [ref=e101]:
+              - generic [ref=e102]: 0.03 SOL
+              - generic [ref=e103]: Not covered
+              - generic [ref=e104]: Explorer
+          - listitem [ref=e105]:
+            - generic [ref=e106]:
+              - generic [ref=e107]: On-chain transaction
+              - generic [ref=e108]: Finalized · 20/06/2026
+            - generic [ref=e110]: Explorer
+      - navigation [ref=e111]:
+        - button "Assets" [ref=e112] [cursor=pointer]
+        - button "Activity" [ref=e113] [cursor=pointer]

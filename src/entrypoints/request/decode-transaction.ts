@@ -260,8 +260,8 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
       return {
         title: 'Estimated changes',
         rows: withFeeRows([
-          { label: 'You send', value: `-${action.amount}`, tone: 'negative' },
-          ...(action.recipient ? [{ label: 'To', value: shortAddress(action.recipient) ?? action.recipient, tone: 'neutral' } as const] : []),
+          { label: 'Outgoing', value: `-${action.amount}`, tone: 'negative' },
+          ...(action.recipient ? [{ label: 'To', value: action.recipient, tone: 'neutral' } as const] : []),
         ], summary, walletAddress),
         isComplete: true,
         warning: null,
@@ -271,8 +271,8 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
       return {
         title: 'Estimated changes',
         rows: withFeeRows([
-          { label: 'You receive', value: `+${action.amount}`, tone: 'positive' },
-          ...(action.source ? [{ label: 'From', value: shortAddress(action.source) ?? action.source, tone: 'neutral' } as const] : []),
+          { label: 'Incoming', value: `+${action.amount}`, tone: 'positive' },
+          ...(action.source ? [{ label: 'From', value: action.source, tone: 'neutral' } as const] : []),
         ], summary, walletAddress),
         isComplete: true,
         warning: null,
@@ -280,7 +280,7 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
     }
     return unknownImpactForSummary(summary, walletAddress, 'This transfer does not clearly match the selected wallet.', [
       { label: 'Transfer amount', value: action.amount, tone: 'unknown' },
-      ...(action.recipient ? [{ label: 'To', value: shortAddress(action.recipient) ?? action.recipient, tone: 'neutral' } as const] : []),
+      ...(action.recipient ? [{ label: 'To', value: action.recipient, tone: 'neutral' } as const] : []),
     ])
   }
 
@@ -289,8 +289,8 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
       return {
         title: 'Estimated changes',
         rows: withFeeRows([
-          { label: 'You send', value: `-${action.amount}`, tone: 'negative' },
-          ...(action.recipient ? [{ label: 'To', value: shortAddress(action.recipient) ?? action.recipient, tone: 'neutral' } as const] : []),
+          { label: 'Outgoing', value: `-${action.amount}`, tone: 'negative' },
+          ...(action.recipient ? [{ label: 'To', value: action.recipient, tone: 'neutral' } as const] : []),
         ], summary, walletAddress),
         isComplete: true,
         warning: null,
@@ -300,8 +300,8 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
       return {
         title: 'Estimated changes',
         rows: withFeeRows([
-          { label: 'You receive', value: `+${action.amount}`, tone: 'positive' },
-          ...(action.source ? [{ label: 'From', value: shortAddress(action.source) ?? action.source, tone: 'neutral' } as const] : []),
+          { label: 'Incoming', value: `+${action.amount}`, tone: 'positive' },
+          ...(action.source ? [{ label: 'From', value: action.source, tone: 'neutral' } as const] : []),
         ], summary, walletAddress),
         isComplete: true,
         warning: null,
@@ -309,7 +309,7 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
     }
     return unknownImpactForSummary(summary, walletAddress, 'Token account ownership could not be fully estimated.', [
       { label: 'Token movement', value: action.amount, tone: 'unknown' },
-      ...(action.recipient ? [{ label: 'To', value: shortAddress(action.recipient) ?? action.recipient, tone: 'neutral' } as const] : []),
+      ...(action.recipient ? [{ label: 'To', value: action.recipient, tone: 'neutral' } as const] : []),
     ])
   }
 

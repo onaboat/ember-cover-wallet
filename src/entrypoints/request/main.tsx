@@ -1,7 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { RequestApp } from './RequestApp.tsx'
+import '../../assets/global.css'
+import { App } from '../popup/App.tsx'
 
 const root = document.getElementById('root')
 if (!root) {
@@ -9,6 +10,6 @@ if (!root) {
 }
 createRoot(root).render(
   <StrictMode>
-    <RequestApp />
+    <App mode="approval" />
   </StrictMode>,
 )

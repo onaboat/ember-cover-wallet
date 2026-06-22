@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { address as toAddress } from '@solana/kit'
 
 import { getCoverService } from '../../background/cover-service.ts'
+import { getRequestApproval } from '../../background/request-service.ts'
 import { getWalletTransferService, parseSolAmountToLamports } from '../../background/sol-transfer-service.ts'
 import type { SolTransferPreview, SolTransferResult } from '../../background/sol-transfer-service.ts'
 import { getSubscriptionService } from '../../background/subscription-service.ts'
@@ -17,14 +18,30 @@ import type { WalletDataSnapshot } from '../../background/wallet-data-service.ts
 import { getWalletDataService } from '../../background/wallet-data-service.ts'
 import type { WalletCluster } from '../../background/wallet-data-config.ts'
 import { WALLET_CLUSTER_OPTIONS } from '../../background/wallet-data-config.ts'
-import { coverCapReviewText, formatCoverStatusSnapshot, formatLossCapSnapshot } from '../../cover/cover-cap-view.ts'
+import { coverCapReviewText, formatCoverStatusSnapshot } from '../../cover/cover-cap-view.ts'
 import type { CoverStatusSnapshot } from '../../cover/ember-types.ts'
+import { BrandMark } from '../../ui/BrandMark.tsx'
+import { subscriptionStatusView } from '../../ui/subscription-status-view.ts'
+import { isVaultLockedError } from '../../vault/vault-lock.ts'
 import { QrCode } from './qr-code.tsx'
 
+// Lazy so the toolbar popup (which never decodes raw dapp transactions) does not eagerly
+// pull in the transaction/message decoders. Only the approval window mounts this screen.
+const ApprovalScreen = lazy(() =>
+  import('../request/ApprovalScreen.tsx').then((m) => ({ default: m.ApprovalScreen })),
+)
+
+type WalletMode = 'wallet' | 'approval'
 type View = 'loading' | 'create' | 'unlock' | 'account'
 type MainTab = 'assets' | 'activity'
-type AccountScreen = 'home' | 'receive' | 'send' | 'cover'
+type AccountScreen = 'home' | 'receive' | 'send' | 'cover' | 'approval'
 type SendStep = 'form' | 'review' | 'complete'
+
+interface AppProps {
+  /** 'approval' is rendered in the dapp approval window: it surfaces the pending request as a
+   *  screen inside this same wallet shell and returns to home after a successful sign. */
+  mode?: WalletMode
+}
 
 const BASE_FEE_LAMPORTS = 5_000n
 
@@ -36,11 +53,11 @@ function coverStatusLabel(status: string): string {
   return 'Cover status unknown'
 }
 
-function coverAccountStatus(snapshot: CoverStatusSnapshot | null): string {
-  if (!snapshot) return 'No Ember Cover'
-  if (!snapshot.subscriptionActive) return 'Cover subscription inactive'
-  if (!snapshot.walletRegistered) return 'Wallet registration incomplete'
-  return 'Ember Cover enabled'
+function coverTone(status: string): string {
+  if (status === 'covered') return 'covered'
+  if (status === 'unavailable') return 'unavailable'
+  if (status === 'not_covered' || status === 'unsupported') return 'none'
+  return 'unknown'
 }
 
 function arrayOrEmpty<T>(value: T[] | readonly T[] | undefined): T[] | readonly T[] {
@@ -50,6 +67,26 @@ function arrayOrEmpty<T>(value: T[] | readonly T[] | undefined): T[] | readonly 
 function shortAddress(value: string | null | undefined): string {
   if (!value) return ''
   return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value
+}
+
+function clusterLabel(cluster: WalletCluster): string {
+  return cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'
+}
+
+function tokenInitial(label: string, mint: string): string {
+  const trimmed = label.replace(/^Token\s+/i, '').trim()
+  return (trimmed[0] ?? mint[0] ?? 'T').toUpperCase()
+}
+
+function activityDate(blockTime: number | null): string {
+  return blockTime ? new Date(blockTime * 1000).toLocaleDateString() : 'Pending'
+}
+
+function activityState(failed: boolean, confirmationStatus: string | null): string {
+  if (failed) return 'Failed'
+  if (confirmationStatus === 'finalized') return 'Finalized'
+  if (confirmationStatus) return confirmationStatus
+  return 'Pending'
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -85,15 +122,17 @@ function amountValidation(amount: string, snapshot: WalletDataSnapshot | null): 
   }
 }
 
-export function App() {
+export function App({ mode = 'wallet' }: AppProps = {}) {
   const vault = getVaultService()
   const cover = getCoverService()
   const subscriptions = getSubscriptionService()
   const walletData = getWalletDataService()
   const transfers = getWalletTransferService()
+  const approval = getRequestApproval()
   const [view, setView] = useState<View>('loading')
   const [mainTab, setMainTab] = useState<MainTab>('assets')
-  const [accountScreen, setAccountScreen] = useState<AccountScreen>('home')
+  const [accountScreen, setAccountScreen] = useState<AccountScreen>(mode === 'approval' ? 'approval' : 'home')
+  const [approvalPending, setApprovalPending] = useState(mode === 'approval')
   const [address, setAddress] = useState<string | null>(null)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -110,6 +149,7 @@ export function App() {
   const [subscriptionBusy, setSubscriptionBusy] = useState(false)
   const [subscriptionError, setSubscriptionError] = useState('')
   const [subscriptionNotice, setSubscriptionNotice] = useState('')
+  const [subscriptionNeedsUnlock, setSubscriptionNeedsUnlock] = useState(false)
   const [cluster, setCluster] = useState<WalletCluster>('devnet')
   const [snapshot, setSnapshot] = useState<WalletDataSnapshot | null>(null)
   const [walletDataLoading, setWalletDataLoading] = useState(false)
@@ -136,10 +176,26 @@ export function App() {
   const recipientError = recipientTrimmed && !recipientValid ? 'Enter a valid Solana address.' : ''
   const selfSendError = recipientIsSelf ? 'You cannot send SOL to this wallet.' : ''
   const sendAmountError = amountValidation(sendAmount, snapshot)
+  const subscriptionView = subscriptionStatusView({
+    cluster,
+    coverEnrolled,
+    coverStatusLoading,
+    coverStatusSnapshot,
+    subscriptionState,
+  })
 
   async function refresh() {
     if (!(await vault.hasVault())) {
       setView('create')
+      return
+    }
+    // Approval mode bypasses the standalone unlock view ONLY while a request is pending: the
+    // approval screen carries its own inline unlock so the cover banner and password coexist on
+    // one screen while locked. With no pending request the window is a plain wallet and must
+    // respect the lock state (otherwise locking it would still show an unlocked-looking home).
+    if (mode === 'approval' && (await approval.get())) {
+      setAddress(await vault.getAddress())
+      setView('account')
       return
     }
     if (await vault.isUnlocked()) {
@@ -173,6 +229,39 @@ export function App() {
       void refreshCoverState()
     }
   }, [view])
+
+  useEffect(() => {
+    if (mode !== 'wallet' || view !== 'account' || window.location.hash !== '#cover') {
+      return
+    }
+    openCoverActivation()
+    window.history.replaceState(null, '', window.location.pathname)
+  }, [view])
+
+  // Approval window: read the pending request once to decide whether to show the approval
+  // screen. If nothing is pending (e.g. it already resolved), fall back to the wallet home.
+  useEffect(() => {
+    if (mode !== 'approval') {
+      return
+    }
+    let active = true
+    void (async () => {
+      const pending = await approval.get()
+      if (!active) {
+        return
+      }
+      if (pending) {
+        setApprovalPending(true)
+        setAccountScreen('approval')
+      } else {
+        setApprovalPending(false)
+        setAccountScreen('home')
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function refreshSubscriptionState() {
     if (!address) return
@@ -312,6 +401,56 @@ export function App() {
     setSubscriptionResult(null)
     setSubscriptionError('')
     setSubscriptionNotice('')
+    setSubscriptionNeedsUnlock(false)
+  }
+
+  // Setup/Approve/Sync each need a fresh VAULT signature, and the vault can idle-lock while the
+  // popup stays on the cover screen. Ensure it is unlocked before signing; if it is locked, prompt
+  // for the password inline (reusing the unlock `password` state) instead of failing the action.
+  async function ensureSubscriptionUnlocked(): Promise<boolean> {
+    if (await vault.isUnlocked()) {
+      return true
+    }
+    if (!password) {
+      setSubscriptionNeedsUnlock(true)
+      setSubscriptionError('Wallet locked. Enter your password to continue.')
+      return false
+    }
+    try {
+      await vault.unlock(password)
+      setPassword('')
+      setSubscriptionNeedsUnlock(false)
+      return true
+    } catch {
+      setSubscriptionNeedsUnlock(true)
+      setSubscriptionError('Wrong password')
+      return false
+    }
+  }
+
+  function handleSubscriptionError(e: unknown, fallback: string) {
+    const message = errorMessage(e, fallback)
+    if (isVaultLockedError(message)) {
+      setSubscriptionNeedsUnlock(true)
+      setSubscriptionError('Wallet re-locked. Enter your password and try again.')
+    } else {
+      setSubscriptionError(message)
+    }
+  }
+
+  // Approval window: after a successful sign, return to the refreshed wallet home and stay open.
+  function onApprovalApproved() {
+    setApprovalPending(false)
+    setAccountScreen('home')
+    setMainTab('assets')
+    void refreshWalletData()
+    void refreshCoverState()
+  }
+
+  // Approval window: reject closes the window (request-service removes it); nothing to show.
+  function onApprovalRejected() {
+    setApprovalPending(false)
+    setAccountScreen('home')
   }
 
   async function previewSelectedSubscription() {
@@ -339,6 +478,10 @@ export function App() {
     setSubscriptionBusy(true)
     setSubscriptionError('')
     setSubscriptionNotice('')
+    if (!(await ensureSubscriptionUnlocked())) {
+      setSubscriptionBusy(false)
+      return
+    }
     try {
       const result = await subscriptions.setupSubscription({
         planId: selectedPlanId,
@@ -351,7 +494,7 @@ export function App() {
       setSubscriptionNotice('Setup confirmed. Fund the USDC account, then review the subscription again.')
       await refreshSubscriptionState()
     } catch (e) {
-      setSubscriptionError(errorMessage(e, 'Could not complete subscription setup'))
+      handleSubscriptionError(e, 'Could not complete subscription setup')
     } finally {
       setSubscriptionBusy(false)
     }
@@ -361,6 +504,10 @@ export function App() {
     setSubscriptionBusy(true)
     setSubscriptionError('')
     setSubscriptionNotice('')
+    if (!(await ensureSubscriptionUnlocked())) {
+      setSubscriptionBusy(false)
+      return
+    }
     try {
       const result = await subscriptions.activateSubscription({
         planId: selectedPlanId,
@@ -373,7 +520,7 @@ export function App() {
       await refreshCoverState()
       await refreshSubscriptionState()
     } catch (e) {
-      setSubscriptionError(errorMessage(e, 'Could not approve subscription'))
+      handleSubscriptionError(e, 'Could not approve subscription')
     } finally {
       setSubscriptionBusy(false)
     }
@@ -383,6 +530,10 @@ export function App() {
     setSubscriptionBusy(true)
     setSubscriptionError('')
     setSubscriptionNotice('')
+    if (!(await ensureSubscriptionUnlocked())) {
+      setSubscriptionBusy(false)
+      return
+    }
     try {
       const state = await subscriptions.syncEntitlement(address ?? undefined)
       setSubscriptionState(state)
@@ -395,7 +546,7 @@ export function App() {
         setSubscriptionError('No subscription found for this wallet.')
       }
     } catch (e) {
-      setSubscriptionError(errorMessage(e, 'Could not sync cover entitlement'))
+      handleSubscriptionError(e, 'Could not sync cover entitlement')
     } finally {
       setSubscriptionBusy(false)
     }
@@ -440,9 +591,67 @@ export function App() {
     }
   }
 
+  function renderTopbar() {
+    return (
+      <header className="ec-topbar">
+        <div className="ec-brand">
+          <span className="ec-mark-frame">
+            <BrandMark className="ec-brand-mark" title="Ember Cover" />
+          </span>
+          <span className="ec-brand-copy">
+            <span className="ec-brand-name">Ember</span>
+            <span className="ec-brand-subtitle">Cover wallet</span>
+          </span>
+        </div>
+        <span className="ec-status-badge" data-tone={subscriptionView.badgeTone}>
+          {subscriptionView.badgeLabel}
+        </span>
+      </header>
+    )
+  }
+
+  function renderBackButton(onClick: () => void) {
+    return (
+      <button aria-label="Back" className="ec-back-button" onClick={onClick} type="button">
+        <span aria-hidden="true">←</span>
+        <span>Back</span>
+      </button>
+    )
+  }
+
+  function renderWalletControls() {
+    return (
+      <section className="ec-wallet-controls">
+        <button
+          className="ec-address-chip"
+          data-testid="address"
+          title={copied ? 'Copied' : 'Copy address'}
+          onClick={() => void onCopyAddress()}
+          type="button"
+        >
+          <span className="ec-wallet-address">{address}</span>
+          {copied ? <span className="ec-address-copy" data-testid="copy">Copied</span> : null}
+        </button>
+        <label className="ec-network-control" data-testid="wallet-cluster">
+          <span className="ec-control-label">Network</span>
+          <select data-testid="cluster-select" onChange={(event) => void onClusterChange(event.target.value as WalletCluster)} value={cluster}>
+            {WALLET_CLUSTER_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="ec-quiet-button" data-testid="lock" onClick={() => void vault.lock().then(refresh)} type="button">
+          Lock
+        </button>
+      </section>
+    )
+  }
+
   function renderTabs() {
     return (
-      <div data-testid="main-tabs" style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
+      <nav className="ec-bottom-nav" data-testid="main-tabs" aria-label="Wallet">
         <button
           aria-selected={mainTab === 'assets'}
           data-testid="tab-assets"
@@ -463,86 +672,104 @@ export function App() {
         >
           Activity
         </button>
-      </div>
+      </nav>
     )
   }
 
   function renderCoverStatusCard() {
-    const coverActive = !!coverStatusSnapshot?.subscriptionActive && !!coverStatusSnapshot.walletRegistered
-    const pendingSubscription = subscriptionState && subscriptionState.status !== 'active'
+    const actionLabel =
+      subscriptionView.primaryAction === 'manage'
+        ? 'Manage Cover'
+        : subscriptionView.primaryAction === 'sync'
+          ? 'Sync entitlement'
+          : 'Set up cover'
+    const actionTestId = subscriptionView.primaryAction === 'manage' ? 'manage-cover' : 'activate-cover'
     return (
-      <section data-testid="wallet-cover-status">
-        <h2>Ember Cover</h2>
-        {coverActive ? (
+      <section className="ec-cover-strip" data-testid="wallet-cover-status">
+        <div className="ec-cover-strip__main">
+          <span className="ec-section-icon" aria-hidden="true">
+            <BrandMark title="Coverage" />
+          </span>
           <div>
-            <p data-testid="cover-status">{coverAccountStatus(coverStatusSnapshot)}</p>
-            {coverStatusLoading ? <p data-testid="cover-cap-status">Loading cover cap...</p> : null}
-            {!coverStatusLoading ? (
-              <>
-                <p data-testid="cover-cap-status">{formatCoverStatusSnapshot(coverStatusSnapshot)}</p>
-                <p data-testid="cover-loss-cap">{formatLossCapSnapshot(coverStatusSnapshot)}</p>
-              </>
-            ) : null}
-            <button data-testid="manage-cover" onClick={openCoverActivation}>
-              Manage Cover
-            </button>
+            <h2 className="ec-cover-title">{subscriptionView.title}</h2>
+            <p className="ec-cover-detail">{subscriptionView.detail}</p>
           </div>
-        ) : (
-          <div>
-            <p data-testid="cover-status">
-              {coverStatusLoading
-                ? 'Checking cover status...'
-                : pendingSubscription
-                  ? 'Cover setup pending'
-                  : 'No Ember Cover'}
-            </p>
-            {!coverStatusLoading && pendingSubscription ? (
-              <p data-testid="cover-cap-status">Finish activation to start cover.</p>
-            ) : null}
-            <button data-testid="activate-cover" onClick={openCoverActivation}>
-              Activate Cover
-            </button>
-          </div>
-        )}
-        {error ? <p data-testid="cover-error" style={{ color: '#b91c1c', fontSize: 12 }}>{error}</p> : null}
+        </div>
+        <div className="ec-cover-strip__side">
+          <span className="ec-status-badge" data-tone={subscriptionView.badgeTone} data-testid="cover-status">
+            {subscriptionView.badgeLabel}
+          </span>
+          <button
+            className={subscriptionView.primaryAction === 'activate' ? 'ec-primary' : 'ec-secondary'}
+            data-testid={actionTestId}
+            onClick={openCoverActivation}
+            type="button"
+          >
+            {actionLabel}
+          </button>
+        </div>
+        {subscriptionView.metrics.length > 0 ? (
+          <dl className="ec-metrics">
+            {subscriptionView.metrics.map((metric) => (
+              <div className="ec-metric-row" key={metric.label}>
+                <dt>{metric.label}</dt>
+                <dd>{metric.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        {error ? <p data-testid="cover-error">{error}</p> : null}
       </section>
     )
   }
 
   function renderAssets() {
     return (
-      <>
-        <section data-testid="wallet-balance">
-          <h2>Balance</h2>
-          <p>{walletDataLoading && !snapshot ? 'Loading balance...' : snapshot ? `${snapshot.solBalance} SOL` : 'Balance unavailable'}</p>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button data-testid="send-sol" onClick={openSend}>
-              Send
-            </button>
-            <button data-testid="receive" onClick={() => setAccountScreen('receive')}>
-              Receive
-            </button>
-            <button data-testid="refresh-wallet-data" disabled={walletDataLoading} onClick={() => void refreshWalletData()}>
-              {walletDataLoading ? 'Refreshing...' : 'Refresh'}
+      <section className="ec-account-card" data-testid="wallet-balance">
+        <div className="ec-account-balance">
+          <div className="ec-panel-head">
+            <span className="ec-section-label">Balance</span>
+            <button
+              className="ec-quiet-button"
+              data-testid="refresh-wallet-data"
+              disabled={walletDataLoading}
+              onClick={() => void refreshWalletData()}
+              type="button"
+            >
+              {walletDataLoading ? 'Refreshing' : 'Refresh'}
             </button>
           </div>
-        </section>
-        <section data-testid="wallet-tokens">
-          <h2>Tokens</h2>
+          <p className="ec-balance-value">{walletDataLoading && !snapshot ? 'Loading...' : snapshot ? `${snapshot.solBalance} SOL` : 'Unavailable'}</p>
+          <div className="ec-action-pair">
+            <button className="ec-primary" data-testid="send-sol" onClick={openSend}>
+              Send
+            </button>
+            <button className="ec-secondary" data-testid="receive" onClick={() => setAccountScreen('receive')}>
+              Receive
+            </button>
+          </div>
+        </div>
+        {renderCoverStatusCard()}
+        <div className="ec-token-section" data-testid="wallet-tokens">
+          {snapshot?.tokenBalancesUnavailable ? <span className="ec-muted">Tokens unavailable</span> : null}
           {snapshot && tokenBalances.length > 0 ? (
-            <ul>
+            <ul className="ec-token-list">
               {tokenBalances.map((token) => (
-                <li key={token.tokenAccount} data-testid="wallet-token-item">
-                  <span>{token.label}</span> <span>{token.uiAmount}</span>{' '}
-                  <span>{shortAddress(token.mint)}</span>
+                <li className="ec-token-row" key={token.tokenAccount} data-testid="wallet-token-item">
+                  <span className="ec-token-avatar" aria-hidden="true">{tokenInitial(token.label, token.mint)}</span>
+                  <span className="ec-token-main">
+                    <span className="ec-token-name">{token.label}</span>
+                    <span className="ec-token-mint">{shortAddress(token.mint)}</span>
+                  </span>
+                  <span className="ec-token-amount">{token.uiAmount}</span>
                 </li>
               ))}
             </ul>
           ) : snapshot && !walletDataLoading ? (
-            <p>No tokens to show yet.</p>
+            <p className="ec-help">No tokens to show yet.</p>
           ) : null}
-        </section>
-      </>
+        </div>
+      </section>
     )
   }
 
@@ -566,103 +793,128 @@ export function App() {
       !!subscriptionState?.subscriptionSignature &&
       subscriptionState.status !== 'active' &&
       !subscriptionBusy
+    const showPlanSelection = !canSyncEntitlement
     return (
-      <section data-testid="cover-activation">
-        <button onClick={() => setAccountScreen('home')}>Back</button>
-        <h2>Activate Cover</h2>
+      <section className="ec-task-screen" data-testid="cover-activation">
+        <div className="ec-screen-head">
+          {renderBackButton(() => setAccountScreen(approvalPending ? 'approval' : 'home'))}
+          <div>
+            <span className="ec-control-label">Coverage</span>
+            <h2>Activate Cover</h2>
+          </div>
+        </div>
         {subscriptionState ? (
-          <section data-testid="local-subscription-state">
+          <section className="ec-review-card" data-testid="local-subscription-state">
             <h3>Subscription</h3>
-            <dl>
-              <dt>Status</dt>
-              <dd>{subscriptionState.status}</dd>
-              <dt>Wallet</dt>
-              <dd>{shortAddress(subscriptionState.walletAddress)}</dd>
-              <dt>Plan PDA</dt>
-              <dd>{shortAddress(subscriptionState.planPda)}</dd>
-              <dt>Subscription PDA</dt>
-              <dd>{shortAddress(subscriptionState.subscriptionPda)}</dd>
+            <dl className="ec-data-list">
+              <div>
+                <dt>Status</dt>
+                <dd>{subscriptionState.status}</dd>
+              </div>
+              <div>
+                <dt>Wallet</dt>
+                <dd>{shortAddress(subscriptionState.walletAddress)}</dd>
+              </div>
+              <div>
+                <dt>Plan PDA</dt>
+                <dd>{shortAddress(subscriptionState.planPda)}</dd>
+              </div>
+              <div>
+                <dt>Subscription PDA</dt>
+                <dd>{shortAddress(subscriptionState.subscriptionPda)}</dd>
+              </div>
             </dl>
-            {canSyncEntitlement ? (
-              <button data-testid="sync-subscription-entitlement" disabled={subscriptionBusy} onClick={() => void syncSubscriptionEntitlement()}>
-                Sync cover entitlement
-              </button>
-            ) : null}
           </section>
         ) : null}
-        <div data-testid="billing-period" style={{ display: 'flex', gap: 8 }}>
-          <button
-            aria-selected={selectedBillingPeriod === 'monthly'}
-            onClick={() => {
-              setSelectedBillingPeriod('monthly')
-              setSubscriptionPreview(null)
-              setSubscriptionResult(null)
-              setSubscriptionNotice('')
-            }}
-          >
-            Monthly
-          </button>
-          <button
-            aria-selected={selectedBillingPeriod === 'annual'}
-            onClick={() => {
-              setSelectedBillingPeriod('annual')
-              setSubscriptionPreview(null)
-              setSubscriptionResult(null)
-              setSubscriptionNotice('')
-            }}
-          >
-            Annual
-          </button>
-        </div>
-        <div data-testid="cover-plan-options">
-          {coverPlans.map((plan) => (
-            <button
-              aria-selected={selectedPlanId === plan.id}
-              data-testid={`cover-plan-${plan.id}`}
-              key={plan.id}
-              onClick={() => {
-                setSelectedPlanId(plan.id)
-                setSubscriptionPreview(null)
-                setSubscriptionResult(null)
-                setSubscriptionNotice('')
-              }}
-              style={{ display: 'block', margin: '8px 0', textAlign: 'left', width: '100%' }}
-            >
-              <strong>{plan.name}</strong>
-              <span> {planPrice(plan)}</span>
-              <br />
-              <span>${plan.coverCapUsd.toLocaleString()} cap · {plan.coveredTxAllowance} covered tx</span>
-            </button>
-          ))}
-        </div>
-        {selectedPlan ? (
-          <p data-testid="subscription-copy">
-            This approves an onchain USDC subscription for Ember Cover. Ember can collect only according to this plan.
-          </p>
+        {showPlanSelection ? (
+          <>
+            <div className="ec-tabs" data-testid="billing-period">
+              <button
+                aria-selected={selectedBillingPeriod === 'monthly'}
+                onClick={() => {
+                  setSelectedBillingPeriod('monthly')
+                  setSubscriptionPreview(null)
+                  setSubscriptionResult(null)
+                  setSubscriptionNotice('')
+                }}
+              >
+                Monthly
+              </button>
+              <button
+                aria-selected={selectedBillingPeriod === 'annual'}
+                onClick={() => {
+                  setSelectedBillingPeriod('annual')
+                  setSubscriptionPreview(null)
+                  setSubscriptionResult(null)
+                  setSubscriptionNotice('')
+                }}
+              >
+                Annual
+              </button>
+            </div>
+            <div className="ec-plan-grid" data-testid="cover-plan-options">
+              {coverPlans.map((plan) => (
+                <button
+                  className="ec-plan-option"
+                  aria-selected={selectedPlanId === plan.id}
+                  data-testid={`cover-plan-${plan.id}`}
+                  key={plan.id}
+                  onClick={() => {
+                    setSelectedPlanId(plan.id)
+                    setSubscriptionPreview(null)
+                    setSubscriptionResult(null)
+                    setSubscriptionNotice('')
+                  }}
+                >
+                  <strong>{plan.name}</strong>
+                  <span>{planPrice(plan)}</span>
+                  <span>${plan.coverCapUsd.toLocaleString()} cap · {plan.coveredTxAllowance} covered tx</span>
+                </button>
+              ))}
+            </div>
+            {selectedPlan ? (
+              <p className="ec-help" data-testid="subscription-copy">
+                This approves an onchain USDC subscription for Ember Cover. Ember can collect only according to this plan.
+              </p>
+            ) : null}
+          </>
         ) : null}
-        <button data-testid="review-subscription" disabled={subscriptionBusy || !selectedPlan} onClick={() => void previewSelectedSubscription()}>
-          {subscriptionBusy && !subscriptionPreview ? 'Checking...' : 'Review subscription'}
-        </button>
         {subscriptionPreview ? (
-          <section data-testid="subscription-review">
+          <section className="ec-review-card" data-testid="subscription-review">
             <h3>Subscription approval</h3>
-            <dl>
-              <dt>Merchant</dt>
-              <dd>Ember Cover</dd>
-              <dt>Plan</dt>
-              <dd>{subscriptionPreview.plan.name}</dd>
-              <dt>Amount</dt>
-              <dd>{subscriptionPreview.amountUsdc} USDC</dd>
-              <dt>Billing period</dt>
-              <dd>{subscriptionPreview.renewalPeriod}</dd>
-              <dt>Token</dt>
-              <dd>USDC</dd>
-              <dt>Approved collector</dt>
-              <dd>{shortAddress(subscriptionPreview.approvedPuller)}</dd>
-              <dt>User wallet</dt>
-              <dd>{shortAddress(subscriptionPreview.walletAddress)}</dd>
-              <dt>Subscription program</dt>
-              <dd>{shortAddress(subscriptionPreview.subscriptionProgram)}</dd>
+            <dl className="ec-data-list">
+              <div>
+                <dt>Merchant</dt>
+                <dd>Ember Cover</dd>
+              </div>
+              <div>
+                <dt>Plan</dt>
+                <dd>{subscriptionPreview.plan.name}</dd>
+              </div>
+              <div>
+                <dt>Amount</dt>
+                <dd>{subscriptionPreview.amountUsdc} USDC</dd>
+              </div>
+              <div>
+                <dt>Billing period</dt>
+                <dd>{subscriptionPreview.renewalPeriod}</dd>
+              </div>
+              <div>
+                <dt>Token</dt>
+                <dd>USDC</dd>
+              </div>
+              <div>
+                <dt>Approved collector</dt>
+                <dd>{shortAddress(subscriptionPreview.approvedPuller)}</dd>
+              </div>
+              <div>
+                <dt>User wallet</dt>
+                <dd>{shortAddress(subscriptionPreview.walletAddress)}</dd>
+              </div>
+              <div>
+                <dt>Subscription program</dt>
+                <dd>{shortAddress(subscriptionPreview.subscriptionProgram)}</dd>
+              </div>
             </dl>
             {subscriptionPreview.setupRequired ? (
               <p data-testid="subscription-setup-note">Setup transaction required before subscription approval.</p>
@@ -682,19 +934,8 @@ export function App() {
             ) : null}
           </section>
         ) : null}
-        {subscriptionPreview?.setupRequired ? (
-          <button data-testid="setup-subscription" disabled={!canSetup} onClick={() => void setupSelectedSubscription()}>
-            {subscriptionBusy ? 'Setting up...' : 'Create USDC setup'}
-          </button>
-        ) : null}
-        <button data-testid="approve-subscription" disabled={!canActivate} onClick={() => void activateSelectedSubscription()}>
-          {subscriptionBusy && subscriptionPreview ? 'Approving...' : 'Approve subscription'}
-        </button>
-        <button disabled={subscriptionBusy} onClick={() => setAccountScreen('home')}>
-          Cancel
-        </button>
         {subscriptionResult ? (
-          <section data-testid="subscription-result">
+          <section className="ec-review-card" data-testid="subscription-result">
             <h3>{subscriptionResult.apiCoverActive ? 'Cover active' : 'Subscription confirmed'}</h3>
             <p>
               <a href={subscriptionResult.explorerUrl} rel="noreferrer" target="_blank">
@@ -707,29 +948,92 @@ export function App() {
           </section>
         ) : null}
         {subscriptionNotice ? <p data-testid="subscription-notice">{subscriptionNotice}</p> : null}
-        {subscriptionError ? <p data-testid="subscription-error" style={{ color: '#b91c1c' }}>{subscriptionError}</p> : null}
+        {subscriptionError ? <p data-testid="subscription-error">{subscriptionError}</p> : null}
+        {subscriptionNeedsUnlock ? (
+          <input
+            data-testid="subscription-unlock-password"
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Wallet password"
+            type="password"
+            value={password}
+          />
+        ) : null}
+        <div className="ec-flow-actions">
+          {canSyncEntitlement ? (
+            <button className="ec-primary" data-testid="sync-subscription-entitlement" disabled={subscriptionBusy} onClick={() => void syncSubscriptionEntitlement()}>
+              {subscriptionBusy ? 'Syncing...' : 'Sync cover entitlement'}
+            </button>
+          ) : !subscriptionPreview ? (
+            <button className="ec-primary" data-testid="review-subscription" disabled={subscriptionBusy || !selectedPlan} onClick={() => void previewSelectedSubscription()}>
+              {subscriptionBusy ? 'Checking...' : 'Review subscription'}
+            </button>
+          ) : subscriptionPreview.setupRequired ? (
+            <button className="ec-primary" data-testid="setup-subscription" disabled={!canSetup} onClick={() => void setupSelectedSubscription()}>
+              {subscriptionBusy ? 'Setting up...' : 'Create USDC setup'}
+            </button>
+          ) : (
+            <button className="ec-primary" data-testid="approve-subscription" disabled={!canActivate} onClick={() => void activateSelectedSubscription()}>
+              {subscriptionBusy ? 'Approving...' : 'Approve subscription'}
+            </button>
+          )}
+        </div>
       </section>
     )
   }
 
   function renderReceive() {
     return (
-      <section data-testid="receive-screen">
-        <button onClick={() => setAccountScreen('home')}>Back</button>
-        <h2>Receive</h2>
-        <p>Only receive Solana assets on {cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'}.</p>
-        <p>Ember Cover applies when you sign a transaction, not when someone sends funds to this address.</p>
-        {address ? <QrCode value={address} /> : null}
-        <p data-testid="receive-address" style={{ overflowWrap: 'anywhere' }}>{address}</p>
-        <button data-testid="copy-address" onClick={() => void onCopyAddress()}>
-          {copied ? 'Copied' : 'Copy address'}
-        </button>
-        {'share' in navigator ? (
-          <button data-testid="share-address" onClick={() => void onShareAddress()}>
-            Share
+      <section className="ec-task-screen" data-testid="receive-screen">
+        <div className="ec-screen-head">
+          {renderBackButton(() => setAccountScreen('home'))}
+          <div>
+            <span className="ec-control-label">{clusterLabel(cluster)}</span>
+            <h2>Receive</h2>
+          </div>
+        </div>
+        <p className="ec-help">Only receive Solana assets on {cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'}.</p>
+        <p className="ec-help">Ember Cover applies when you sign a transaction, not when someone sends funds to this address.</p>
+        <div className="ec-qr-wrap">{address ? <QrCode value={address} /> : null}</div>
+        <p className="ec-address-box" data-testid="receive-address">{address}</p>
+        <div className="ec-flow-actions">
+          <button className="ec-primary" data-testid="copy-address" onClick={() => void onCopyAddress()}>
+            {copied ? 'Copied' : 'Copy address'}
           </button>
-        ) : null}
-        <button onClick={() => setAccountScreen('home')}>Done</button>
+          {'share' in navigator ? (
+            <button className="ec-secondary" data-testid="share-address" onClick={() => void onShareAddress()}>
+              Share
+            </button>
+          ) : null}
+        </div>
+      </section>
+    )
+  }
+
+  function renderSendCoverState() {
+    if (coverStatusLoading) {
+      return (
+        <section className="ec-inline-cover" data-tone="checking" data-testid="send-cover-status">
+          <span>Checking cover...</span>
+          <p>Ember is checking this wallet's cover status.</p>
+        </section>
+      )
+    }
+    if (coverStatusSnapshot?.subscriptionActive && coverStatusSnapshot.walletRegistered) {
+      return (
+        <section className="ec-inline-cover" data-tone="covered" data-testid="send-cover-status">
+          <span>Protected</span>
+          <p>{formatCoverStatusSnapshot(coverStatusSnapshot)}</p>
+        </section>
+      )
+    }
+    const needsSync = subscriptionView.primaryAction === 'sync'
+    return (
+      <section className="ec-inline-cover" data-tone={needsSync ? 'unavailable' : 'none'} data-testid="send-cover-status">
+        <span>{needsSync ? 'Cover status unavailable' : 'Cover is not active'}</span>
+        <p>{subscriptionView.detail}</p>
+        <button className="ec-secondary" onClick={openCoverActivation} type="button">
+          {needsSync ? 'Sync cover' : 'Set up cover'}
+        </button>
       </section>
     )
   }
@@ -737,9 +1041,15 @@ export function App() {
   function renderSend() {
     if (sendStep === 'complete') {
       return (
-        <section data-testid="send-complete">
-          <h2>Send complete</h2>
-          <p>{sendResult?.cover.label ?? 'Submitted'}</p>
+        <section className="ec-task-screen" data-testid="send-complete">
+          <div className="ec-screen-head">
+            <span className="ec-screen-head__spacer" />
+            <div>
+              <span className="ec-control-label">Submitted</span>
+              <h2>Send complete</h2>
+            </div>
+          </div>
+          <p className="ec-help">{sendResult?.cover.label ?? 'Submitted'}</p>
           {sendResult ? (
             <p>
               <a href={sendResult.explorerUrl} rel="noreferrer" target="_blank">
@@ -747,14 +1057,17 @@ export function App() {
               </a>
             </p>
           ) : null}
-          <button
-            onClick={() => {
-              setAccountScreen('home')
-              setSendStep('form')
-            }}
-          >
-            Done
-          </button>
+          <div className="ec-flow-actions">
+            <button
+              className="ec-primary"
+              onClick={() => {
+                setAccountScreen('home')
+                setSendStep('form')
+              }}
+            >
+              Done
+            </button>
+          </div>
         </section>
       )
     }
@@ -783,31 +1096,50 @@ export function App() {
         (!sendPreview.cover.requiresUncoveredAck || uncoveredAck) &&
         (!sendPreview.cover.requiresHighRiskAck || highRiskAck)
       return (
-        <section data-testid="send-review">
-          <button onClick={() => setSendStep('form')}>Back</button>
-          <h2>Review send</h2>
+        <section className="ec-task-screen" data-testid="send-review">
+          <div className="ec-screen-head">
+            {renderBackButton(() => setSendStep('form'))}
+            <div>
+              <span className="ec-control-label">{clusterLabel(cluster)}</span>
+              <h2>Review send</h2>
+            </div>
+          </div>
           {sendPreviewLoading ? <p data-testid="send-preview-loading">Checking send...</p> : null}
           {sendPreview ? (
             <>
-              <dl>
-                <dt>You send</dt>
-                <dd>{sendPreview.amountSol} SOL</dd>
-                <dt>From</dt>
-                <dd>{shortAddress(sendPreview.source)}</dd>
-                <dt>To</dt>
-                <dd data-testid="send-review-destination" style={{ overflowWrap: 'anywhere' }}>{sendPreview.destination}</dd>
-                <dt>Network fee</dt>
-                <dd>{sendPreview.feeSol} SOL</dd>
-                <dt>Network</dt>
-                <dd>{cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'}</dd>
-                <dt>Total debit</dt>
-                <dd>{sendPreview.totalDebitSol} SOL</dd>
-                <dt>Balance after</dt>
-                <dd>{sendPreview.balanceAfterSol} SOL</dd>
+              <dl className="ec-data-list">
+                <div>
+                  <dt>Outgoing</dt>
+                  <dd>{sendPreview.amountSol} SOL</dd>
+                </div>
+                <div>
+                  <dt>From</dt>
+                  <dd>{shortAddress(sendPreview.source)}</dd>
+                </div>
+                <div>
+                  <dt>To</dt>
+                  <dd data-testid="send-review-destination">{sendPreview.destination}</dd>
+                </div>
+                <div>
+                  <dt>Network fee</dt>
+                  <dd>{sendPreview.feeSol} SOL</dd>
+                </div>
+                <div>
+                  <dt>Network</dt>
+                  <dd>{cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'}</dd>
+                </div>
+                <div>
+                  <dt>Total debit</dt>
+                  <dd>{sendPreview.totalDebitSol} SOL</dd>
+                </div>
+                <div>
+                  <dt>Balance after</dt>
+                  <dd>{sendPreview.balanceAfterSol} SOL</dd>
+                </div>
               </dl>
-              <section data-testid="send-cover">
+              <section className="ec-review-card ec-cover-decision" data-testid="send-cover">
                 <h3>{sendPreview.cover.label}</h3>
-                <p>{sendPreview.cover.body}</p>
+                <p className="ec-help">{sendPreview.cover.body}</p>
                 {reviewCapText ? <p data-testid="send-cover-cap">{reviewCapText}</p> : null}
                 {coverExpired ? (
                   <p data-testid="send-cover-expired">Cover check expired. Recheck cover before sending.</p>
@@ -815,7 +1147,7 @@ export function App() {
                   <p data-testid="send-cover-expiring">Cover check expires soon.</p>
                 ) : null}
                 {sendPreview.cover.requiresUncoveredAck ? (
-                  <label>
+                  <label className="ec-ack">
                     <input
                       checked={uncoveredAck}
                       data-testid="send-uncovered-ack"
@@ -826,7 +1158,7 @@ export function App() {
                   </label>
                 ) : null}
                 {sendPreview.cover.requiresHighRiskAck ? (
-                  <label>
+                  <label className="ec-ack">
                     <input
                       checked={highRiskAck}
                       data-testid="send-risk-ack"
@@ -842,89 +1174,95 @@ export function App() {
               ) : null}
             </>
           ) : null}
-          {sendError ? <p data-testid="send-error" style={{ color: '#b91c1c' }}>{sendError}</p> : null}
-          <button data-testid="send-submit" disabled={!canSend} onClick={() => void onSendSol()}>
-            {sendBusy
-              ? 'Sending...'
-              : sendPreview?.cover.requiresHighRiskAck
-                ? 'Send high-risk transaction'
-                : sendPreview?.cover.requiresUncoveredAck
-                  ? 'Send without cover'
-                  : 'Send'}
-          </button>
-          <button data-testid="send-recheck-cover" disabled={sendPreviewLoading || sendBusy} onClick={() => void loadSendPreview()}>
-            Recheck cover
-          </button>
+          {sendError ? <p data-testid="send-error">{sendError}</p> : null}
+          <div className="ec-flow-actions">
+            <button className="ec-primary" data-testid="send-submit" disabled={!canSend} onClick={() => void onSendSol()}>
+              {sendBusy
+                ? 'Sending...'
+                : sendPreview?.cover.requiresHighRiskAck
+                  ? 'Send high-risk transaction'
+                  : sendPreview?.cover.requiresUncoveredAck
+                    ? 'Send without cover'
+                    : 'Send'}
+            </button>
+            <button className="ec-link-button" data-testid="send-recheck-cover" disabled={sendPreviewLoading || sendBusy} onClick={() => void loadSendPreview()}>
+              Recheck cover
+            </button>
+          </div>
         </section>
       )
     }
 
     return (
-      <section data-testid="send-form">
-        <button onClick={() => setAccountScreen('home')}>Back</button>
-        <h2>Send SOL</h2>
-        <label>
-          To
-          <input
-            autoFocus
-            data-testid="send-recipient-input"
-            onChange={(event) => {
-              setSendError('')
-              setSendRecipientFromClipboard(false)
-              setSendRecipient(event.currentTarget.value)
-            }}
-            placeholder="Wallet address"
-            value={sendRecipient}
-          />
-        </label>
-        <button data-testid="paste-recipient" onClick={() => void onPasteRecipient()}>
-          Paste
-        </button>
+      <section className="ec-task-screen ec-form-grid" data-testid="send-form">
+        <div className="ec-screen-head">
+          {renderBackButton(() => setAccountScreen('home'))}
+          <div>
+            <span className="ec-control-label">{clusterLabel(cluster)}</span>
+            <h2>Send SOL</h2>
+          </div>
+        </div>
+        <div className="ec-field-with-action">
+          <label>
+            To
+            <input
+              autoFocus
+              data-testid="send-recipient-input"
+              onChange={(event) => {
+                setSendError('')
+                setSendRecipientFromClipboard(false)
+                setSendRecipient(event.currentTarget.value)
+              }}
+              placeholder="Wallet address"
+              value={sendRecipient}
+            />
+          </label>
+          <button className="ec-quiet-button" data-testid="paste-recipient" onClick={() => void onPasteRecipient()}>
+            Paste
+          </button>
+        </div>
         {sendRecipientFromClipboard && recipientTrimmed ? (
-          <p data-testid="paste-recipient-warning" style={{ overflowWrap: 'anywhere' }}>
+          <p data-testid="paste-recipient-warning">
             Pasted from clipboard. Verify this matches the address you copied: {recipientTrimmed}
           </p>
         ) : null}
-        {recipientError ? <p data-testid="send-recipient-error" style={{ color: '#b91c1c' }}>{recipientError}</p> : null}
-        {selfSendError ? <p data-testid="send-self-error" style={{ color: '#b91c1c' }}>{selfSendError}</p> : null}
-        <label>
-          Amount
-          <input
-            data-testid="send-amount-input"
-            inputMode="decimal"
-            onChange={(event) => {
-              setSendError('')
-              setSendAmount(event.currentTarget.value)
+        {recipientError ? <p data-testid="send-recipient-error">{recipientError}</p> : null}
+        {selfSendError ? <p data-testid="send-self-error">{selfSendError}</p> : null}
+        <div className="ec-field-with-action">
+          <label>
+            Amount
+            <input
+              data-testid="send-amount-input"
+              inputMode="decimal"
+              onChange={(event) => {
+                setSendError('')
+                setSendAmount(event.currentTarget.value)
+              }}
+              placeholder="0"
+              value={sendAmount}
+            />
+          </label>
+          <button className="ec-quiet-button" data-testid="send-max" onClick={() => setSendAmount(maxSendableSol(snapshot))}>
+            Max
+          </button>
+        </div>
+        <p className="ec-help">Available {snapshot ? `${snapshot.solBalance} SOL` : 'unavailable'}</p>
+        {renderSendCoverState()}
+        {sendAmountError ? <p data-testid="send-amount-error">{sendAmountError}</p> : null}
+        {sendError ? <p data-testid="send-error">{sendError}</p> : null}
+        <div className="ec-flow-actions">
+          <button
+            className="ec-primary"
+            data-testid="send-review-next"
+            disabled={!recipientValid || recipientIsSelf || !sendAmount.trim() || !!sendAmountError}
+            onClick={() => {
+              setSendStep('review')
+              void loadSendPreview()
             }}
-            placeholder="0"
-            value={sendAmount}
-          />
-        </label>
-        <p>Available {snapshot ? `${snapshot.solBalance} SOL` : 'unavailable'}</p>
-        {coverEnrolled ? (
-          <p data-testid="send-cover-status">
-            {coverStatusLoading
-              ? 'Loading cover cap...'
-              : coverStatusSnapshot
-                ? formatCoverStatusSnapshot(coverStatusSnapshot)
-                : 'No active cover.'}
-          </p>
-        ) : null}
-        {sendAmountError ? <p data-testid="send-amount-error" style={{ color: '#b91c1c' }}>{sendAmountError}</p> : null}
-        <button data-testid="send-max" onClick={() => setSendAmount(maxSendableSol(snapshot))}>
-          Max
-        </button>
-        {sendError ? <p data-testid="send-error" style={{ color: '#b91c1c' }}>{sendError}</p> : null}
-        <button
-          data-testid="send-review-next"
-          disabled={!recipientValid || recipientIsSelf || !sendAmount.trim() || !!sendAmountError}
-          onClick={() => {
-            setSendStep('review')
-            void loadSendPreview()
-          }}
-        >
-          Review send
-        </button>
+          >
+            Review send
+          </button>
+        </div>
       </section>
     )
   }
@@ -933,31 +1271,34 @@ export function App() {
     const onchainSignatures = new Set(activity.map((item) => item.signature))
     const pendingEmber = emberActivity.filter((item) => !item.signature || !onchainSignatures.has(item.signature))
     return (
-      <section data-testid="wallet-activity">
+      <section className="ec-account-card" data-testid="wallet-activity">
         <h2>Activity</h2>
         {walletDataError ? <p data-testid="wallet-data-error">{walletDataError}</p> : null}
         {walletDataLoading && snapshot ? <p>Refreshing transactions...</p> : null}
         {snapshot?.activityUnavailable ? <p data-testid="wallet-activity-unavailable">Transaction history unavailable.</p> : null}
         {snapshot && activity.length > 0 ? (
-          <ul>
+          <ul className="ec-activity-list">
             {activity.map((tx) => {
               const emberRecord = emberActivity.find((item) => item.signature === tx.signature)
+              const coverStatus = emberRecord?.coverStatus ?? 'unknown'
+              const amount = emberRecord?.amount ?? tx.amount
+              const counterparty = emberRecord?.recipient ?? tx.counterparty
               return (
-                <li key={tx.signature} data-testid="wallet-activity-item">
-                  <span>{tx.title}</span>{' '}
-                  <span>{tx.failed ? 'Failed' : tx.confirmationStatus ?? 'Pending'}</span>{' '}
-                  {emberRecord ? <span>{coverStatusLabel(emberRecord.coverStatus)}</span> : null}
-                  {emberRecord?.amount ? <span> {emberRecord.amount}</span> : null}
-                  {!emberRecord?.amount && tx.amount ? <span> {tx.amount}</span> : null}
-                  {emberRecord?.recipient ? <span> to {shortAddress(emberRecord.recipient)}</span> : null}
-                  {!emberRecord?.recipient && tx.counterparty && tx.direction === 'sent' ? (
-                    <span> to {shortAddress(tx.counterparty)}</span>
-                  ) : null}
-                  {tx.blockTime ? <span> {new Date(tx.blockTime * 1000).toLocaleDateString()}</span> : null}
-                  <span>
-                    {' '}
-                    <a href={tx.explorerUrl} rel="noreferrer" target="_blank">
-                      {shortAddress(tx.signature)}
+                <li className="ec-activity-row" key={tx.signature} data-testid="wallet-activity-item">
+                  <span className="ec-activity-main">
+                    <span className="ec-activity-title">{emberRecord?.title ?? tx.title}</span>
+                    <span className="ec-activity-meta">
+                      {activityState(tx.failed, tx.confirmationStatus)} · {activityDate(tx.blockTime)}
+                      {counterparty ? ` · ${tx.direction === 'received' ? 'from' : 'to'} ${shortAddress(counterparty)}` : ''}
+                    </span>
+                  </span>
+                  <span className="ec-activity-side">
+                    {amount ? <span className="ec-activity-amount">{amount}</span> : null}
+                    {coverStatus !== 'unknown' ? (
+                      <span className="ec-cover-pill" data-tone={coverTone(coverStatus)}>{coverStatusLabel(coverStatus)}</span>
+                    ) : null}
+                    <a className="ec-link-button" href={tx.explorerUrl} rel="noreferrer" target="_blank">
+                      Explorer
                     </a>
                   </span>
                 </li>
@@ -971,13 +1312,20 @@ export function App() {
         {pendingEmber.length > 0 ? (
           <>
             <h3>Pending cover records</h3>
-            <ul data-testid="ember-activity">
+            <ul className="ec-activity-list" data-testid="ember-activity">
               {pendingEmber.map((item) => (
-                <li key={item.id} data-testid="ember-activity-item">
-                  <span>{item.title}</span> <span>{coverStatusLabel(item.coverStatus)}</span>
-                  {item.amount ? <span> {item.amount}</span> : null}
-                  {item.recipient ? <span> to {shortAddress(item.recipient)}</span> : null}
-                  {item.onchainStatus ? <span> {item.onchainStatus}</span> : null}
+                <li className="ec-activity-row" key={item.id} data-testid="ember-activity-item">
+                  <span className="ec-activity-main">
+                    <span className="ec-activity-title">{item.title ?? 'Transaction'}</span>
+                    <span className="ec-activity-meta">
+                      {item.onchainStatus ?? 'Pending'}
+                      {item.recipient ? ` · to ${shortAddress(item.recipient)}` : ''}
+                    </span>
+                  </span>
+                  <span className="ec-activity-side">
+                    {item.amount ? <span className="ec-activity-amount">{item.amount}</span> : null}
+                    <span className="ec-cover-pill" data-tone={coverTone(item.coverStatus)}>{coverStatusLabel(item.coverStatus)}</span>
+                  </span>
                 </li>
               ))}
             </ul>
@@ -990,36 +1338,48 @@ export function App() {
   if (view === 'loading') return <p>Loading...</p>
   if (view === 'account') {
     return (
-      <div style={{ padding: 16, width: 360 }}>
-        {mainTab === 'assets' && accountScreen === 'home' ? renderCoverStatusCard() : null}
-        <p data-testid="address" style={{ overflowWrap: 'anywhere' }}>{address}</p>
-        <div data-testid="wallet-cluster">
-          <label>
-            Network{' '}
-            <select data-testid="cluster-select" onChange={(event) => void onClusterChange(event.target.value as WalletCluster)} value={cluster}>
-              {WALLET_CLUSTER_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {renderTabs()}
-        {mainTab === 'assets' && accountScreen === 'home' ? renderAssets() : null}
-        {mainTab === 'assets' && accountScreen === 'receive' ? renderReceive() : null}
-        {mainTab === 'assets' && accountScreen === 'send' ? renderSend() : null}
-        {mainTab === 'assets' && accountScreen === 'cover' ? renderCoverActivation() : null}
-        {mainTab === 'activity' ? renderActivity() : null}
-        <button data-testid="lock" onClick={() => void vault.lock().then(refresh)}>Lock</button>
+      <div className="ec-shell">
+        {renderTopbar()}
+        <main className="ec-shell__main">
+          {accountScreen === 'home' ? (
+            <>
+              {renderWalletControls()}
+              {mainTab === 'assets' ? renderAssets() : renderActivity()}
+            </>
+          ) : null}
+          {mainTab === 'assets' && accountScreen === 'receive' ? renderReceive() : null}
+          {mainTab === 'assets' && accountScreen === 'send' ? renderSend() : null}
+          {mainTab === 'assets' && accountScreen === 'cover' ? renderCoverActivation() : null}
+          {accountScreen === 'approval' ? (
+            <Suspense fallback={<section className="ec-task-screen"><p className="ec-help">Loading request...</p></section>}>
+              <ApprovalScreen
+                onApproved={onApprovalApproved}
+                onRejected={onApprovalRejected}
+                onSetupCover={openCoverActivation}
+              />
+            </Suspense>
+          ) : null}
+        </main>
+        {accountScreen === 'home' ? renderTabs() : null}
       </div>
     )
   }
   return (
-    <div style={{ padding: 16, width: 320 }}>
+    <div className="ec-auth-shell">
+      <header className="ec-topbar">
+        <div className="ec-brand">
+          <span className="ec-mark-frame">
+            <BrandMark className="ec-brand-mark" title="Ember Cover" />
+          </span>
+          <span className="ec-brand-copy">
+            <span className="ec-brand-name">Ember</span>
+            <span className="ec-brand-subtitle">Cover wallet</span>
+          </span>
+        </div>
+      </header>
       <h1>{view === 'create' ? 'Create your Ember wallet' : 'Unlock'}</h1>
       <input data-testid="password" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
-      <button data-testid="submit" onClick={() => void (view === 'create' ? onCreate() : onUnlock())}>
+      <button className="ec-primary" data-testid="submit" onClick={() => void (view === 'create' ? onCreate() : onUnlock())}>
         {authBusy ? (view === 'create' ? 'Creating...' : 'Secure unlocking...') : view === 'create' ? 'Create' : 'Unlock'}
       </button>
       {authBusy ? <p data-testid="auth-busy">{view === 'create' ? 'Creating wallet...' : 'Secure unlocking...'}</p> : null}

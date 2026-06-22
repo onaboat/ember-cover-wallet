@@ -34,6 +34,7 @@ test('create a vault, lock, and unlock', async () => {
   await page.getByTestId('receive').click()
   await expect(page.getByTestId('receive-qr')).toBeVisible()
   await expect(page.getByTestId('receive-address')).toHaveText(address ?? '')
+  await page.getByRole('button', { name: 'Back' }).click()
   await page.getByTestId('tab-assets').click()
   await page.getByTestId('tab-activity').click()
   await expect(page.getByTestId('wallet-activity')).toBeVisible()

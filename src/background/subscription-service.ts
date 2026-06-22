@@ -41,6 +41,7 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import type { CoverProvider } from './cover-service.ts'
+import { stringifyWithBigInts } from './safe-json.ts'
 import {
   EMBER_COVER_PLANS,
   resolveSubscriptionPlan,
@@ -250,7 +251,7 @@ async function confirmSignature(rpc: SubscriptionRpcClient, signature: Signature
     const status = await rpc.getSignatureStatuses([signature], { searchTransactionHistory: true }).send()
     const value = status.value[0]
     if (value?.err) {
-      throw new Error(`Subscription transaction failed: ${JSON.stringify(value.err)}`)
+      throw new Error(`Subscription transaction failed: ${stringifyWithBigInts(value.err)}`)
     }
     if (value?.confirmationStatus === 'confirmed' || value?.confirmationStatus === 'finalized') {
       return
@@ -609,7 +610,7 @@ export class SolanaSubscriptionProvider implements SubscriptionUI {
         sigVerify: false,
       })
       .send()
-    const error = simulationResponse.value.err ? JSON.stringify(simulationResponse.value.err) : null
+    const error = simulationResponse.value.err ? stringifyWithBigInts(simulationResponse.value.err) : null
     return {
       status: error ? ('failure' as const) : ('success' as const),
       error,
@@ -621,8 +622,13 @@ export class SolanaSubscriptionProvider implements SubscriptionUI {
     if (!this.#cover || !state.subscriptionSignature) {
       return state
     }
-    const apiRegistered = await this.#cover.enroll()
-    const entitlementActivated = apiRegistered
+    // Wallet-native order. (1) authorize the session key — every proxied cover
+    // call needs it. (2) activate — the engine writes the wallet-keyed entitlement
+    // from the confirmed on-chain subscribe. (3) register — link the wallet to that
+    // now-existing entitlement. (4) status — confirm active + registered.
+    // Registering before activating cannot work: the entitlement does not exist yet.
+    const authorized = await this.#cover.authorizeSession()
+    const entitlementActivated = authorized
       ? await (this.#cover.activateSubscriptionEntitlement?.({
           cluster: state.cluster,
           planTier: state.planId,
@@ -639,7 +645,8 @@ export class SolanaSubscriptionProvider implements SubscriptionUI {
           subscriptionSignature: state.subscriptionSignature,
         }) ?? false)
       : false
-    const status = entitlementActivated ? await this.#cover.status() : null
+    const apiRegistered = entitlementActivated ? await this.#cover.registerWithApi() : false
+    const status = apiRegistered ? await this.#cover.status() : null
     const apiCoverActive = !!status?.subscriptionActive && !!status.walletRegistered
     const next: LocalSubscriptionState = {
       ...state,

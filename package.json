@@ -10,7 +10,8 @@
     "check-types": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "WXT_COVER_PROXY_URL=http://127.0.0.1:8787 wxt build && playwright test",
-    "dev:test": "bun scripts/dev-test.ts"
+    "dev:test": "bun scripts/dev-test.ts",
+    "dev:proxy": "bun scripts/dev-proxy.ts"
   },
   "dependencies": {
     "@noble/hashes": "^1.5.0",

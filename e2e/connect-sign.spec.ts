@@ -150,6 +150,14 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
   await signWin.getByTestId('approve').click()
 
   await expect(dapp.locator('#out')).toContainText('signed:64', { timeout: 15000 })
+
+  // The approval window now stays open and returns to the wallet home (balance + activity),
+  // instead of auto-closing. We assert it is still the wallet, not a numeric balance change
+  // (a dapp-signed tx only signs; the dapp broadcasts, so balance settles later).
+  await expect(signWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
+  await expect(signWin.getByTestId('main-tabs')).toBeVisible()
+  expect(signWin.isClosed()).toBe(false)
+
   const sig = JSON.parse((await dapp.locator('#out').getAttribute('data-sig')) ?? '[]') as number[]
   const signed = JSON.parse((await dapp.locator('#out').getAttribute('data-signed')) ?? '[]') as number[]
   expect(sig).toHaveLength(64)
@@ -354,8 +362,8 @@ test('signTransaction shows not covered while cover subscription is inactive', a
   const label = await banner.textContent()
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
-  expect(label).toBe('Not covered')
-  await expect(signWin.getByTestId('cover-next-step')).toContainText('Activate Ember Cover')
+  expect(label).toBe('Cover is not active')
+  await expect(signWin.getByTestId('cover-next-step')).toContainText('Set up cover')
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
   await acknowledgeApprovalWarnings(signWin)
@@ -407,13 +415,45 @@ test('inactive cover resolves while the vault is LOCKED (before unlock)', async 
   await expect(banner).not.toHaveText('Checking cover...', { timeout: 20000 })
   const label = await banner.textContent()
   console.log(`[COVER DECISION B] label="${label}" (vault locked)`)
-  expect(label).toBe('Not covered')
+  expect(label).toBe('Cover is not active')
 
   // 5. Unlock + approve to finish.
   await signWin.getByTestId('password').fill(PASSWORD)
   await acknowledgeApprovalWarnings(signWin)
   await signWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
+
+  // After unlock + approve the window stays open on the wallet home.
+  await expect(signWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
+  expect(signWin.isClosed()).toBe(false)
+
+  await context.close()
+})
+
+test('the approval window stays open after approve and closing it does not error the dapp', async () => {
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+
+  const dapp = await context.newPage()
+  await dapp.goto(dappUrl)
+  await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+
+  const connectApproval = context.waitForEvent('page')
+  await dapp.getByRole('button', { name: 'Connect' }).click()
+  const connectWin = await connectApproval
+  await connectWin.getByTestId('approve').click()
+  await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  const address = await dapp.locator('#out').getAttribute('data-address')
+
+  // The approval window stays open as the full wallet (not auto-closed).
+  await expect(connectWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
+  expect(connectWin.isClosed()).toBe(false)
+
+  // Closing it AFTER approve must NOT reject the already-resolved connect (pending was cleared).
+  await connectWin.close()
+  await dapp.waitForTimeout(500)
+  expect(await dapp.locator('#out').getAttribute('data-error')).toBeNull()
+  expect(await dapp.locator('#out').getAttribute('data-address')).toBe(address)
 
   await context.close()
 })

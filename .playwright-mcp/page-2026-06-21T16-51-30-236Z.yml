@@ -1,0 +1,59 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - paragraph [ref=e4]: POPUP HEADER + CONTROLS
+    - generic [ref=e5]:
+      - banner [ref=e6]:
+        - generic [ref=e7]:
+          - img [ref=e9]
+          - generic [ref=e13]:
+            - generic [ref=e14]: Ember
+            - generic [ref=e15]: Cover wallet
+        - generic [ref=e16]: PROTECTED
+      - generic [ref=e17]:
+        - generic [ref=e19]: 85Jwp58r…MZV6QU
+        - button "Copy" [ref=e20] [cursor=pointer]
+        - combobox [ref=e22]:
+          - option "Devnet" [selected]
+        - button "Lock" [ref=e23] [cursor=pointer]
+  - generic [ref=e25]:
+    - paragraph [ref=e26]: APPROVAL (covered)
+    - generic [ref=e28]:
+      - banner [ref=e29]:
+        - generic [ref=e30]:
+          - img [ref=e32]
+          - generic [ref=e36]:
+            - generic [ref=e37]: Ember
+            - generic [ref=e38]: Approval
+        - generic [ref=e39]: COVERED
+      - heading "Send SOL" [level=1] [ref=e40]
+      - generic [ref=e41]:
+        - paragraph [ref=e42]: http://localhost:5173
+        - paragraph [ref=e43]: 85Jwp58rTRJukqAUYF6ijeH7ZSBBqQfM5bwdxAMZV6QU
+      - generic [ref=e44]:
+        - generic [ref=e45]:
+          - heading "Estimated changes" [level=2] [ref=e46]
+          - generic [ref=e47]:
+            - generic [ref=e48]:
+              - term [ref=e49]: You send
+              - definition [ref=e50]: "-0.01 SOL"
+            - generic [ref=e51]:
+              - term [ref=e52]: To
+              - definition [ref=e53]: eUS7iQNNMBxj521MUcBAxSzDF33u6DBtFM7BN39fptu
+            - generic [ref=e54]:
+              - term [ref=e55]: Network fee
+              - definition [ref=e56]: "-0.000005 SOL"
+        - generic [ref=e58]:
+          - img [ref=e60]
+          - generic [ref=e64]:
+            - generic [ref=e65]: Covered
+            - generic [ref=e66]: Cover is available for this approval.
+        - generic [ref=e67]:
+          - button "Approve and sign" [ref=e68] [cursor=pointer]
+          - button "Cancel" [ref=e69] [cursor=pointer]
+        - tablist [ref=e70]:
+          - button "Details" [ref=e71] [cursor=pointer]
+          - button "Raw" [ref=e72] [cursor=pointer]
+        - generic [ref=e73]:
+          - heading "Transaction details" [level=2] [ref=e74]
+          - paragraph [ref=e75]: Amount 0.01 SOL
+          - paragraph [ref=e76]: Fee payer 85Jwp58r…MZV6QU

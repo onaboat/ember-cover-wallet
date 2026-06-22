@@ -3,9 +3,9 @@ import { useEffect, useState } from 'react'
 import type { PendingRequestView } from '../../background/request-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
 import { getVaultService } from '../../background/vault-service.ts'
-import { coverCapReviewText } from '../../cover/cover-cap-view.ts'
 import type { CoverDebugInfo } from '../../cover/ember-types.ts'
 import { bannerView } from '../../cover/cover-banner-view.ts'
+import { BrandMark } from '../../ui/BrandMark.tsx'
 import { decodeMessages } from './decode-messages.ts'
 import { decodeTransactionSummary, estimateWalletImpact } from './decode-transaction.ts'
 import type { TxSummary, TxWalletImpact } from './decode-transaction.ts'
@@ -41,6 +41,52 @@ function requestTitle(pending: PendingRequestView, summary: TxSummary | null): s
     return 'Review multiple transactions'
   }
   return summary?.primaryAction.label ?? 'Review transaction'
+}
+
+function coverDisplay(
+  cover: NonNullable<PendingRequestView['cover']> | null,
+  fallback: ReturnType<typeof bannerView> | null,
+  expired: boolean,
+): { label: string; body: string; tone: string; nextAction: 'setup' | 'retry' | null } | null {
+  if (!fallback?.label) {
+    return null
+  }
+  if (expired) {
+    return {
+      label: 'Cover expired',
+      body: 'Recheck cover before signing.',
+      tone: 'unavailable',
+      nextAction: 'retry',
+    }
+  }
+  if (cover?.debug?.stage === 'not_enrolled') {
+    return {
+      label: 'Cover is not active',
+      body: 'This wallet is not linked to an active Ember Cover subscription.',
+      tone: 'none',
+      nextAction: 'setup',
+    }
+  }
+  if (cover?.coverStatus === 'unavailable') {
+    return {
+      label: 'Cover check failed',
+      body: 'Ember could not reach the cover service for this approval.',
+      tone: 'unavailable',
+      nextAction: 'retry',
+    }
+  }
+  return {
+    label: fallback.label,
+    body: fallback.body,
+    tone: fallback.tone,
+    nextAction: null,
+  }
+}
+
+function debugValue(value: unknown): string {
+  if (value === undefined || value === null || value === '') return 'Unknown'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  return String(value)
 }
 
 function hostFromOrigin(origin: string | undefined): string | null {
@@ -156,7 +202,7 @@ function approvalLabel(args: {
 
 function ImpactRows({ impact }: { impact: TxWalletImpact }) {
   return (
-    <section data-testid="estimated-changes">
+    <section className="ec-review-card" data-testid="estimated-changes">
       <h2>{impact.title}</h2>
       <dl>
         {impact.rows.map((row) => (
@@ -171,7 +217,16 @@ function ImpactRows({ impact }: { impact: TxWalletImpact }) {
   )
 }
 
-export function RequestApp() {
+export interface ApprovalScreenProps {
+  /** Called after a successful approve so the host wallet can return to the refreshed home. */
+  onApproved: () => void
+  /** Called after a reject (the host closes the approval window). */
+  onRejected: () => void
+  /** Called when the user chooses to set up cover; the host navigates to the in-app cover screen. */
+  onSetupCover: () => void
+}
+
+export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: ApprovalScreenProps) {
   const request = getRequestApproval()
   const vault = getVaultService()
 
@@ -254,12 +309,7 @@ export function RequestApp() {
     (pending?.type === 'signTransaction' || pending?.type === 'signMessage') && !cover && !batchUnsupported
   const coverBanner =
     pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? bannerView(cover, checkingCover) : null
-  const coverCapText =
-    cover?.capContext
-      ? coverCapReviewText(cover.coverStatus, cover.capContext, cover.coveredTxCountImpact ?? 0)
-      : cover?.coverStatus === 'covered'
-        ? 'Cover usage unavailable.'
-        : ''
+  const coverDisplayView = coverDisplay(cover, coverBanner, coverExpired)
   const decodedMessage =
     pending?.type === 'signMessage'
       ? decodeMessages(pending.data as { message: Uint8Array | Record<string, number> }[])
@@ -294,6 +344,36 @@ export function RequestApp() {
         messageAcknowledged,
       })
     : 'Approve'
+  const requestBadge = (() => {
+    if (!pending) {
+      return { label: 'REVIEW', tone: 'pending' }
+    }
+    if (pending.type === 'connect') {
+      return { label: 'CONNECT', tone: 'pending' }
+    }
+    if (batchUnsupported) {
+      return { label: 'BATCH', tone: 'failed' }
+    }
+    if (coverExpired) {
+      return { label: 'EXPIRED', tone: 'unavailable' }
+    }
+    if (checkingCover) {
+      return { label: 'CHECKING', tone: 'checking' }
+    }
+    if (coverBanner?.tone === 'covered') {
+      return { label: 'COVERED', tone: 'protected' }
+    }
+    if (coverBanner?.tone === 'warning') {
+      return { label: 'WARNING', tone: 'setup' }
+    }
+    if (coverBanner?.tone === 'unavailable') {
+      return { label: 'NO COVER', tone: 'unavailable' }
+    }
+    // "Review" means the tx is outside cover / needs a careful look — a caution
+    // state, so it reads as warning-orange (matching the "Not covered" pill),
+    // not the neutral blue of a loading/pending state.
+    return { label: 'REVIEW', tone: 'warning' }
+  })()
 
   useEffect(() => {
     setCoverAcknowledged(false)
@@ -373,16 +453,18 @@ export function RequestApp() {
         return
       }
       if (pending.type === 'connect') {
-        await request.approveConnect()
+        await request.approveConnect(pending.id)
       } else if (pending.type === 'signMessage') {
-        await request.approveSignMessage()
+        await request.approveSignMessage(pending.id)
       } else {
-        await request.approveSignTransaction()
+        await request.approveSignTransaction(pending.id)
       }
-      window.close()
+      onApproved()
     } catch (e) {
       const message = e instanceof Error ? e.message : 'failed'
-      if (message === 'vault is locked') {
+      // Matches both 'vault is locked' and 'vault is locked out' (lockout) so a re-lock
+      // mid-approval shows the recovery prompt instead of a raw error.
+      if (message.startsWith('vault is locked')) {
         setNeedsUnlock(true)
         setError('Vault re-locked. Enter your password again.')
       } else {
@@ -393,85 +475,185 @@ export function RequestApp() {
   }
 
   async function onReject() {
-    await request.reject()
-    window.close()
+    await request.reject(pending?.id)
+    onRejected()
   }
 
   function CoverDebugPanel({ debug }: { debug: CoverDebugInfo }) {
+    const rows = [
+      ['Wallet linked', debug.enrolled],
+      ['API attempted', debug.apiAttempted],
+      ['Stage', debug.stage],
+      ['Proxy URL', debug.proxyBaseUrl],
+      ['HTTP status', debug.httpStatus],
+      ['Decision', debug.coverStatus],
+      ['Risk', debug.riskBand],
+      ['Error', debug.error],
+    ] as const
     return (
-      <details data-testid="cover-debug" style={{ margin: '8px 0' }}>
-        <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Cover debug</summary>
-        <pre
-          style={{
-            background: '#f4f4f5',
-            borderRadius: 6,
-            fontSize: 11,
-            lineHeight: 1.35,
-            margin: '6px 0',
-            maxHeight: 180,
-            overflow: 'auto',
-            padding: 8,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-          }}
-        >
-          {JSON.stringify(debug, null, 2)}
-        </pre>
+      <details className="ec-debug" data-testid="cover-debug">
+        <summary>Cover debug</summary>
+        <dl className="ec-debug-list">
+          {rows.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{debugValue(value)}</dd>
+            </div>
+          ))}
+        </dl>
+        <pre>{JSON.stringify(debug, null, 2)}</pre>
       </details>
     )
   }
 
+  function CoverDecisionPanel() {
+    if (!coverDisplayView) {
+      return null
+    }
+    return (
+      <section className="ec-review-card ec-cover-decision" data-testid="cover-section" data-tone={coverDisplayView.tone}>
+        <div className="ec-cover-callout-head">
+          <span className="ec-section-icon" aria-hidden="true">
+            <BrandMark title="Ember Cover" />
+          </span>
+          <span className="ec-cover-callout-text">
+            <span className="ec-cover-callout-title" data-testid="cover" data-tone={coverDisplayView.tone}>
+              {coverDisplayView.label}
+            </span>
+            <span className="ec-help" data-testid="cover-body">{coverDisplayView.body}</span>
+          </span>
+        </div>
+        {coverDisplayView.nextAction === 'setup' ? (
+          <div className="ec-actions">
+            <button className="ec-secondary" data-testid="cover-next-step" onClick={onSetupCover} type="button">
+              Set up cover
+            </button>
+          </div>
+        ) : null}
+        {coverDisplayView.nextAction === 'retry' ? (
+          <div className="ec-actions">
+            <button className="ec-secondary" data-testid="cover-retry" disabled={busy} onClick={() => void refreshCoverDecision()} type="button">
+              Retry cover check
+            </button>
+          </div>
+        ) : null}
+        {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
+      </section>
+    )
+  }
+
+  function renderActionFooter() {
+    return (
+      <>
+        {!coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
+          <label className="ec-ack">
+            <input
+              data-testid="cover-ack"
+              type="checkbox"
+              checked={coverAcknowledged}
+              onChange={(e) => setCoverAcknowledged(e.currentTarget.checked)}
+            />
+            {coverBanner.ackLabel}
+          </label>
+        ) : null}
+        {impactAckRequired ? (
+          <label className="ec-ack">
+            <input
+              data-testid="impact-ack"
+              type="checkbox"
+              checked={impactAcknowledged}
+              onChange={(e) => setImpactAcknowledged(e.currentTarget.checked)}
+            />
+            I understand balance changes could not be fully estimated.
+          </label>
+        ) : null}
+        {messageAckRequired ? (
+          <label className="ec-ack">
+            <input
+              data-testid="message-ack"
+              type="checkbox"
+              checked={messageAcknowledged}
+              onChange={(e) => setMessageAcknowledged(e.currentTarget.checked)}
+            />
+            I understand this message may authorize access.
+          </label>
+        ) : null}
+        {needsUnlock ? (
+          <label>
+            Password
+            <input
+              data-testid="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+            />
+          </label>
+        ) : null}
+        <div className="ec-actions">
+          <button className="ec-primary" data-testid="approve" disabled={approveDisabled} onClick={() => void onApprove()}>
+            {approveText}
+          </button>
+          <button className="ec-secondary" data-testid="reject" disabled={busy} onClick={() => void onReject()}>
+            Cancel
+          </button>
+        </div>
+        {error ? <p data-testid="error">{error}</p> : null}
+      </>
+    )
+  }
+
   if (!pending) {
-    return <p style={{ padding: 16 }}>No pending request.</p>
+    return (
+      <section className="ec-task-screen ec-approval-screen" data-testid="approval-screen">
+        <p className="ec-help">Loading request...</p>
+      </section>
+    )
   }
 
   return (
-    <div style={{ padding: 16, width: 360 }}>
-      <h1>{requestTitle(pending, transactionSummary)}</h1>
+    <section className="ec-task-screen ec-approval-screen" data-testid="approval-screen">
+      <div className="ec-screen-head">
+        <div>
+          <span className="ec-control-label">Approval</span>
+          <h2>{requestTitle(pending, transactionSummary)}</h2>
+        </div>
+        <span className="ec-status-badge" data-tone={requestBadge.tone}>
+          {requestBadge.label}
+        </span>
+      </div>
+      <div className="ec-request-meta">
       {pending.origin ? (
-        <p data-testid="origin" style={{ fontWeight: 700, fontSize: 16 }}>
+        <p className="ec-origin" data-testid="origin">
           {pending.origin}
         </p>
       ) : null}
-      <p data-testid="account">{address}</p>
+      <p className="ec-account" data-testid="account">{address}</p>
+      </div>
 
       {pending.type === 'connect' ? (
-        <section data-testid="connect-summary">
-          <p>This site can view your wallet address and request approvals.</p>
+        <section className="ec-panel" data-testid="connect-summary">
+          <p>This lets this site view your public wallet address and request approvals.</p>
+          <p className="ec-help">It cannot move funds without a separate signing approval.</p>
         </section>
       ) : null}
 
       {pending.type === 'signMessage' ? (
         <>
           {batchUnsupported ? (
-            <section data-testid="batch-warning">
+            <section className="ec-panel" data-testid="batch-warning">
               <h2>Multiple messages</h2>
               <p>Ember can review one message at a time. Cancel and retry with a single message.</p>
             </section>
           ) : (
             <>
-              <section data-testid="message-overview">
+              <section className="ec-review-card" data-testid="message-overview">
                 <h2>No transaction</h2>
                 <p>This will not move funds, but it may prove ownership or authorize access.</p>
                 {messageRiskView.warning ? <p data-testid="message-warning">{messageRiskView.warning}</p> : null}
               </section>
-              {coverBanner?.label ? (
-                <section data-testid="cover-section">
-                  <h2>Cover</h2>
-                  <p data-testid="cover" data-tone={coverExpired ? 'unavailable' : coverBanner.tone}>
-                    {coverExpired ? 'Cover expired' : coverBanner.label}
-                  </p>
-                  <p data-testid="cover-body">
-                    {coverExpired ? 'Recheck cover before signing.' : coverBanner.body}
-                  </p>
-                  {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
-                  {cover?.debug?.stage === 'not_enrolled' ? (
-                    <p data-testid="cover-next-step">Activate Ember Cover from the wallet before signing protected approvals.</p>
-                  ) : null}
-                  {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
-                </section>
-              ) : null}
-              <div role="tablist" aria-label="Message request">
+              <CoverDecisionPanel />
+              <div className="ec-tablist" role="tablist" aria-label="Message request">
                 <button type="button" aria-selected={messageTab === 'message'} onClick={() => setMessageTab('message')}>
                   Message
                 </button>
@@ -480,11 +662,11 @@ export function RequestApp() {
                 </button>
               </div>
               {messageTab === 'message' ? (
-                <pre data-testid="message" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                <pre data-testid="message">
                   {decodedMessage}
                 </pre>
               ) : (
-                <section data-testid="message-details">
+                <section className="ec-review-card" data-testid="message-details">
                   <h2>Message details</h2>
                   <p>Characters {decodedMessage.length}</p>
                   <p>Signer {shortAddress(signingAddress)}</p>
@@ -498,7 +680,7 @@ export function RequestApp() {
       {pending.type === 'signTransaction' ? (
         <div data-testid="tx">
           {batchUnsupported ? (
-            <section data-testid="batch-warning">
+            <section className="ec-panel" data-testid="batch-warning">
               <h2>Multiple transactions</h2>
               <p>Ember can review one transaction at a time. Cancel and retry with a single transaction.</p>
             </section>
@@ -514,24 +696,10 @@ export function RequestApp() {
               ) : null}
             </>
           ) : null}
-          {!batchUnsupported && pending.type === 'signTransaction' && coverBanner?.label ? (
-            <section data-testid="cover-section">
-              <h2>Cover</h2>
-              <p data-testid="cover" data-tone={coverExpired ? 'unavailable' : coverBanner.tone}>
-                {coverExpired ? 'Cover expired' : coverBanner.label}
-              </p>
-              <p data-testid="cover-body">
-                {coverExpired ? 'Recheck cover before signing.' : coverBanner.body}
-              </p>
-              {coverCapText ? <p data-testid="cover-cap">{coverCapText}</p> : null}
-              {cover?.debug?.stage === 'not_enrolled' ? (
-                <p data-testid="cover-next-step">Activate Ember Cover from the wallet before signing protected approvals.</p>
-              ) : null}
-              {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
-            </section>
-          ) : null}
+          {!batchUnsupported && pending.type === 'signTransaction' ? <CoverDecisionPanel /> : null}
+          {renderActionFooter()}
           {!batchUnsupported ? (
-            <div role="tablist" aria-label="Transaction request">
+            <div className="ec-tablist" role="tablist" aria-label="Transaction request">
               <button type="button" aria-selected={txTab === 'details'} onClick={() => setTxTab('details')}>
                 Details
               </button>
@@ -541,7 +709,7 @@ export function RequestApp() {
             </div>
           ) : null}
           {!batchUnsupported && txTab === 'details' ? (
-            <section data-testid="tx-details">
+            <section className="ec-review-card" data-testid="tx-details">
               {transactionSummary ? (
                 <>
                   <h2>Transaction details</h2>
@@ -563,66 +731,15 @@ export function RequestApp() {
             </section>
           ) : null}
           {!batchUnsupported && txTab === 'raw' ? (
-            <section data-testid="tx-raw">
+            <section className="ec-review-card" data-testid="tx-raw">
               <h2>Raw transaction</h2>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(pending.data, null, 2)}</pre>
+              <pre>{JSON.stringify(pending.data, null, 2)}</pre>
             </section>
           ) : null}
         </div>
       ) : null}
 
-      {!coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
-        <label>
-          <input
-            data-testid="cover-ack"
-            type="checkbox"
-            checked={coverAcknowledged}
-            onChange={(e) => setCoverAcknowledged(e.currentTarget.checked)}
-          />
-          {coverBanner.ackLabel}
-        </label>
-      ) : null}
-      {impactAckRequired ? (
-        <label>
-          <input
-            data-testid="impact-ack"
-            type="checkbox"
-            checked={impactAcknowledged}
-            onChange={(e) => setImpactAcknowledged(e.currentTarget.checked)}
-          />
-          I understand balance changes could not be fully estimated.
-        </label>
-      ) : null}
-      {messageAckRequired ? (
-        <label>
-          <input
-            data-testid="message-ack"
-            type="checkbox"
-            checked={messageAcknowledged}
-            onChange={(e) => setMessageAcknowledged(e.currentTarget.checked)}
-          />
-          I understand this message may authorize access.
-        </label>
-      ) : null}
-
-      {needsUnlock ? (
-        <input
-          data-testid="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-        />
-      ) : null}
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button data-testid="approve" disabled={approveDisabled} onClick={() => void onApprove()}>
-          {approveText}
-        </button>
-        <button data-testid="reject" disabled={busy} onClick={() => void onReject()}>
-          Cancel
-        </button>
-      </div>
-      {error ? <p data-testid="error">{error}</p> : null}
-    </div>
+      {pending.type !== 'signTransaction' ? renderActionFooter() : null}
+    </section>
   )
 }
