@@ -1,7 +1,8 @@
 import { base58Encode } from './ember-auth.ts'
 import { COVER_DEBUG, coverDebug } from './cover-debug.ts'
 import type { EmberConfig } from './ember-config.ts'
-import type { CoverDebugInfo, CoverDecision } from './ember-types.ts'
+import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from './ember-types.ts'
+import { normalizeCoverCapContext, normalizeCoverStatusSnapshot } from './ember-types.ts'
 
 /** Signs an arbitrary message with the wallet key (injected from vault/keypair). */
 export type SignMessage = (message: Uint8Array) => Promise<Uint8Array>
@@ -19,6 +20,50 @@ export interface PostSignRequest {
   requestId: string
   signedBytes: string
   signature?: string
+  signingWalletPublicKey: string
+  walletTimestamp: string
+  highRiskAckAt?: string
+}
+
+export interface CoverStatusRequest {
+  walletPublicKey: string
+  userRef: string
+}
+
+export interface SubscriptionEntitlementActivationRequest {
+  walletAddress: string
+  cluster: string
+  planTier: string
+  billingPeriod: string
+  programId: string
+  paymentMint: string
+  merchantWallet: string
+  pullerWallet: string
+  planId: string
+  planPda: string
+  subscriptionAuthorityPda: string
+  subscriptionPda: string
+  setupSignature?: string
+  subscriptionSignature: string
+}
+
+export interface MessagePreSignRequest {
+  walletPublicKey: string
+  userRef: string
+  dappUrl?: string
+  dappProgramId?: string
+  walletMethod: 'signMessage' | 'signIn'
+  declaredIntent?: string
+  messageKind: string
+  /** base64 of the exact message bytes the wallet will sign. */
+  messageBytes: string
+}
+
+export interface MessagePostSignRequest {
+  requestId: string
+  signedMessage: string
+  /** Solana signature, base58 encoded. */
+  signature: string
   signingWalletPublicKey: string
   walletTimestamp: string
   highRiskAckAt?: string
@@ -63,6 +108,17 @@ export class EmberClient {
       if (!res.ok) {
         const body = await res.text()
         coverDebug('pre-sign non-ok', { status: res.status, body })
+        if (res.status === 403 && parseErrorCode(body) === 'transaction_count_exhausted') {
+          return exhausted({
+            stage: 'api_pre_sign_non_ok',
+            apiAttempted: true,
+            proxyBaseUrl: this.cfg.proxyBaseUrl,
+            walletAddress: req.walletPublicKey,
+            httpStatus: res.status,
+            error: 'transaction_count_exhausted',
+            ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+          })
+        }
         return unavailable(COVER_DEBUG ? [`pre-sign ${res.status}: ${body.slice(0, 140)}`] : [], {
           stage: 'api_pre_sign_non_ok',
           apiAttempted: true,
@@ -73,10 +129,13 @@ export class EmberClient {
           ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
         })
       }
-      const decision = (await res.json()) as CoverDecision
+      const rawDecision = await res.json()
+      const decision = rawDecision as CoverDecision
+      const capContext = normalizeCoverCapContext(rawDecision)
       coverDebug('pre-sign ok', decision)
       return {
         ...decision,
+        ...(capContext === null ? {} : { capContext }),
         debug: {
           stage: 'api_pre_sign_ok',
           apiAttempted: true,
@@ -107,6 +166,101 @@ export class EmberClient {
     for (let attempt = 0; attempt < POST_SIGN_ATTEMPTS; attempt++) {
       try {
         const res = await this.post('/cover/post-sign', req, POST_SIGN_TIMEOUT_MS)
+        if (res.ok) return
+      } catch {
+        // best-effort: swallow and retry; never throw into the signing path
+      }
+    }
+  }
+
+  async status(req: CoverStatusRequest): Promise<CoverStatusSnapshot | null> {
+    try {
+      const res = await this.post('/cover/status', req, POST_SIGN_TIMEOUT_MS)
+      if (!res.ok) {
+        coverDebug('status non-ok', { status: res.status, body: await res.text() })
+        return null
+      }
+      return normalizeCoverStatusSnapshot(await res.json())
+    } catch (err) {
+      coverDebug('status error', String(err))
+      return null
+    }
+  }
+
+  async activateSubscriptionEntitlement(req: SubscriptionEntitlementActivationRequest): Promise<boolean> {
+    try {
+      const res = await this.post('/entitlements/subscriptions/activate', req, POST_SIGN_TIMEOUT_MS)
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async messagePreSign(req: MessagePreSignRequest): Promise<CoverDecision> {
+    const payload = { ...req, chain: 'solana', cluster: this.cfg.cluster }
+    try {
+      const res = await this.post('/cover/message/pre-sign', payload, this.cfg.preSignTimeoutMs)
+      if (!res.ok) {
+        const body = await res.text()
+        coverDebug('message pre-sign non-ok', { status: res.status, body })
+        if (res.status === 403 && parseErrorCode(body) === 'transaction_count_exhausted') {
+          return exhausted({
+            stage: 'api_pre_sign_non_ok',
+            apiAttempted: true,
+            proxyBaseUrl: this.cfg.proxyBaseUrl,
+            walletAddress: req.walletPublicKey,
+            httpStatus: res.status,
+            error: 'transaction_count_exhausted',
+            ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+          })
+        }
+        return unavailable(COVER_DEBUG ? [`message pre-sign ${res.status}: ${body.slice(0, 140)}`] : [], {
+          stage: 'api_pre_sign_non_ok',
+          apiAttempted: true,
+          proxyBaseUrl: this.cfg.proxyBaseUrl,
+          walletAddress: req.walletPublicKey,
+          httpStatus: res.status,
+          error: `HTTP ${res.status}`,
+          ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+        })
+      }
+      const rawDecision = await res.json()
+      const decision = rawDecision as CoverDecision
+      const capContext = normalizeCoverCapContext(rawDecision)
+      coverDebug('message pre-sign ok', decision)
+      return {
+        ...decision,
+        ...(capContext === null ? {} : { capContext }),
+        debug: {
+          stage: 'api_pre_sign_ok',
+          apiAttempted: true,
+          proxyBaseUrl: this.cfg.proxyBaseUrl,
+          walletAddress: req.walletPublicKey,
+          requestId: decision.requestId,
+          coverStatus: decision.coverStatus,
+          riskBand: decision.riskBand,
+          decisionExpiresAt: decision.decisionExpiresAt,
+          reasonCodeCount: decision.reasonCodes.length,
+          ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+        },
+      }
+    } catch (err) {
+      coverDebug('message pre-sign error', String(err))
+      return unavailable(COVER_DEBUG ? [`message pre-sign error: ${String(err)}`] : [], {
+        stage: 'api_pre_sign_error',
+        apiAttempted: true,
+        proxyBaseUrl: this.cfg.proxyBaseUrl,
+        walletAddress: req.walletPublicKey,
+        error: String(err),
+        ...(req.dappUrl === undefined ? {} : { dappUrl: req.dappUrl }),
+      })
+    }
+  }
+
+  async messagePostSign(req: MessagePostSignRequest): Promise<void> {
+    for (let attempt = 0; attempt < POST_SIGN_ATTEMPTS; attempt++) {
+      try {
+        const res = await this.post('/cover/message/post-sign', req, POST_SIGN_TIMEOUT_MS)
         if (res.ok) return
       } catch {
         // best-effort: swallow and retry; never throw into the signing path
@@ -183,6 +337,28 @@ function unavailable(reasonCodes: string[] = [], debug?: CoverDebugInfo): CoverD
     reasonCodes,
     decisionExpiresAt: new Date(0).toISOString(),
     ...(debug === undefined ? {} : { debug }),
+  }
+}
+
+function exhausted(debug?: CoverDebugInfo): CoverDecision {
+  return {
+    requestId: '',
+    coverStatus: 'not_covered',
+    riskBand: 'severe',
+    reasonCodes: ['transaction_count_exhausted'],
+    decisionExpiresAt: new Date(0).toISOString(),
+    capContext: { remainingCoveredTxThisMonth: 0 },
+    coveredTxCountImpact: 0,
+    ...(debug === undefined ? {} : { debug }),
+  }
+}
+
+function parseErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown }
+    return typeof parsed.error === 'string' ? parsed.error : null
+  } catch {
+    return null
   }
 }
 

@@ -3,7 +3,8 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import { EmberClient } from '../cover/ember-client.ts'
-import type { CoverDebugInfo, CoverDecision } from '../cover/ember-types.ts'
+import type { SubscriptionEntitlementActivationRequest } from '../cover/ember-client.ts'
+import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
 
 import { COVER_CONFIG } from './cover-config.ts'
@@ -22,11 +23,36 @@ export interface PostSignArgs {
   walletTimestamp: string
 }
 
+export interface MessagePreSignArgs {
+  messageBytes: string
+  dappUrl?: string
+  walletMethod: 'signMessage'
+  messageKind: string
+  declaredIntent?: string
+}
+
+export interface MessagePostSignArgs {
+  requestId: string
+  signedMessage: string
+  signature: string
+  signingWalletPublicKey: string
+  walletTimestamp: string
+  highRiskAckAt?: string
+}
+
 export interface CoverProvider {
   preSign(args: PreSignArgs): Promise<CoverDecision>
   postSign(args: PostSignArgs): Promise<void>
+  status(): Promise<CoverStatusSnapshot | null>
+  preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision>
+  postSignMessage(args: MessagePostSignArgs): Promise<void>
   enroll(): Promise<boolean>
+  /** Authorize the session key only (one vault sign), without calling the register API. */
+  authorizeSession(): Promise<boolean>
+  /** Call the register API to link the wallet to its entitlement; needs an authorized session. */
+  registerWithApi(): Promise<boolean>
   isEnrolled(): Promise<boolean>
+  activateSubscriptionEntitlement?(args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>): Promise<boolean>
 }
 
 /** The SW-side VAULT signer the cover provider needs for one-time enrollment. */
@@ -67,6 +93,23 @@ function notCovered(debug?: CoverDebugInfo): CoverDecision {
   }
 }
 
+async function activeEnrollmentForWallet(walletAddress: string): Promise<Enrollment | null> {
+  const e = await storage.getItem<Enrollment>(ENROLL_KEY)
+  if (!e || e.walletAddress !== walletAddress) {
+    return null
+  }
+  const sessionPublicKey = await getSessionPublicKey()
+  if (e.sessionPublicKey !== sessionPublicKey) {
+    return null
+  }
+  return e
+}
+
+export async function coverSessionHeaderForWallet(walletAddress: string): Promise<string | undefined> {
+  const e = await activeEnrollmentForWallet(walletAddress)
+  return e ? `${e.sessionPublicKey}.${e.walletAuthSig}` : undefined
+}
+
 /**
  * Two-sig cover provider. Cover requests are signed by the SESSION key (silent, no unlock) and
  * carry the wallet's one-time authorization; walletPublicKey is the VAULT address (the tx signer).
@@ -90,23 +133,66 @@ export class EmberCoverProvider implements CoverProvider {
   }
 
   async #activeEnrollment(walletAddress?: string): Promise<Enrollment | null> {
-    const e = await storage.getItem<Enrollment>(ENROLL_KEY)
-    if (!e) {
-      return null
-    }
     const currentWalletAddress = walletAddress ?? (await this.#signer.getAddress())
-    if (!currentWalletAddress || e.walletAddress !== currentWalletAddress) {
+    if (!currentWalletAddress) {
       return null
     }
-    const sessionPublicKey = await getSessionPublicKey()
-    if (e.sessionPublicKey !== sessionPublicKey) {
-      return null
-    }
-    return e
+    return await activeEnrollmentForWallet(currentWalletAddress)
   }
 
   async isEnrolled(): Promise<boolean> {
     return (await this.#activeEnrollment()) !== null
+  }
+
+  async activateSubscriptionEntitlement(
+    args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>,
+  ): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
+      return false
+    }
+    return await this.#client.activateSubscriptionEntitlement({
+      ...args,
+      walletAddress,
+    })
+  }
+
+  /** Persist the wallet's one-time authorization of the session key (one vault sign). */
+  async #storeSessionAuthorization(walletAddress: string): Promise<void> {
+    const sessionPublicKey = await getSessionPublicKey()
+    const walletAuthSig = await this.#signer.sign(sessionAuthorizationPayload(sessionPublicKey, walletAddress))
+    await storage.setItem<Enrollment>(ENROLL_KEY, {
+      sessionPublicKey,
+      walletAuthSig: b64(walletAuthSig),
+      walletAddress,
+    })
+  }
+
+  /**
+   * Authorize the session key for the current wallet (one vault sign). Every
+   * proxied cover call needs this, so the subscription flow calls it FIRST.
+   * Unlike enroll(), it never touches the register API or rolls back.
+   */
+  async authorizeSession(): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress) {
+      return false
+    }
+    await this.#storeSessionAuthorization(walletAddress)
+    return true
+  }
+
+  /**
+   * Register the wallet with the cover API (links it to its entitlement). Needs
+   * an authorized session (call authorizeSession first) and, in the wallet-native
+   * flow, an already-activated entitlement. Does NOT roll back the session.
+   */
+  async registerWithApi(): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress) {
+      return false
+    }
+    return await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
   }
 
   /** One-time: vault authorizes the session key + registers the vault address. Needs unlock. */
@@ -115,14 +201,8 @@ export class EmberCoverProvider implements CoverProvider {
     if (!walletAddress) {
       return false
     }
-    const sessionPublicKey = await getSessionPublicKey()
-    const walletAuthSig = await this.#signer.sign(sessionAuthorizationPayload(sessionPublicKey, walletAddress))
     // Persist the authorization first — register's two-sig header reads it from storage.
-    await storage.setItem<Enrollment>(ENROLL_KEY, {
-      sessionPublicKey,
-      walletAuthSig: b64(walletAuthSig),
-      walletAddress,
-    })
+    await this.#storeSessionAuthorization(walletAddress)
     // Register the vault address; the NONCE is signed by the vault key (proves control of it).
     const registered = await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
     if (!registered) {
@@ -174,9 +254,74 @@ export class EmberCoverProvider implements CoverProvider {
     }
   }
 
+  async status(): Promise<CoverStatusSnapshot | null> {
+    try {
+      const walletAddress = await this.#signer.getAddress()
+      if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
+        return null
+      }
+      return await this.#client.status({ walletPublicKey: walletAddress, userRef: '' })
+    } catch {
+      return null
+    }
+  }
+
+  async preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision> {
+    try {
+      const walletAddress = await this.#signer.getAddress()
+      if (!walletAddress) {
+        return unavailable({
+          stage: 'no_wallet',
+          apiAttempted: false,
+          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+        })
+      }
+      if (!(await this.#activeEnrollment(walletAddress))) {
+        return notCovered({
+          stage: 'not_enrolled',
+          apiAttempted: false,
+          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+          walletAddress,
+          enrolled: false,
+          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+        })
+      }
+      const decision = await this.#client.messagePreSign({
+        walletPublicKey: walletAddress,
+        userRef: '',
+        messageBytes: args.messageBytes,
+        walletMethod: args.walletMethod,
+        messageKind: args.messageKind,
+        ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+        ...(args.declaredIntent === undefined ? {} : { declaredIntent: args.declaredIntent }),
+      })
+      return {
+        ...decision,
+        debug: {
+          ...decision.debug,
+          enrolled: true,
+        } as CoverDebugInfo,
+      }
+    } catch {
+      return unavailable({
+        stage: 'provider_error',
+        apiAttempted: false,
+        proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+      })
+    }
+  }
+
   async postSign(args: PostSignArgs): Promise<void> {
     try {
       await this.#client.postSign(args)
+    } catch {
+      // best-effort
+    }
+  }
+
+  async postSignMessage(args: MessagePostSignArgs): Promise<void> {
+    try {
+      await this.#client.messagePostSign(args)
     } catch {
       // best-effort
     }
@@ -187,6 +332,7 @@ export class EmberCoverProvider implements CoverProvider {
 export interface CoverUI {
   enroll(): Promise<boolean>
   isEnrolled(): Promise<boolean>
+  status(): Promise<CoverStatusSnapshot | null>
 }
 
 const COVER_SERVICE_KEY = 'ember.CoverService' as ProxyServiceKey<CoverUI>
@@ -196,6 +342,7 @@ export function registerCoverService(provider: CoverProvider): void {
   const facade: CoverUI = {
     enroll: () => provider.enroll(),
     isEnrolled: () => provider.isEnrolled(),
+    status: () => provider.status(),
   }
   registerService(COVER_SERVICE_KEY, facade)
 }

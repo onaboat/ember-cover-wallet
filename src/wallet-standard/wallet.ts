@@ -37,6 +37,10 @@ type EmberWalletFeatures = SolanaSignMessageFeature &
   StandardEventsFeature
 
 export class EmberWallet implements Wallet {
+  constructor() {
+    this.#scheduleSilentRestore(0)
+  }
+
   get accounts(): readonly WalletAccount[] {
     return this.#accounts
   }
@@ -59,11 +63,7 @@ export class EmberWallet implements Wallet {
       },
       [StandardConnect]: {
         connect: async (input?: StandardConnectInput): Promise<StandardConnectOutput> => {
-          const response = await sendMessage('connect', input)
-          const accounts: WalletAccount[] = response.accounts.map((account) => ({
-            ...account,
-            publicKey: decodeTransportBytes(account.publicKey),
-          }))
+          const accounts = await this.#connect(input)
           this.#accounts = accounts
           this.#emit('change', { accounts })
           return { accounts }
@@ -106,6 +106,42 @@ export class EmberWallet implements Wallet {
 
   #accounts: readonly WalletAccount[] = []
   #listeners: { [E in StandardEventsNames]?: StandardEventsListeners[E][] } = {}
+
+  async #connect(input?: StandardConnectInput): Promise<WalletAccount[]> {
+    const response = await sendMessage('connect', input)
+    return response.accounts.map((account) => ({
+      ...account,
+      publicKey: decodeTransportBytes(account.publicKey),
+    }))
+  }
+
+  #scheduleSilentRestore(attempt: number): void {
+    const delays = [0, 250, 1000] as const
+    const delay = delays[attempt]
+    if (delay === undefined) {
+      return
+    }
+    setTimeout(() => {
+      void this.#restoreConnection().then((completed) => {
+        if (!completed) {
+          this.#scheduleSilentRestore(attempt + 1)
+        }
+      })
+    }, delay)
+  }
+
+  async #restoreConnection(): Promise<boolean> {
+    try {
+      const accounts = await this.#connect({ silent: true })
+      if (accounts.length > 0) {
+        this.#accounts = accounts
+        this.#emit('change', { accounts })
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
 
   #emit<E extends StandardEventsNames>(event: E, ...args: Parameters<StandardEventsListeners[E]>): void {
     this.#listeners[event]?.forEach((listener) => {

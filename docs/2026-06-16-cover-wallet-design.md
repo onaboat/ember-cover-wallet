@@ -127,10 +127,12 @@ seed-derived key slots into the same encrypt/import path.
   dodges the lock conflict. Compromise is contained: it can only request cover
   decisions / attach evidence, never sign a fund-moving transaction.
 
-**Enable Ember Cover (one-time):** generate the session key -> wallet key signs
+**Activate Ember Cover:** generate the session key -> wallet key signs
 `ember-session-authorization\n<sessionPubkey>\n<walletPubkey>` (one approved
 action) -> register the wallet with Ember (nonce -> wallet-key sign -> register).
-Store the authorization.
+Store the authorization. Cover becomes active only after the wallet also confirms
+an onchain Solana subscription and the Ember API activates that subscription
+entitlement.
 
 **Per dapp sign request:**
 1. Content script captures the **dapp origin** and threads it to the background.

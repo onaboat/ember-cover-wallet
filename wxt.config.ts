@@ -7,6 +7,12 @@ export default defineConfig({
   manifest: {
     name: 'Ember',
     permissions: ['storage'],
-    host_permissions: ['https://ember-v4-api-devnet.fly.dev/*'],
+    host_permissions: [
+      'http://127.0.0.1:8787/*',
+      'https://ember-v4-api-devnet.fly.dev/*',
+      'https://*.workers.dev/*',
+      'https://api.devnet.solana.com/*',
+      'https://api.mainnet-beta.solana.com/*',
+    ],
   },
 })

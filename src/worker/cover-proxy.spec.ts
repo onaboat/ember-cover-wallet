@@ -20,10 +20,14 @@ async function genKey(): Promise<{ pub: string; sign: (m: Uint8Array) => Promise
   return { pub, sign }
 }
 
-async function signedRequest(path: string, bodyObj: Record<string, unknown>): Promise<Request> {
+async function signedRequest(
+  path: string,
+  bodyObj: Record<string, unknown>,
+  walletField: 'walletAddress' | 'walletPublicKey' = 'walletPublicKey',
+): Promise<Request> {
   const wallet = await genKey()
   const session = await genKey()
-  const body = JSON.stringify({ ...bodyObj, walletPublicKey: wallet.pub })
+  const body = JSON.stringify({ ...bodyObj, [walletField]: wallet.pub })
   const walletAuthSig = await wallet.sign(sessionAuthorizationPayload(session.pub, wallet.pub))
   const sessionHeader = `${session.pub}.${b64(walletAuthSig)}`
   const ts = new Date().toISOString()
@@ -47,8 +51,12 @@ interface Forward {
   forwarded: Record<string, unknown>
 }
 
-async function forwardOf(path: string, bodyObj: Record<string, unknown>): Promise<Forward> {
-  const request = await signedRequest(path, bodyObj)
+async function forwardOf(
+  path: string,
+  bodyObj: Record<string, unknown>,
+  walletField: 'walletAddress' | 'walletPublicKey' = 'walletPublicKey',
+): Promise<Forward> {
+  const request = await signedRequest(path, bodyObj, walletField)
   let captured: Omit<Forward, 'status'> = { url: '', auth: null, forwarded: {} }
   const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
     captured = {
@@ -64,6 +72,8 @@ async function forwardOf(path: string, bodyObj: Record<string, unknown>): Promis
 
 test('recognizes proxy paths', () => {
   expect(isProxyPath('/cover/pre-sign')).toBe(true)
+  expect(isProxyPath('/cover/status')).toBe(true)
+  expect(isProxyPath('/cover/message/pre-sign')).toBe(true)
 })
 
 test('leaves non-proxy paths alone', () => {
@@ -74,12 +84,39 @@ test('forwards to the upstream Ember API path', async () => {
   expect((await forwardOf('/cover/pre-sign', { transactionBytes: 'AA==' })).url).toBe('https://api.test/v1/cover/pre-sign')
 })
 
+test('forwards status and message paths to the upstream v1 API', async () => {
+  expect((await forwardOf('/cover/status', {})).url).toBe('https://api.test/v1/cover/status')
+  expect((await forwardOf('/cover/message/pre-sign', { messageBytes: 'AA==' })).url).toBe(
+    'https://api.test/v1/cover/message/pre-sign',
+  )
+  expect((await forwardOf('/cover/message/post-sign', { signingWalletPublicKey: 'ignored' })).url).toBe(
+    'https://api.test/v1/cover/message/post-sign',
+  )
+})
+
+test('accepts walletAddress for subscription entitlement handoff', async () => {
+  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+
+  expect(forwarded.status).toBe(200)
+  expect(forwarded.url).toBe('https://api.test/v1/entitlements/subscriptions/activate')
+  expect(typeof forwarded.forwarded['walletAddress']).toBe('string')
+})
+
+test('forwards a canonical walletPublicKey even when the client sent walletAddress', async () => {
+  // activate sends only walletAddress, but the engine's ActivateRequest requires
+  // walletPublicKey — the proxy must supply the verified key so it does not 422.
+  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+
+  expect(forwarded.forwarded['walletPublicKey']).toBe(forwarded.forwarded['walletAddress'])
+})
+
 test('injects the partner key as a Bearer header (never in the client)', async () => {
   expect((await forwardOf('/cover/pre-sign', {})).auth).toBe('Bearer secret-key')
 })
 
-test('overrides userRef with the configured demo value', async () => {
-  expect((await forwardOf('/cover/pre-sign', { userRef: 'spoofed' })).forwarded['userRef']).toBe('user-1')
+test('overrides userRef with the verified wallet pubkey (ignores client value)', async () => {
+  const { forwarded } = await forwardOf('/cover/pre-sign', { userRef: 'spoofed' })
+  expect(forwarded['userRef']).toBe(forwarded['walletPublicKey'])
 })
 
 test('rejects a request with no signature (401)', async () => {
