@@ -47,6 +47,10 @@ export interface CoverProvider {
   preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision>
   postSignMessage(args: MessagePostSignArgs): Promise<void>
   enroll(): Promise<boolean>
+  /** Authorize the session key only (one vault sign), without calling the register API. */
+  authorizeSession(): Promise<boolean>
+  /** Call the register API to link the wallet to its entitlement; needs an authorized session. */
+  registerWithApi(): Promise<boolean>
   isEnrolled(): Promise<boolean>
   activateSubscriptionEntitlement?(args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>): Promise<boolean>
 }
@@ -153,20 +157,52 @@ export class EmberCoverProvider implements CoverProvider {
     })
   }
 
+  /** Persist the wallet's one-time authorization of the session key (one vault sign). */
+  async #storeSessionAuthorization(walletAddress: string): Promise<void> {
+    const sessionPublicKey = await getSessionPublicKey()
+    const walletAuthSig = await this.#signer.sign(sessionAuthorizationPayload(sessionPublicKey, walletAddress))
+    await storage.setItem<Enrollment>(ENROLL_KEY, {
+      sessionPublicKey,
+      walletAuthSig: b64(walletAuthSig),
+      walletAddress,
+    })
+  }
+
+  /**
+   * Authorize the session key for the current wallet (one vault sign). Every
+   * proxied cover call needs this, so the subscription flow calls it FIRST.
+   * Unlike enroll(), it never touches the register API or rolls back.
+   */
+  async authorizeSession(): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress) {
+      return false
+    }
+    await this.#storeSessionAuthorization(walletAddress)
+    return true
+  }
+
+  /**
+   * Register the wallet with the cover API (links it to its entitlement). Needs
+   * an authorized session (call authorizeSession first) and, in the wallet-native
+   * flow, an already-activated entitlement. Does NOT roll back the session.
+   */
+  async registerWithApi(): Promise<boolean> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress) {
+      return false
+    }
+    return await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
+  }
+
   /** One-time: vault authorizes the session key + registers the vault address. Needs unlock. */
   async enroll(): Promise<boolean> {
     const walletAddress = await this.#signer.getAddress()
     if (!walletAddress) {
       return false
     }
-    const sessionPublicKey = await getSessionPublicKey()
-    const walletAuthSig = await this.#signer.sign(sessionAuthorizationPayload(sessionPublicKey, walletAddress))
     // Persist the authorization first — register's two-sig header reads it from storage.
-    await storage.setItem<Enrollment>(ENROLL_KEY, {
-      sessionPublicKey,
-      walletAuthSig: b64(walletAuthSig),
-      walletAddress,
-    })
+    await this.#storeSessionAuthorization(walletAddress)
     // Register the vault address; the NONCE is signed by the vault key (proves control of it).
     const registered = await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
     if (!registered) {

@@ -37,6 +37,8 @@ export function startCoverProxy(port = 8787): Promise<Server> {
     })()
   })
   return new Promise((resolve) => {
-    server.listen(port, () => resolve(server))
+    // Bind to loopback only. The proxy injects the partner key, so it must never be
+    // reachable from the LAN; 127.0.0.1 keeps it to this machine.
+    server.listen(port, '127.0.0.1', () => resolve(server))
   })
 }

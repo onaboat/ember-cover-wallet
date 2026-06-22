@@ -1,0 +1,1313 @@
+/* =================================================================
+   Ember Cover Wallet — global stylesheet
+   Single source of truth for design tokens + base component styling.
+   Palette + type sourced from embercover.com so the wallet matches
+   the brand. Change a token here to change it everywhere.
+   ================================================================= */
+
+:root {
+  /* ---- Brand palette (from embercover.com) ---- */
+  --ec-paper: #f5f1ea;          /* page background (cream) */
+  --ec-paper-raised: #fbf8f1;   /* cards on paper */
+  --ec-paper-muted: #e8e0d2;    /* subtle fills, chips */
+  --ec-ink: #0e1a2e;            /* primary text (navy) */
+  --ec-ink-muted: #5a6982;      /* secondary text */
+  --ec-ink-faint: #7b8798;      /* tertiary text */
+  --ec-rule: #e3dccf;           /* hairline dividers */
+  --ec-rule-strong: #d9d1c0;    /* input borders */
+
+  --ec-night: #110d0a;          /* warm near-black (top bar) */
+  --ec-night-raised: #17120e;
+  --ec-night-rule: rgba(255, 255, 255, 0.13);
+  --ec-night-text: #f6efe7;
+  --ec-night-muted: #b5a89a;
+
+  --ec-accent: #f08b33;         /* ember orange */
+  --ec-accent-strong: #bc5f1b;  /* pressed / links */
+  --ec-logo: #eb602a;           /* flame red-orange */
+  --ec-gold: #d6aa60;
+
+  /* ---- Status semantics ---- */
+  --ec-covered: #2e9f55;
+  --ec-covered-soft: #e5f4e9;
+  --ec-protected: #34c759;      /* loud "PROTECTED" badge */
+  --ec-protected-ink: #0c2a16;
+  --ec-warning: #b77a21;
+  --ec-warning-soft: #f8ecd8;
+  --ec-blocked: #b84c3f;
+  --ec-blocked-soft: #f5dfdc;
+  --ec-info: #3269a8;
+  --ec-info-soft: #e2ecf7;
+
+  /* ---- Type ---- */
+  --ec-font-sans: "SF Pro Display", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --ec-font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  /* ---- Spacing ---- */
+  --ec-space-1: 4px;
+  --ec-space-2: 8px;
+  --ec-space-3: 12px;
+  --ec-space-4: 16px;
+  --ec-space-5: 20px;
+  --ec-space-6: 24px;
+  --ec-space-7: 32px;
+  --ec-space-8: 40px;
+
+  /* ---- Radius ---- */
+  --ec-radius-sm: 8px;
+  --ec-radius-md: 12px;
+  --ec-radius-lg: 16px;
+  --ec-radius-pill: 999px;
+
+  /* ---- Shadow ---- */
+  --ec-shadow-card: 0 1px 2px rgba(14, 26, 46, 0.04), 0 8px 24px rgba(14, 26, 46, 0.06);
+  --ec-shadow-night: 0 10px 30px rgba(0, 0, 0, 0.28);
+
+  /* ---- App frame (every surface locks to this) ---- */
+  --ec-app-width: 360px;
+  --ec-app-height: 600px;
+  --ec-bar-height: 52px;        /* top app bar == bottom nav */
+
+  --ec-focus: 2px solid var(--ec-accent);
+}
+
+/* =================================================================
+   Base / reset
+   ================================================================= */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  width: var(--ec-app-width);
+  height: var(--ec-app-height);
+  background: var(--ec-paper);
+  color: var(--ec-ink);
+  font-family: var(--ec-font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--ec-paper);
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+}
+
+h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--ec-accent-strong);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+pre {
+  margin: 0;
+  font-family: var(--ec-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ec-ink);
+  background: var(--ec-paper-muted);
+  border: 1px solid var(--ec-rule);
+  border-radius: var(--ec-radius-md);
+  padding: var(--ec-space-3);
+  max-height: 240px;
+  overflow: auto;
+}
+
+/* Thin, unobtrusive scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ec-rule-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--ec-rule-strong);
+  border-radius: var(--ec-radius-pill);
+}
+
+:focus-visible {
+  outline: var(--ec-focus);
+  outline-offset: 2px;
+}
+
+/* =================================================================
+   Shells / layout
+   ================================================================= */
+
+.ec-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--ec-paper);
+}
+
+.ec-shell__main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+  padding-top: var(--ec-space-4);
+}
+
+.ec-auth-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 var(--ec-space-4) var(--ec-space-6);
+}
+
+.ec-auth-shell h1 {
+  margin-top: var(--ec-space-2);
+}
+
+/* =================================================================
+   Top bar (the dark brand bar)
+   ================================================================= */
+
+.ec-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ec-space-3);
+  flex: none;
+  min-height: var(--ec-bar-height);
+  margin: 0;
+  padding: var(--ec-space-2) var(--ec-space-4);
+  background: var(--ec-night);
+  box-shadow: 0 1px 0 var(--ec-rule-strong), 0 6px 16px rgba(14, 26, 46, 0.1);
+}
+
+/* Full-bleed app bar inside the horizontally padded auth shell */
+.ec-auth-shell .ec-topbar {
+  margin: 0 calc(-1 * var(--ec-space-4)) var(--ec-space-3);
+}
+
+.ec-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+  min-width: 0;
+}
+
+.ec-mark-frame {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+/* Just the shield + flame, no surrounding box. */
+.ec-brand-mark {
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+
+.ec-brand-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.ec-brand-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ec-night-text);
+}
+
+.ec-brand-subtitle {
+  font-size: 11px;
+  color: var(--ec-night-muted);
+}
+
+/* =================================================================
+   Status badge + cover pill
+   ================================================================= */
+
+.ec-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 6px 12px;
+  border-radius: var(--ec-radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--ec-paper-muted);
+  color: var(--ec-ink);
+}
+
+.ec-status-badge[data-tone="protected"],
+.ec-status-badge[data-tone="covered"] {
+  background: var(--ec-protected);
+  color: var(--ec-protected-ink);
+}
+
+.ec-status-badge[data-tone="setup"],
+.ec-status-badge[data-tone="warning"] {
+  background: var(--ec-warning-soft);
+  color: var(--ec-warning);
+}
+
+.ec-status-badge[data-tone="unavailable"],
+.ec-status-badge[data-tone="failed"],
+.ec-status-badge[data-tone="none"] {
+  background: var(--ec-blocked-soft);
+  color: var(--ec-blocked);
+}
+
+.ec-status-badge[data-tone="checking"],
+.ec-status-badge[data-tone="pending"] {
+  background: var(--ec-info-soft);
+  color: var(--ec-info);
+}
+
+.ec-cover-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--ec-radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--ec-paper-muted);
+  color: var(--ec-ink-muted);
+}
+
+.ec-cover-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.ec-cover-pill[data-tone="covered"] {
+  background: var(--ec-covered-soft);
+  color: var(--ec-covered);
+}
+
+.ec-cover-pill[data-tone="unavailable"] {
+  background: var(--ec-blocked-soft);
+  color: var(--ec-blocked);
+}
+
+.ec-cover-pill[data-tone="none"] {
+  background: var(--ec-warning-soft);
+  color: var(--ec-warning);
+}
+
+/* =================================================================
+   Buttons
+   ================================================================= */
+
+.ec-primary,
+.ec-secondary {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ec-space-2);
+  padding: 13px var(--ec-space-4);
+  border-radius: var(--ec-radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.ec-primary {
+  background: var(--ec-logo);
+  color: #fff;
+}
+
+.ec-primary:hover:not(:disabled) {
+  background: var(--ec-accent-strong);
+}
+
+.ec-secondary {
+  background: var(--ec-paper-raised);
+  color: var(--ec-ink);
+  border-color: var(--ec-rule-strong);
+}
+
+.ec-secondary:hover:not(:disabled) {
+  border-color: var(--ec-ink-faint);
+}
+
+.ec-quiet-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border-radius: var(--ec-radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ec-ink-muted);
+  background: var(--ec-paper-muted);
+  border: 1px solid transparent;
+}
+
+.ec-quiet-button:hover:not(:disabled) {
+  color: var(--ec-ink);
+}
+
+.ec-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: none;
+  border: none;
+  color: var(--ec-accent-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ec-link-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.ec-back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 6px 10px 6px 6px;
+  margin-left: -6px;
+  background: none;
+  border: none;
+  color: var(--ec-ink-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ec-back-button:hover {
+  color: var(--ec-ink);
+}
+
+/* =================================================================
+   Cards / panels
+   ================================================================= */
+
+.ec-account-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+  padding: 0 var(--ec-space-4) var(--ec-space-5);
+}
+
+.ec-panel,
+.ec-review-card {
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule);
+  border-radius: var(--ec-radius-lg);
+  box-shadow: var(--ec-shadow-card);
+  padding: var(--ec-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-3);
+}
+
+.ec-panel {
+  margin: 0 var(--ec-space-4);
+}
+
+.ec-account-card .ec-review-card,
+.ec-task-screen .ec-review-card {
+  margin: 0;
+}
+
+/* ── Approval review: a calm bank-statement system ──────────────────────────
+   The approval renders as a task screen inside the wallet shell (App owns the app
+   bar). The screen's own 16px gutter (.ec-task-screen padding) aligns every block;
+   review cards go flat so only the tinted coverage band reads as emphasis. One
+   tight type scale: eyebrow 11 / body 13 / verdict 14. */
+.ec-approval-screen {
+  font-size: 13px;
+}
+.ec-approval-screen .ec-screen-head {
+  justify-content: space-between;
+}
+
+/* Sections flow with the same 16px rhythm the popup uses. */
+.ec-approval-screen [data-testid='tx'] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+}
+
+/* The screen gutter already provides the inset, so panels/cards align flush to it. */
+.ec-approval-screen .ec-panel {
+  margin: 0;
+}
+.ec-approval-screen .ec-review-card {
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  gap: var(--ec-space-3);
+}
+
+/* Section titles read as small uppercase eyebrows (fintech statement style).
+   Scoped to card/panel headings so the screen-head title stays a normal heading. */
+.ec-approval-screen .ec-review-card h2,
+.ec-approval-screen .ec-review-card h3,
+.ec-approval-screen .ec-panel h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ec-ink-faint);
+}
+
+/* Body text — one size, muted labels, ink values. */
+.ec-approval-screen .ec-review-card dl dt,
+.ec-approval-screen .ec-review-card dl dd,
+.ec-approval-screen .ec-review-card p,
+.ec-approval-screen .ec-help,
+.ec-approval-screen .ec-origin {
+  font-size: 13px;
+}
+.ec-approval-screen .ec-account {
+  font-size: 12px;
+}
+
+/* Coverage: a tinted assurance block, boxed inboard at the screen gutter. */
+.ec-approval-screen .ec-cover-decision {
+  margin: 0;
+  padding: var(--ec-space-4);
+  border-radius: var(--ec-radius-md);
+  box-shadow: none;
+  background: var(--ec-paper-muted);
+  border: 1px solid var(--ec-rule);
+  gap: var(--ec-space-2);
+}
+.ec-approval-screen .ec-cover-decision[data-tone='covered'] {
+  background: var(--ec-covered-soft);
+}
+.ec-approval-screen .ec-cover-decision[data-tone='warning'],
+.ec-approval-screen .ec-cover-decision[data-tone='setup'] {
+  background: var(--ec-warning-soft);
+}
+.ec-approval-screen .ec-cover-decision[data-tone='none'],
+.ec-approval-screen .ec-cover-decision[data-tone='unavailable'],
+.ec-approval-screen .ec-cover-decision[data-tone='blocked'] {
+  background: var(--ec-blocked-soft);
+}
+
+.ec-cover-callout-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+}
+.ec-cover-callout-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ec-cover-callout-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ec-ink);
+}
+.ec-cover-decision[data-tone='covered'] .ec-cover-callout-title {
+  color: var(--ec-covered);
+}
+.ec-cover-decision[data-tone='warning'] .ec-cover-callout-title,
+.ec-cover-decision[data-tone='setup'] .ec-cover-callout-title {
+  color: var(--ec-warning);
+}
+.ec-cover-decision[data-tone='none'] .ec-cover-callout-title,
+.ec-cover-decision[data-tone='unavailable'] .ec-cover-callout-title,
+.ec-cover-decision[data-tone='blocked'] .ec-cover-callout-title {
+  color: var(--ec-blocked);
+}
+
+/* Icon reads as a clean white tile on the wash. */
+.ec-approval-screen .ec-cover-decision .ec-section-icon {
+  background: var(--ec-paper-raised);
+}
+
+/* =================================================================
+   Wallet controls (address / network / lock)
+   ================================================================= */
+
+/* On the background, not in a box (boxes are for highlights only) */
+.ec-wallet-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ec-space-2);
+  margin: 0 var(--ec-space-4);
+  padding: 0;
+  background: none;
+  border: none;
+}
+
+/* Hidden "Wallet"/"Network" eyebrows — the values are self-evident */
+.ec-wallet-controls .ec-control-label {
+  display: none;
+}
+
+/* Account chip: the full address IS the copy control (tap to copy). It takes the
+   full row so the whole address is visible; network + lock sit on the line below. */
+.ec-address-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ec-space-2);
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 7px 14px;
+  border-radius: var(--ec-radius-pill);
+  background: var(--ec-paper-muted);
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+.ec-wallet-address {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--ec-font-mono);
+  font-size: 10px;
+  letter-spacing: -0.01em;
+  color: var(--ec-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ec-address-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--ec-ink-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Row 2: network + lock share the width as equal halves (no lonely gap). */
+.ec-network-control {
+  flex: 1;
+  min-width: 0;
+}
+.ec-network-control select {
+  width: 100%;
+}
+.ec-wallet-controls .ec-quiet-button {
+  flex: 1;
+}
+
+/* Same chip language as Copy / Lock / address — one cohesive control set. */
+.ec-network-control select {
+  width: auto;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ec-ink-muted);
+  background: var(--ec-paper-muted);
+  border: 1px solid transparent;
+  border-radius: var(--ec-radius-pill);
+}
+
+/* =================================================================
+   Balance + primary actions
+   ================================================================= */
+
+/* Balance lives on the background; only the cover status stays boxed */
+.ec-account-balance {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ec-space-3);
+  padding: 0 var(--ec-space-4) var(--ec-space-2);
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+.ec-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.ec-balance-value {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ec-ink);
+}
+
+.ec-action-pair {
+  display: flex;
+  gap: var(--ec-space-3);
+  width: 100%;
+}
+
+.ec-action-pair .ec-primary,
+.ec-action-pair .ec-secondary {
+  flex: 1;
+  width: auto;
+}
+
+/* =================================================================
+   Cover strip (status card on the assets screen)
+   ================================================================= */
+
+.ec-cover-strip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--ec-space-3);
+  padding: var(--ec-space-4);
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule);
+  border-radius: var(--ec-radius-lg);
+  box-shadow: var(--ec-shadow-card);
+}
+
+.ec-cover-strip__main {
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+  min-width: 0;
+}
+
+.ec-cover-strip__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--ec-space-2);
+}
+
+.ec-cover-strip__side .ec-primary,
+.ec-cover-strip__side .ec-secondary {
+  width: auto;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.ec-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: var(--ec-logo);
+  background: var(--ec-paper-muted);
+  border-radius: 10px;
+}
+
+.ec-section-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ec-cover-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.ec-cover-detail {
+  font-size: 13px;
+  color: var(--ec-ink-muted);
+}
+
+.ec-metrics {
+  grid-column: 1 / -1;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ec-metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.ec-metric-row dt {
+  color: var(--ec-ink-muted);
+}
+
+.ec-metric-row dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+/* =================================================================
+   Token + activity lists
+   ================================================================= */
+
+.ec-token-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-2);
+}
+
+.ec-token-list,
+.ec-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ec-token-row,
+.ec-activity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+  padding: var(--ec-space-3) 0;
+  border-bottom: 1px solid var(--ec-rule);
+}
+
+.ec-token-row:last-child,
+.ec-activity-row:last-child {
+  border-bottom: none;
+}
+
+.ec-token-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ec-paper-muted);
+  color: var(--ec-ink);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.ec-token-main,
+.ec-activity-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ec-token-name,
+.ec-activity-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ec-token-mint,
+.ec-activity-meta {
+  font-size: 11px;
+  color: var(--ec-ink-faint);
+  font-family: var(--ec-font-mono);
+}
+
+.ec-token-amount {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ec-activity-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.ec-activity-amount {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* =================================================================
+   Tabs / segmented controls / bottom nav
+   ================================================================= */
+
+.ec-bottom-nav {
+  display: flex;
+  flex: none;
+  min-height: var(--ec-bar-height);
+  border-top: 1px solid var(--ec-rule);
+  background: var(--ec-paper);
+}
+
+.ec-bottom-nav button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-top: 2px solid transparent;
+  margin-top: -1px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ec-ink-faint);
+}
+
+.ec-bottom-nav button[aria-selected="true"] {
+  color: var(--ec-ink);
+  border-top-color: var(--ec-logo);
+}
+
+.ec-tabs,
+.ec-tablist {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--ec-paper-muted);
+  border-radius: var(--ec-radius-md);
+}
+
+.ec-tabs button,
+.ec-tablist button {
+  flex: 1;
+  padding: 8px;
+  background: none;
+  border: none;
+  border-radius: var(--ec-radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ec-ink-muted);
+}
+
+.ec-tabs button[aria-selected="true"],
+.ec-tablist button[aria-selected="true"] {
+  background: var(--ec-paper-raised);
+  color: var(--ec-ink);
+  box-shadow: var(--ec-shadow-card);
+}
+
+/* =================================================================
+   Plan grid (cover activation)
+   ================================================================= */
+
+.ec-plan-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-2);
+}
+
+.ec-plan-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: var(--ec-space-3);
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule-strong);
+  border-radius: var(--ec-radius-md);
+  color: var(--ec-ink);
+}
+
+.ec-plan-option strong {
+  font-size: 14px;
+}
+
+.ec-plan-option span {
+  font-size: 12px;
+  color: var(--ec-ink-muted);
+}
+
+.ec-plan-option[aria-selected="true"] {
+  border-color: var(--ec-logo);
+  box-shadow: 0 0 0 1px var(--ec-logo);
+}
+
+/* =================================================================
+   Forms / inputs
+   ================================================================= */
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input:not([type]),
+select,
+textarea {
+  width: 100%;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ec-ink);
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule-strong);
+  border-radius: var(--ec-radius-md);
+}
+
+input::placeholder {
+  color: var(--ec-ink-faint);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--ec-accent);
+  box-shadow: 0 0 0 3px rgba(240, 139, 51, 0.2);
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ec-ink-muted);
+}
+
+.ec-field-with-action {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ec-space-2);
+}
+
+.ec-field-with-action label {
+  flex: 1;
+}
+
+.ec-field-with-action .ec-quiet-button {
+  padding: 12px;
+}
+
+.ec-form-grid {
+  gap: var(--ec-space-3);
+}
+
+/* =================================================================
+   Task screens (send / receive / cover)
+   ================================================================= */
+
+.ec-task-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+  padding: 0 var(--ec-space-4) var(--ec-space-5);
+}
+
+.ec-screen-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+}
+
+.ec-screen-head h2 {
+  margin-top: 2px;
+}
+
+.ec-screen-head__spacer {
+  width: var(--ec-space-6);
+}
+
+.ec-control-label,
+.ec-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ec-ink-faint);
+}
+
+.ec-flow-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-2);
+  margin-top: var(--ec-space-2);
+}
+
+.ec-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-2);
+}
+
+/* =================================================================
+   Data lists (key / value rows)
+   ================================================================= */
+
+.ec-data-list,
+.ec-review-card dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-2);
+}
+
+.ec-data-list > div,
+.ec-review-card dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ec-space-3);
+}
+
+.ec-data-list dt,
+.ec-review-card dl dt {
+  font-size: 12px;
+  color: var(--ec-ink-muted);
+  flex: none;
+}
+
+.ec-data-list dd,
+.ec-review-card dl dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  word-break: break-all;
+}
+
+/* =================================================================
+   Misc helpers
+   ================================================================= */
+
+.ec-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ec-ink-muted);
+}
+
+.ec-muted {
+  font-size: 12px;
+  color: var(--ec-ink-faint);
+}
+
+.ec-ack {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--ec-space-2);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ec-ink);
+  line-height: 1.4;
+}
+
+.ec-ack input {
+  width: auto;
+  margin-top: 1px;
+  accent-color: var(--ec-logo);
+}
+
+.ec-qr-wrap {
+  display: flex;
+  justify-content: center;
+  padding: var(--ec-space-4);
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule);
+  border-radius: var(--ec-radius-lg);
+}
+
+.ec-address-box {
+  font-family: var(--ec-font-mono);
+  font-size: 12px;
+  text-align: center;
+  word-break: break-all;
+  padding: var(--ec-space-3);
+  background: var(--ec-paper-muted);
+  border-radius: var(--ec-radius-md);
+}
+
+.ec-inline-cover {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--ec-space-3) var(--ec-space-4);
+  border-radius: var(--ec-radius-md);
+  background: var(--ec-paper-muted);
+  border: 1px solid var(--ec-rule);
+}
+
+.ec-inline-cover > span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ec-inline-cover p {
+  font-size: 12px;
+  color: var(--ec-ink-muted);
+}
+
+.ec-inline-cover[data-tone="covered"] {
+  background: var(--ec-covered-soft);
+  border-color: transparent;
+}
+
+.ec-inline-cover[data-tone="covered"] > span {
+  color: var(--ec-covered);
+}
+
+.ec-inline-cover[data-tone="unavailable"] {
+  background: var(--ec-blocked-soft);
+  border-color: transparent;
+}
+
+.ec-inline-cover[data-tone="unavailable"] > span {
+  color: var(--ec-blocked);
+}
+
+.ec-inline-cover[data-tone="none"] {
+  background: var(--ec-warning-soft);
+  border-color: transparent;
+}
+
+.ec-inline-cover[data-tone="none"] > span {
+  color: var(--ec-warning);
+}
+
+.ec-inline-cover .ec-secondary {
+  margin-top: 4px;
+}
+
+/* =================================================================
+   Request (approval) specific
+   ================================================================= */
+
+.ec-request-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ec-origin {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ec-ink);
+  word-break: break-all;
+}
+
+.ec-account {
+  font-size: 12px;
+  font-family: var(--ec-font-mono);
+  color: var(--ec-ink-faint);
+  word-break: break-all;
+}
+
+.ec-cover-decision {
+  gap: var(--ec-space-2);
+}
+
+.ec-debug {
+  font-size: 12px;
+  border-top: 1px solid var(--ec-rule);
+  padding-top: var(--ec-space-2);
+}
+
+.ec-debug summary {
+  cursor: pointer;
+  color: var(--ec-ink-muted);
+  font-weight: 600;
+}
+
+.ec-debug-list {
+  margin: var(--ec-space-2) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ec-debug-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ec-space-3);
+}
+
+.ec-debug-list dt {
+  color: var(--ec-ink-muted);
+}
+
+.ec-debug-list dd {
+  margin: 0;
+  font-family: var(--ec-font-mono);
+  word-break: break-all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

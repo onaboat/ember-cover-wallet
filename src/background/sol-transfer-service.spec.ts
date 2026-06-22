@@ -1,4 +1,6 @@
-import { expect, test, vi } from 'vitest'
+import { fakeBrowser } from 'wxt/testing'
+import { storage } from 'wxt/utils/storage'
+import { beforeEach, expect, test, vi } from 'vitest'
 
 import { base58Encode } from '../cover/ember-auth.ts'
 import { maxSolSendLamports, parseSolAmountToLamports, WalletTransferProvider } from './sol-transfer-service.ts'
@@ -6,6 +8,10 @@ import { maxSolSendLamports, parseSolAmountToLamports, WalletTransferProvider } 
 const SOURCE = base58Encode(new Uint8Array(32).fill(1))
 const DESTINATION = base58Encode(new Uint8Array(32).fill(2))
 const BLOCKHASH = '11111111111111111111111111111111'
+
+beforeEach(() => {
+  fakeBrowser.reset()
+})
 
 function rpcStub(options: { simulationError?: unknown } = {}) {
   return {
@@ -62,6 +68,8 @@ function coverStub(
     })),
     postSignMessage: vi.fn(async () => {}),
     enroll: async () => true,
+    authorizeSession: async () => true,
+    registerWithApi: async () => true,
     isEnrolled: async () => true,
   }
 }
@@ -169,6 +177,19 @@ test('covered sends sign, broadcast, and post sign evidence', async () => {
   expect(result.cover.coverStatus).toBe('covered')
   expect(signer.sign).toHaveBeenCalledOnce()
   expect(cover.postSign).toHaveBeenCalledOnce()
+})
+
+test('records the cover verdict locally so the in-wallet send shows its status in Activity', async () => {
+  const provider = new WalletTransferProvider(signerStub(), coverStub('covered'), { rpcFactory: () => rpcStub() })
+
+  const result = await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  const records = await storage.getItem<Array<{ signature: string; coverStatus: string; walletAddress: string }>>(
+    'local:ember-cover-records',
+  )
+  expect(records?.[0]?.signature).toBe(result.signature)
+  expect(records?.[0]?.coverStatus).toBe('covered')
+  expect(records?.[0]?.walletAddress).toBe(SOURCE)
 })
 
 test('zero remaining cap on a covered send stays covered and posts sign evidence', async () => {

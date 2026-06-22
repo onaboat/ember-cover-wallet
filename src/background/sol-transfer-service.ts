@@ -28,7 +28,9 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 
 import type { CoverCapContext, CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
 import { coverCapExhausted, isCoverable } from '../cover/ember-types.ts'
+import { coverRecords, toWalletCoverStatus } from './cover-records.ts'
 import type { CoverProvider } from './cover-service.ts'
+import { stringifyWithBigInts } from './safe-json.ts'
 import { formatLamportsAsSol } from './wallet-data-service.ts'
 import { walletClusterConfig } from './wallet-data-config.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
@@ -335,6 +337,18 @@ export class WalletTransferProvider implements WalletTransferUI {
       })
     }
 
+    // Record the verdict locally so this in-wallet send shows its cover status in Activity.
+    await coverRecords
+      .record({
+        signature,
+        walletAddress: prepared.walletAddress,
+        coverStatus: toWalletCoverStatus(prepared.decision.coverStatus),
+        riskBand: prepared.decision.riskBand,
+        requestId: prepared.decision.requestId ?? null,
+        dappOrigin: null,
+      })
+      .catch(() => {})
+
     return {
       signature,
       explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
@@ -406,7 +420,7 @@ export class WalletTransferProvider implements WalletTransferUI {
     const feeLamports = simulationResponse.value.fee == null ? TRANSACTION_FEE_LAMPORTS : toBigInt(simulationResponse.value.fee)
     const totalDebit = amountLamports + feeLamports
     const balanceAfter = balanceLamports > totalDebit ? balanceLamports - totalDebit : 0n
-    const simulationError = simulationResponse.value.err ? JSON.stringify(simulationResponse.value.err) : null
+    const simulationError = simulationResponse.value.err ? stringifyWithBigInts(simulationResponse.value.err) : null
     return {
       decision,
       preview: {

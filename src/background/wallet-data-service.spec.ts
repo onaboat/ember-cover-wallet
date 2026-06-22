@@ -1,4 +1,5 @@
 import { fakeBrowser } from 'wxt/testing'
+import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test } from 'vitest'
 
 import type { WalletCluster } from './wallet-data-config.ts'
@@ -211,6 +212,34 @@ test('builds a snapshot from the selected cluster RPC', async () => {
   expect(snapshot.emberActivityUnavailable).toBe(false)
   expect(snapshot.activity[0]?.explorerUrl).toBe(explorerTransactionUrl('sig1', 'mainnet-beta'))
   expect(snapshot.activityUnavailable).toBe(false)
+})
+
+test('surfaces stored cover records in emberActivity, matched by signature', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig1',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      riskBand: 'low',
+      requestId: 'r',
+      dappOrigin: null,
+      recordedAt: '2026-06-21T00:00:00.000Z',
+    },
+  ])
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({ send: async () => [] }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.emberActivity).toHaveLength(1)
+  expect(snapshot.emberActivity[0]?.signature).toBe('sig1')
+  expect(snapshot.emberActivity[0]?.coverStatus).toBe('covered')
+  expect(snapshot.emberActivityUnavailable).toBe(false)
 })
 
 test('does not block SOL balance when token account lookup stalls', async () => {

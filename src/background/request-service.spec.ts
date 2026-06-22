@@ -9,6 +9,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit'
 import { fakeBrowser } from 'wxt/testing'
+import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 import { buildConnectAccount } from './build-account.ts'
@@ -33,7 +34,9 @@ function dummyTxBytes(): Uint8Array {
 
 const signer = {
   getAddress: async () => FEE_PAYER,
-  sign: async (_m: Uint8Array) => new Uint8Array(64),
+  // Non-zero: @solana/kit treats an all-zero 64-byte slot as "unsigned", so
+  // getSignatureFromTransaction would reject it (a real vault never signs zeros).
+  sign: async (_m: Uint8Array) => new Uint8Array(64).fill(7),
 }
 
 function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
@@ -56,6 +59,8 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
     }),
     postSignMessage: async () => {},
     enroll: async () => true,
+    authorizeSession: async () => true,
+    registerWithApi: async () => true,
     isEnrolled: async () => true,
     ...overrides,
   }
@@ -192,6 +197,104 @@ test('approveSignTransaction rejects multiple transactions so the UI cannot sign
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await expect(svc.approveSignTransaction()).rejects.toThrow('Multiple transaction signing is not supported')
   svc.reject()
+})
+
+test('approve leaves the window open (does not remove it)', async () => {
+  const svc = new RequestService(signer)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const remove = vi.spyOn(fakeBrowser.windows, 'remove').mockResolvedValue(undefined as never)
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
+  await svc.approveSignTransaction()
+  await pending
+  expect(remove).not.toHaveBeenCalled()
+})
+
+test('the pending slot is cleared after approve so the window becomes a plain wallet', async () => {
+  const svc = new RequestService(signer)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
+  await svc.approveSignTransaction()
+  await pending
+  expect(svc.get()).toBeNull()
+})
+
+test('closing the window after approve does not settle the promise a second time', async () => {
+  const svc = new RequestService(signer)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 7 } as never)
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
+  await svc.approveSignTransaction()
+  const [out] = await pending
+  // The user closes the still-open wallet window: onRemoved must be a no-op now.
+  fakeBrowser.windows.onRemoved.trigger(7)
+  expect(out?.signedTransaction).toBeDefined()
+})
+
+test('reject removes the window', async () => {
+  const svc = new RequestService(signer)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 9 } as never)
+  const remove = vi.spyOn(fakeBrowser.windows, 'remove').mockResolvedValue(undefined as never)
+  const pending = svc.create('connect', undefined)
+  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
+  svc.reject()
+  await expect(pending).rejects.toThrow('rejected')
+  expect(remove).toHaveBeenCalledWith(9)
+})
+
+test('a stale id cannot approve a request it never displayed', async () => {
+  const svc = new RequestService(signer)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
+  const currentId = svc.get()?.id
+  await expect(svc.approveSignTransaction('stale-id')).rejects.toThrow('Stale request')
+  // The real id still works.
+  await svc.approveSignTransaction(currentId)
+  const [out] = await pending
+  expect(out?.signedTransaction).toBeDefined()
+})
+
+test('closing the window mid-sign cancels: no signature to the dapp, no post-sign, no record', async () => {
+  let releaseSign = () => {}
+  const gate = new Promise<void>((resolve) => {
+    releaseSign = resolve
+  })
+  const sign = vi.fn(async (_m: Uint8Array) => {
+    await gate
+    return new Uint8Array(64).fill(7)
+  })
+  const postSign = vi.fn(async () => {})
+  const cover = coverProvider({
+    preSign: async () => ({
+      requestId: 'r',
+      coverStatus: 'covered' as const,
+      riskBand: 'low' as const,
+      reasonCodes: [],
+      decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
+    }),
+    postSign,
+  })
+  const svc = new RequestService({ getAddress: signer.getAddress, sign }, cover)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 7 } as never)
+  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
+
+  const approveP = svc.approveSignTransaction()
+  approveP.catch(() => {})
+  // The user closes the window while the vault signer is still in flight.
+  await vi.waitFor(() => expect(sign).toHaveBeenCalled())
+  fakeBrowser.windows.onRemoved.trigger(7)
+  releaseSign()
+
+  await expect(pending).rejects.toThrow('closed')
+  await approveP.catch(() => {})
+  // A cancelled request must not send evidence or write a local record.
+  expect(postSign).not.toHaveBeenCalled()
+  const records = await storage.getItem<unknown[]>('local:ember-cover-records')
+  expect(records ?? []).toHaveLength(0)
 })
 
 test('reject settles the pending promise with an error', async () => {
@@ -338,7 +441,13 @@ test('zero remaining cap on a covered decision stays covered and posts evidence'
   await pending
 
   expect(postSign).toHaveBeenCalledOnce()
+  const postSignArgs = postSign.mock.calls[0] as unknown as [{ signature?: string }] | undefined
+  expect(postSignArgs?.[0]?.signature).toBeTruthy()
+  const records = await storage.getItem<Array<{ coverStatus: string; signature: string }>>('local:ember-cover-records')
+  expect(records?.[0]?.coverStatus).toBe('covered')
+  expect(records?.[0]?.signature).toBeTruthy()
 })
+
 
 test('exhausted cap is not covered and skips post sign evidence', async () => {
   const postSign = vi.fn(async () => {})
@@ -363,4 +472,8 @@ test('exhausted cap is not covered and skips post sign evidence', async () => {
   await pending
 
   expect(postSign).not.toHaveBeenCalled()
+  // The verdict is still recorded locally — epoch-expiry (not_enrolled/exhausted) decisions
+  // must show "not covered" in Activity, so recording is NOT gated on freshness.
+  const records = await storage.getItem<Array<{ coverStatus: string }>>('local:ember-cover-records')
+  expect(records?.[0]?.coverStatus).toBe('not_covered')
 })
