@@ -62,7 +62,7 @@ function coverDisplay(
   if (cover?.debug?.stage === 'not_enrolled') {
     return {
       label: 'Cover is not active',
-      body: 'This wallet is not linked to an active Ember Cover subscription.',
+      body: 'This wallet is not linked to an active Ember Cover entitlement.',
       tone: 'none',
       nextAction: 'setup',
     }

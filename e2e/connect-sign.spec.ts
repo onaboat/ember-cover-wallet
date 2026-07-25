@@ -49,7 +49,7 @@ const PASSWORD = 'Str0ng-pass-correct-horse'
 // wallet-standard provider to register. Serve the fixture from an ephemeral localhost server.
 let server: Server
 let dappUrl: string
-let coverServer: Server
+let coverServer: Server | undefined
 
 test.beforeAll(async () => {
   const html = await readFile(DAPP_FILE, 'utf8')
@@ -63,20 +63,22 @@ test.beforeAll(async () => {
   dappUrl = `http://127.0.0.1:${address.port}/dapp.html`
 
   // warm the scale-to-zero devnet API
-  await fetch('https://ember-v4-api-devnet.fly.dev/v1/cover/pre-sign', {
+  await fetch('https://ember-production-de2c.up.railway.app/v1/cover/pre-sign', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer test-partner-key' },
     body: '{}',
   }).catch(() => {})
-  coverServer = await startCoverProxy(8787)
+  coverServer = await startCoverProxy(18787)
 })
 
 test.afterAll(async () => {
   // Drop any lingering keep-alive sockets so close() resolves promptly.
   server.closeAllConnections()
   await new Promise<void>((resolve) => server.close(() => resolve()))
-  coverServer.closeAllConnections()
-  await new Promise<void>((resolve) => coverServer.close(() => resolve()))
+  if (coverServer) {
+    coverServer.closeAllConnections()
+    await new Promise<void>((resolve) => coverServer?.close(() => resolve()))
+  }
 })
 
 async function launch(): Promise<{ context: BrowserContext; extensionId: string }> {
@@ -138,6 +140,7 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
   await connectWin.getByTestId('approve').click()
 
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = await dapp.locator('#out').getAttribute('data-address')
   expect((address ?? '').length).toBeGreaterThan(31)
   const pubkey = JSON.parse((await dapp.locator('#out').getAttribute('data-pubkey')) ?? '[]') as number[]
@@ -202,6 +205,7 @@ test('risky readable messages require acknowledgement before signing', async () 
   const connectWin = await connectApproval
   await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
 
   const signApproval = context.waitForEvent('page')
   await dapp.getByRole('button', { name: 'Sign Risk Message' }).click()
@@ -236,6 +240,7 @@ test('approved dapp silently reconnects after the vault is locked', async () => 
   const connectWin = await connectApproval
   await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = (await dapp.locator('#out').getAttribute('data-address')) as string
 
   const popup = await context.newPage()
@@ -268,6 +273,7 @@ test('dapp signs a transaction and the vault signature verifies over its message
   const connectWin = await connectApproval
   await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = (await dapp.locator('#out').getAttribute('data-address')) as string
   const pubkey = JSON.parse((await dapp.locator('#out').getAttribute('data-pubkey')) ?? '[]') as number[]
   expect(pubkey).toHaveLength(32)
@@ -314,6 +320,7 @@ test('batch transaction requests are visible and cannot be approved', async () =
   const connectWin = await connectApproval
   await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = (await dapp.locator('#out').getAttribute('data-address')) as string
 
   await dapp.evaluate((bytes) => window.__setTxBytes?.(bytes), Array.from(buildTx(address)))
@@ -331,7 +338,7 @@ test('batch transaction requests are visible and cannot be approved', async () =
   await context.close()
 })
 
-test('signTransaction shows not covered while cover subscription is inactive', async () => {
+test('signTransaction shows not covered while the cover entitlement is inactive', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
   await openCoverActivation(context, extensionId)
@@ -346,6 +353,7 @@ test('signTransaction shows not covered while cover subscription is inactive', a
   const connectWin = await connectApproval
   await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = (await dapp.locator('#out').getAttribute('data-address')) as string
 
   // hand the dapp a transaction whose fee payer is the connected address
@@ -392,8 +400,10 @@ test('inactive cover resolves while the vault is LOCKED (before unlock)', async 
   await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
   const connectApproval = context.waitForEvent('page')
   await dapp.getByRole('button', { name: 'Connect' }).click()
-  await (await connectApproval).getByTestId('approve').click()
+  const connectWin = await connectApproval
+  await connectWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
+  await connectWin.close()
   const address = (await dapp.locator('#out').getAttribute('data-address')) as string
 
   // 3. LOCK the vault (reopen popup, click Lock) so the next approval opens locked.

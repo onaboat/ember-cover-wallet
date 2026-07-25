@@ -4,7 +4,7 @@ import { startCoverProxy } from '../e2e/fixtures/cover-proxy-server.ts'
 // forwarding to the live devnet engine). Use this when a dapp is already serving
 // on 5173, so it does not collide like the full `dev:test` launcher does.
 const PROXY_PORT = 8787
-const ENGINE = 'https://ember-v4-api-devnet.fly.dev'
+const ENGINE = 'https://ember-production-de2c.up.railway.app'
 
 await startCoverProxy(PROXY_PORT)
 console.log(`✓ cover proxy   http://127.0.0.1:${PROXY_PORT}   ->  ${ENGINE} (live devnet engine)`)

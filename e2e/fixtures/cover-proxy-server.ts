@@ -3,7 +3,7 @@ import { type Server, createServer } from 'node:http'
 import { coverProxy } from '../../src/worker/cover-proxy.ts'
 
 const ENV = {
-  EMBER_API: 'https://ember-v4-api-devnet.fly.dev',
+  EMBER_API: 'https://ember-production-de2c.up.railway.app',
   EMBER_PARTNER_API_KEY: 'test-partner-key',
   EMBER_USER_REF: 'user-1',
 }

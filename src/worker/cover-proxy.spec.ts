@@ -94,20 +94,19 @@ test('forwards status and message paths to the upstream v1 API', async () => {
   )
 })
 
-test('accepts walletAddress for subscription entitlement handoff', async () => {
-  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+test('forwards prepaid payment activation', async () => {
+  const forwarded = await forwardOf('/entitlements/payments/activate', { paymentSignature: 'sig' })
 
   expect(forwarded.status).toBe(200)
-  expect(forwarded.url).toBe('https://api.test/v1/entitlements/subscriptions/activate')
-  expect(typeof forwarded.forwarded['walletAddress']).toBe('string')
+  expect(forwarded.url).toBe('https://api.test/v1/entitlements/payments/activate')
+  expect(forwarded.forwarded['paymentSignature']).toBe('sig')
 })
 
-test('forwards a canonical walletPublicKey even when the client sent walletAddress', async () => {
-  // activate sends only walletAddress, but the engine's ActivateRequest requires
-  // walletPublicKey — the proxy must supply the verified key so it does not 422.
-  const forwarded = await forwardOf('/entitlements/subscriptions/activate', { planTier: 'core' }, 'walletAddress')
+test('forwards a canonical verified walletPublicKey for payment activation', async () => {
+  const forwarded = await forwardOf('/entitlements/payments/activate', { paymentSignature: 'sig' })
 
-  expect(forwarded.forwarded['walletPublicKey']).toBe(forwarded.forwarded['walletAddress'])
+  expect(typeof forwarded.forwarded['walletPublicKey']).toBe('string')
+  expect(forwarded.forwarded['userRef']).toBe(forwarded.forwarded['walletPublicKey'])
 })
 
 test('injects the partner key as a Bearer header (never in the client)', async () => {
