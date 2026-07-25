@@ -12,7 +12,7 @@ console.log(`✓ cover proxy   http://127.0.0.1:${PROXY_PORT}   ->  live devnet 
 
 // Keep the scale-to-zero devnet engine WARM so the first pre-sign isn't a ~5s cold start.
 async function warm(): Promise<void> {
-  await fetch('https://ember-v4-api-devnet.fly.dev/v1/cover/pre-sign', {
+  await fetch('https://ember-production-de2c.up.railway.app/v1/cover/pre-sign', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer test-partner-key' },
     body: '{}',

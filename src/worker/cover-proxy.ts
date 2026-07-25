@@ -8,7 +8,7 @@ export function isProxyPath(pathname: string): boolean {
 }
 
 export interface CoverProxyEnv {
-  /** Base URL of the Ember API, e.g. https://ember-v4-api-devnet.fly.dev */
+  /** Base URL of the Ember API, e.g. https://ember-production-de2c.up.railway.app */
   EMBER_API: string
   /** Partner API key — a Worker SECRET, never in client code. */
   EMBER_PARTNER_API_KEY: string
@@ -56,10 +56,8 @@ export async function coverProxy(request: Request, env: CoverProxyEnv, deps: Cov
   }
 
   // The subscriber identity is the VERIFIED wallet pubkey (wallet-native: the
-  // engine keys registration/status/entitlement by wallet, matching the
-  // /entitlements/subscriptions/activate convention). We forward it as the
-  // canonical `walletPublicKey` (activate sends only `walletAddress`, but the
-  // engine requires `walletPublicKey`) and as `userRef`. Client-supplied values
+  // engine keys registration/status/entitlement by wallet. We forward it as the
+  // canonical `walletPublicKey` and as `userRef`. Client-supplied values
   // are overridden so they can't be spoofed. Partner key is injected server-side.
   const forwardBody = JSON.stringify({ ...parsed, walletPublicKey, userRef: walletPublicKey })
   const upstream = await fetchFn(`${env.EMBER_API}/v1${url.pathname}`, {

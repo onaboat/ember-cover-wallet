@@ -2,16 +2,15 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { address as toAddress } from '@solana/kit'
 
 import { getCoverService } from '../../background/cover-service.ts'
+import { getPrepaidPaymentService } from '../../background/prepaid-payment-service.ts'
+import type {
+  LocalPrepaidPaymentState,
+  PrepaidPaymentPreview,
+  PrepaidPaymentResult,
+} from '../../background/prepaid-payment-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
 import { getWalletTransferService, parseSolAmountToLamports } from '../../background/sol-transfer-service.ts'
 import type { SolTransferPreview, SolTransferResult } from '../../background/sol-transfer-service.ts'
-import { getSubscriptionService } from '../../background/subscription-service.ts'
-import type {
-  LocalSubscriptionState,
-  SubscriptionActivationResult,
-  SubscriptionPreview,
-} from '../../background/subscription-service.ts'
-import type { EmberBillingPeriod, EmberCoverPlan, EmberCoverPlanId } from '../../background/subscription-config.ts'
 import { getVaultService } from '../../background/vault-service.ts'
 import { formatLamportsAsSol } from '../../background/wallet-data-service.ts'
 import type { WalletDataSnapshot } from '../../background/wallet-data-service.ts'
@@ -21,7 +20,7 @@ import { WALLET_CLUSTER_OPTIONS } from '../../background/wallet-data-config.ts'
 import { coverCapReviewText, formatCoverStatusSnapshot } from '../../cover/cover-cap-view.ts'
 import type { CoverStatusSnapshot } from '../../cover/ember-types.ts'
 import { BrandMark } from '../../ui/BrandMark.tsx'
-import { subscriptionStatusView } from '../../ui/subscription-status-view.ts'
+import { prepaidPaymentStatusView } from '../../ui/prepaid-payment-status-view.ts'
 import { isVaultLockedError } from '../../vault/vault-lock.ts'
 import { QrCode } from './qr-code.tsx'
 
@@ -125,7 +124,7 @@ function amountValidation(amount: string, snapshot: WalletDataSnapshot | null): 
 export function App({ mode = 'wallet' }: AppProps = {}) {
   const vault = getVaultService()
   const cover = getCoverService()
-  const subscriptions = getSubscriptionService()
+  const payments = getPrepaidPaymentService()
   const walletData = getWalletDataService()
   const transfers = getWalletTransferService()
   const approval = getRequestApproval()
@@ -140,16 +139,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [coverEnrolled, setCoverEnrolled] = useState<boolean | null>(null)
   const [coverStatusSnapshot, setCoverStatusSnapshot] = useState<CoverStatusSnapshot | null>(null)
   const [coverStatusLoading, setCoverStatusLoading] = useState(false)
-  const [coverPlans, setCoverPlans] = useState<readonly EmberCoverPlan[]>([])
-  const [selectedPlanId, setSelectedPlanId] = useState<EmberCoverPlanId>('core')
-  const [selectedBillingPeriod, setSelectedBillingPeriod] = useState<EmberBillingPeriod>('monthly')
-  const [subscriptionPreview, setSubscriptionPreview] = useState<SubscriptionPreview | null>(null)
-  const [subscriptionState, setSubscriptionState] = useState<LocalSubscriptionState | null>(null)
-  const [subscriptionResult, setSubscriptionResult] = useState<SubscriptionActivationResult | null>(null)
-  const [subscriptionBusy, setSubscriptionBusy] = useState(false)
-  const [subscriptionError, setSubscriptionError] = useState('')
-  const [subscriptionNotice, setSubscriptionNotice] = useState('')
-  const [subscriptionNeedsUnlock, setSubscriptionNeedsUnlock] = useState(false)
+  const [paymentPreview, setPaymentPreview] = useState<PrepaidPaymentPreview | null>(null)
+  const [paymentState, setPaymentState] = useState<LocalPrepaidPaymentState | null>(null)
+  const [paymentResult, setPaymentResult] = useState<PrepaidPaymentResult | null>(null)
+  const [paymentBusy, setPaymentBusy] = useState(false)
+  const [paymentError, setPaymentError] = useState('')
+  const [paymentNotice, setPaymentNotice] = useState('')
+  const [paymentNeedsUnlock, setPaymentNeedsUnlock] = useState(false)
   const [cluster, setCluster] = useState<WalletCluster>('devnet')
   const [snapshot, setSnapshot] = useState<WalletDataSnapshot | null>(null)
   const [walletDataLoading, setWalletDataLoading] = useState(false)
@@ -176,12 +172,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const recipientError = recipientTrimmed && !recipientValid ? 'Enter a valid Solana address.' : ''
   const selfSendError = recipientIsSelf ? 'You cannot send SOL to this wallet.' : ''
   const sendAmountError = amountValidation(sendAmount, snapshot)
-  const subscriptionView = subscriptionStatusView({
+  const paymentStatusView = prepaidPaymentStatusView({
     cluster,
     coverEnrolled,
     coverStatusLoading,
     coverStatusSnapshot,
-    subscriptionState,
+    paymentState,
   })
 
   async function refresh() {
@@ -263,19 +259,18 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
   }, [])
 
-  async function refreshSubscriptionState() {
+  async function refreshPaymentState() {
     if (!address) return
     try {
-      setCoverPlans(await subscriptions.plans())
-      setSubscriptionState(await subscriptions.localSubscription(address))
+      setPaymentState(await payments.localPayment(address))
     } catch {
-      setSubscriptionError('Subscription state unavailable')
+      setPaymentError('Payment state unavailable')
     }
   }
 
   useEffect(() => {
     if (view === 'account') {
-      void refreshSubscriptionState()
+      void refreshPaymentState()
     }
   }, [view, address])
 
@@ -397,44 +392,43 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   function openCoverActivation() {
     setAccountScreen('cover')
     setMainTab('assets')
-    setSubscriptionPreview(null)
-    setSubscriptionResult(null)
-    setSubscriptionError('')
-    setSubscriptionNotice('')
-    setSubscriptionNeedsUnlock(false)
+    setPaymentPreview(null)
+    setPaymentResult(null)
+    setPaymentError('')
+    setPaymentNotice('')
+    setPaymentNeedsUnlock(false)
   }
 
-  // Setup/Approve/Sync each need a fresh VAULT signature, and the vault can idle-lock while the
-  // popup stays on the cover screen. Ensure it is unlocked before signing; if it is locked, prompt
-  // for the password inline (reusing the unlock `password` state) instead of failing the action.
-  async function ensureSubscriptionUnlocked(): Promise<boolean> {
+  // Payment and activation can need vault signatures, and the vault can idle-lock while this
+  // screen is open. Prompt inline instead of discarding the reviewed payment.
+  async function ensurePaymentUnlocked(): Promise<boolean> {
     if (await vault.isUnlocked()) {
       return true
     }
     if (!password) {
-      setSubscriptionNeedsUnlock(true)
-      setSubscriptionError('Wallet locked. Enter your password to continue.')
+      setPaymentNeedsUnlock(true)
+      setPaymentError('Wallet locked. Enter your password to continue.')
       return false
     }
     try {
       await vault.unlock(password)
       setPassword('')
-      setSubscriptionNeedsUnlock(false)
+      setPaymentNeedsUnlock(false)
       return true
     } catch {
-      setSubscriptionNeedsUnlock(true)
-      setSubscriptionError('Wrong password')
+      setPaymentNeedsUnlock(true)
+      setPaymentError('Wrong password')
       return false
     }
   }
 
-  function handleSubscriptionError(e: unknown, fallback: string) {
+  function handlePaymentError(e: unknown, fallback: string) {
     const message = errorMessage(e, fallback)
     if (isVaultLockedError(message)) {
-      setSubscriptionNeedsUnlock(true)
-      setSubscriptionError('Wallet re-locked. Enter your password and try again.')
+      setPaymentNeedsUnlock(true)
+      setPaymentError('Wallet re-locked. Enter your password and try again.')
     } else {
-      setSubscriptionError(message)
+      setPaymentError(message)
     }
   }
 
@@ -453,102 +447,75 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setAccountScreen('home')
   }
 
-  async function previewSelectedSubscription() {
-    setSubscriptionBusy(true)
-    setSubscriptionError('')
-    setSubscriptionNotice('')
-    setSubscriptionPreview(null)
-    setSubscriptionResult(null)
+  async function previewCoverPayment() {
+    setPaymentBusy(true)
+    setPaymentError('')
+    setPaymentNotice('')
+    setPaymentPreview(null)
+    setPaymentResult(null)
     try {
-      setSubscriptionPreview(
-        await subscriptions.previewSubscription({
-          planId: selectedPlanId,
-          billingPeriod: selectedBillingPeriod,
-          cluster,
-        }),
-      )
+      setPaymentPreview(await payments.previewPayment({ cluster }))
     } catch (e) {
-      setSubscriptionError(errorMessage(e, 'Could not review subscription'))
+      setPaymentError(errorMessage(e, 'Could not review the one-off payment'))
     } finally {
-      setSubscriptionBusy(false)
+      setPaymentBusy(false)
     }
   }
 
-  async function setupSelectedSubscription() {
-    setSubscriptionBusy(true)
-    setSubscriptionError('')
-    setSubscriptionNotice('')
-    if (!(await ensureSubscriptionUnlocked())) {
-      setSubscriptionBusy(false)
+  async function activateCoverPayment() {
+    setPaymentBusy(true)
+    setPaymentError('')
+    setPaymentNotice('')
+    if (!(await ensurePaymentUnlocked())) {
+      setPaymentBusy(false)
       return
     }
     try {
-      const result = await subscriptions.setupSubscription({
-        planId: selectedPlanId,
-        billingPeriod: selectedBillingPeriod,
-        cluster,
-      })
-      setSubscriptionState(result.state)
-      setSubscriptionPreview(null)
-      setSubscriptionResult(null)
-      setSubscriptionNotice('Setup confirmed. Fund the USDC account, then review the subscription again.')
-      await refreshSubscriptionState()
-    } catch (e) {
-      handleSubscriptionError(e, 'Could not complete subscription setup')
-    } finally {
-      setSubscriptionBusy(false)
-    }
-  }
-
-  async function activateSelectedSubscription() {
-    setSubscriptionBusy(true)
-    setSubscriptionError('')
-    setSubscriptionNotice('')
-    if (!(await ensureSubscriptionUnlocked())) {
-      setSubscriptionBusy(false)
-      return
-    }
-    try {
-      const result = await subscriptions.activateSubscription({
-        planId: selectedPlanId,
-        billingPeriod: selectedBillingPeriod,
-        cluster,
-      })
-      setSubscriptionResult(result)
-      setSubscriptionState(result.state)
-      setSubscriptionPreview(result.preview)
-      await refreshCoverState()
-      await refreshSubscriptionState()
-    } catch (e) {
-      handleSubscriptionError(e, 'Could not approve subscription')
-    } finally {
-      setSubscriptionBusy(false)
-    }
-  }
-
-  async function syncSubscriptionEntitlement() {
-    setSubscriptionBusy(true)
-    setSubscriptionError('')
-    setSubscriptionNotice('')
-    if (!(await ensureSubscriptionUnlocked())) {
-      setSubscriptionBusy(false)
-      return
-    }
-    try {
-      const state = await subscriptions.syncEntitlement(address ?? undefined)
-      setSubscriptionState(state)
-      await refreshCoverState()
-      if (state?.status === 'active') {
-        setSubscriptionNotice('Cover entitlement synced.')
-      } else if (state) {
-        setSubscriptionNotice('Subscription is still pending API entitlement activation.')
+      const result = await payments.activatePayment({ cluster })
+      setPaymentResult(result)
+      setPaymentState(result.state)
+      if (result.apiCoverActive) {
+        setPaymentNotice('Payment confirmed and Ember Cover is active.')
       } else {
-        setSubscriptionError('No subscription found for this wallet.')
+        setPaymentNotice('Payment saved. Retry activation without paying again.')
+      }
+      await refreshCoverState()
+      await refreshPaymentState()
+      await refreshWalletData()
+    } catch (e) {
+      handlePaymentError(e, 'Could not complete the cover payment')
+      await refreshPaymentState()
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
+  async function syncCoverPayment() {
+    setPaymentBusy(true)
+    setPaymentError('')
+    setPaymentNotice('')
+    if (!(await ensurePaymentUnlocked())) {
+      setPaymentBusy(false)
+      return
+    }
+    try {
+      const result = await payments.syncPayment(address ?? undefined)
+      if (!result) {
+        setPaymentError('No saved one-off payment was found for this wallet.')
+        return
+      }
+      setPaymentResult(result)
+      setPaymentState(result.state)
+      await refreshCoverState()
+      if (result.apiCoverActive) {
+        setPaymentNotice('Cover activation completed. No second payment was made.')
+      } else {
+        setPaymentNotice(result.activationError ?? 'Payment confirmation or API activation is still pending.')
       }
     } catch (e) {
-      handleSubscriptionError(e, 'Could not sync cover entitlement')
+      handlePaymentError(e, 'Could not retry payment activation')
     } finally {
-      setSubscriptionBusy(false)
+      setPaymentBusy(false)
     }
   }
 
@@ -603,8 +570,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <span className="ec-brand-subtitle">Cover wallet</span>
           </span>
         </div>
-        <span className="ec-status-badge" data-tone={subscriptionView.badgeTone}>
-          {subscriptionView.badgeLabel}
+        <span className="ec-status-badge" data-tone={paymentStatusView.badgeTone}>
+          {paymentStatusView.badgeLabel}
         </span>
       </header>
     )
@@ -678,12 +645,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
 
   function renderCoverStatusCard() {
     const actionLabel =
-      subscriptionView.primaryAction === 'manage'
+      paymentStatusView.primaryAction === 'manage'
         ? 'Manage Cover'
-        : subscriptionView.primaryAction === 'sync'
-          ? 'Sync entitlement'
-          : 'Set up cover'
-    const actionTestId = subscriptionView.primaryAction === 'manage' ? 'manage-cover' : 'activate-cover'
+        : paymentStatusView.primaryAction === 'sync'
+          ? 'Retry activation'
+          : 'Activate cover'
+    const actionTestId = paymentStatusView.primaryAction === 'manage' ? 'manage-cover' : 'activate-cover'
     return (
       <section className="ec-cover-strip" data-testid="wallet-cover-status">
         <div className="ec-cover-strip__main">
@@ -691,16 +658,16 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <BrandMark title="Coverage" />
           </span>
           <div>
-            <h2 className="ec-cover-title">{subscriptionView.title}</h2>
-            <p className="ec-cover-detail">{subscriptionView.detail}</p>
+            <h2 className="ec-cover-title">{paymentStatusView.title}</h2>
+            <p className="ec-cover-detail">{paymentStatusView.detail}</p>
           </div>
         </div>
         <div className="ec-cover-strip__side">
-          <span className="ec-status-badge" data-tone={subscriptionView.badgeTone} data-testid="cover-status">
-            {subscriptionView.badgeLabel}
+          <span className="ec-status-badge" data-tone={paymentStatusView.badgeTone} data-testid="cover-status">
+            {paymentStatusView.badgeLabel}
           </span>
           <button
-            className={subscriptionView.primaryAction === 'activate' ? 'ec-primary' : 'ec-secondary'}
+            className={paymentStatusView.primaryAction === 'activate' ? 'ec-primary' : 'ec-secondary'}
             data-testid={actionTestId}
             onClick={openCoverActivation}
             type="button"
@@ -708,9 +675,9 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             {actionLabel}
           </button>
         </div>
-        {subscriptionView.metrics.length > 0 ? (
+        {paymentStatusView.metrics.length > 0 ? (
           <dl className="ec-metrics">
-            {subscriptionView.metrics.map((metric) => (
+            {paymentStatusView.metrics.map((metric) => (
               <div className="ec-metric-row" key={metric.label}>
                 <dt>{metric.label}</dt>
                 <dd>{metric.value}</dd>
@@ -773,185 +740,137 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     )
   }
 
-  function planPrice(plan: EmberCoverPlan): string {
-    return selectedBillingPeriod === 'monthly' ? `${plan.monthlyPriceUsdc} USDC / month` : `${plan.annualPriceUsdc} USDC / year`
-  }
-
   function renderCoverActivation() {
-    const selectedPlan = coverPlans.find((plan) => plan.id === selectedPlanId) ?? coverPlans[0]
-    const canActivate =
-      !!subscriptionPreview &&
-      subscriptionPreview.errors.length === 0 &&
-      subscriptionPreview.simulation.status === 'success' &&
-      !subscriptionBusy
-    const canSetup =
-      !!subscriptionPreview &&
-      subscriptionPreview.setupRequired &&
-      !subscriptionBusy &&
-      !subscriptionPreview.errors.includes('Not enough SOL for network fees.')
-    const canSyncEntitlement =
-      !!subscriptionState?.subscriptionSignature &&
-      subscriptionState.status !== 'active' &&
-      !subscriptionBusy
-    const showPlanSelection = !canSyncEntitlement
+    const canPay =
+      !!paymentPreview &&
+      paymentPreview.errors.length === 0 &&
+      paymentPreview.simulation.status === 'success' &&
+      !paymentBusy
+    const canRetry = !!paymentState?.paymentSignature && paymentState.status !== 'active' && !paymentBusy
     return (
       <section className="ec-task-screen" data-testid="cover-activation">
         <div className="ec-screen-head">
           {renderBackButton(() => setAccountScreen(approvalPending ? 'approval' : 'home'))}
           <div>
-            <span className="ec-control-label">Coverage</span>
-            <h2>Activate Cover</h2>
+            <span className="ec-control-label">One-off payment</span>
+            <h2>Activate Ember Cover</h2>
           </div>
         </div>
-        {subscriptionState ? (
-          <section className="ec-review-card" data-testid="local-subscription-state">
-            <h3>Subscription</h3>
+        <p className="ec-help" data-testid="payment-copy">
+          Pay 1 Devnet USDC once for 30 days of Core cover. This is a token transfer, not a recurring
+          subscription or spending approval.
+        </p>
+        {paymentState ? (
+          <section className="ec-review-card" data-testid="local-payment-state">
+            <h3>Saved payment</h3>
             <dl className="ec-data-list">
               <div>
                 <dt>Status</dt>
-                <dd>{subscriptionState.status}</dd>
+                <dd>{paymentState.status}</dd>
               </div>
               <div>
                 <dt>Wallet</dt>
-                <dd>{shortAddress(subscriptionState.walletAddress)}</dd>
+                <dd>{shortAddress(paymentState.walletAddress)}</dd>
               </div>
               <div>
-                <dt>Plan PDA</dt>
-                <dd>{shortAddress(subscriptionState.planPda)}</dd>
+                <dt>Payment</dt>
+                <dd>
+                  <a
+                    href={`https://explorer.solana.com/tx/${encodeURIComponent(paymentState.paymentSignature)}?cluster=devnet`}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {shortAddress(paymentState.paymentSignature)}
+                  </a>
+                </dd>
               </div>
               <div>
-                <dt>Subscription PDA</dt>
-                <dd>{shortAddress(subscriptionState.subscriptionPda)}</dd>
+                <dt>Cover ends</dt>
+                <dd>{paymentState.currentPeriodEnd ?? 'Pending activation'}</dd>
               </div>
             </dl>
+            {paymentState.lastError ? <p>{paymentState.lastError}</p> : null}
           </section>
         ) : null}
-        {showPlanSelection ? (
-          <>
-            <div className="ec-tabs" data-testid="billing-period">
-              <button
-                aria-selected={selectedBillingPeriod === 'monthly'}
-                onClick={() => {
-                  setSelectedBillingPeriod('monthly')
-                  setSubscriptionPreview(null)
-                  setSubscriptionResult(null)
-                  setSubscriptionNotice('')
-                }}
-              >
-                Monthly
-              </button>
-              <button
-                aria-selected={selectedBillingPeriod === 'annual'}
-                onClick={() => {
-                  setSelectedBillingPeriod('annual')
-                  setSubscriptionPreview(null)
-                  setSubscriptionResult(null)
-                  setSubscriptionNotice('')
-                }}
-              >
-                Annual
-              </button>
-            </div>
-            <div className="ec-plan-grid" data-testid="cover-plan-options">
-              {coverPlans.map((plan) => (
-                <button
-                  className="ec-plan-option"
-                  aria-selected={selectedPlanId === plan.id}
-                  data-testid={`cover-plan-${plan.id}`}
-                  key={plan.id}
-                  onClick={() => {
-                    setSelectedPlanId(plan.id)
-                    setSubscriptionPreview(null)
-                    setSubscriptionResult(null)
-                    setSubscriptionNotice('')
-                  }}
-                >
-                  <strong>{plan.name}</strong>
-                  <span>{planPrice(plan)}</span>
-                  <span>${plan.coverCapUsd.toLocaleString()} cap · {plan.coveredTxAllowance} covered tx</span>
-                </button>
-              ))}
-            </div>
-            {selectedPlan ? (
-              <p className="ec-help" data-testid="subscription-copy">
-                This approves an onchain USDC subscription for Ember Cover. Ember can collect only according to this plan.
-              </p>
-            ) : null}
-          </>
-        ) : null}
-        {subscriptionPreview ? (
-          <section className="ec-review-card" data-testid="subscription-review">
-            <h3>Subscription approval</h3>
+        {paymentPreview ? (
+          <section className="ec-review-card" data-testid="payment-review">
+            <h3>Review one-off payment</h3>
             <dl className="ec-data-list">
               <div>
-                <dt>Merchant</dt>
-                <dd>Ember Cover</dd>
-              </div>
-              <div>
                 <dt>Plan</dt>
-                <dd>{subscriptionPreview.plan.name}</dd>
+                <dd>{paymentPreview.tier}</dd>
               </div>
               <div>
                 <dt>Amount</dt>
-                <dd>{subscriptionPreview.amountUsdc} USDC</dd>
+                <dd>{paymentPreview.amountUsdc} USDC</dd>
               </div>
               <div>
-                <dt>Billing period</dt>
-                <dd>{subscriptionPreview.renewalPeriod}</dd>
+                <dt>Duration</dt>
+                <dd>{paymentPreview.periodDays} days</dd>
               </div>
               <div>
-                <dt>Token</dt>
-                <dd>USDC</dd>
+                <dt>Network</dt>
+                <dd>{clusterLabel(paymentPreview.cluster)}</dd>
               </div>
               <div>
-                <dt>Approved collector</dt>
-                <dd>{shortAddress(subscriptionPreview.approvedPuller)}</dd>
+                <dt>From wallet</dt>
+                <dd title={paymentPreview.walletAddress}>{shortAddress(paymentPreview.walletAddress)}</dd>
               </div>
               <div>
-                <dt>User wallet</dt>
-                <dd>{shortAddress(subscriptionPreview.walletAddress)}</dd>
+                <dt>Treasury token account</dt>
+                <dd title={paymentPreview.treasuryTokenAccount}>
+                  {shortAddress(paymentPreview.treasuryTokenAccount)}
+                </dd>
               </div>
               <div>
-                <dt>Subscription program</dt>
-                <dd>{shortAddress(subscriptionPreview.subscriptionProgram)}</dd>
+                <dt>USDC mint</dt>
+                <dd title={paymentPreview.tokenMint}>{shortAddress(paymentPreview.tokenMint)}</dd>
+              </div>
+              <div>
+                <dt>Fee payer</dt>
+                <dd>{shortAddress(paymentPreview.walletAddress)}</dd>
+              </div>
+              <div>
+                <dt>Estimated network fee</dt>
+                <dd>{paymentPreview.feeLamports} lamports</dd>
               </div>
             </dl>
-            {subscriptionPreview.setupRequired ? (
-              <p data-testid="subscription-setup-note">Setup transaction required before subscription approval.</p>
-            ) : null}
-            <p data-testid="subscription-balances">
-              USDC {subscriptionPreview.usdcBalance} · SOL lamports {subscriptionPreview.solBalanceLamports}
+            <p data-testid="payment-balances">
+              USDC {paymentPreview.usdcBalance} · SOL {formatLamportsAsSol(BigInt(paymentPreview.solBalanceLamports))}
             </p>
-            {subscriptionPreview.errors.length > 0 ? (
-              <ul data-testid="subscription-errors">
-                {subscriptionPreview.errors.map((item) => (
+            {paymentPreview.errors.length > 0 ? (
+              <ul data-testid="payment-errors">
+                {paymentPreview.errors.map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ul>
             ) : null}
-            {subscriptionPreview.simulation.status === 'failure' ? (
-              <p data-testid="subscription-simulation-error">Simulation failed: {subscriptionPreview.simulation.error}</p>
+            {paymentPreview.simulation.status === 'success' ? (
+              <p data-testid="payment-simulation-success">Simulation passed. Nothing has been signed or sent yet.</p>
+            ) : null}
+            {paymentPreview.simulation.status === 'failure' ? (
+              <p data-testid="payment-simulation-error">Simulation failed: {paymentPreview.simulation.error}</p>
             ) : null}
           </section>
         ) : null}
-        {subscriptionResult ? (
-          <section className="ec-review-card" data-testid="subscription-result">
-            <h3>{subscriptionResult.apiCoverActive ? 'Cover active' : 'Subscription confirmed'}</h3>
+        {paymentResult ? (
+          <section className="ec-review-card" data-testid="payment-result">
+            <h3>{paymentResult.apiCoverActive ? 'Cover active' : 'Activation pending'}</h3>
             <p>
-              <a href={subscriptionResult.explorerUrl} rel="noreferrer" target="_blank">
-                {shortAddress(subscriptionResult.signature)}
+              <a href={paymentResult.explorerUrl} rel="noreferrer" target="_blank">
+                {shortAddress(paymentResult.signature)}
               </a>
             </p>
-            {!subscriptionResult.apiCoverActive ? (
-              <p>API entitlement is pending. Ember Cover decisions remain API-controlled.</p>
+            {!paymentResult.apiCoverActive ? (
+              <p>Your signed payment is saved. Retry activation; do not submit another payment.</p>
             ) : null}
           </section>
         ) : null}
-        {subscriptionNotice ? <p data-testid="subscription-notice">{subscriptionNotice}</p> : null}
-        {subscriptionError ? <p data-testid="subscription-error">{subscriptionError}</p> : null}
-        {subscriptionNeedsUnlock ? (
+        {paymentNotice ? <p data-testid="payment-notice">{paymentNotice}</p> : null}
+        {paymentError ? <p data-testid="payment-error">{paymentError}</p> : null}
+        {paymentNeedsUnlock ? (
           <input
-            data-testid="subscription-unlock-password"
+            data-testid="payment-unlock-password"
             onChange={(event) => setPassword(event.target.value)}
             placeholder="Wallet password"
             type="password"
@@ -959,21 +878,32 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           />
         ) : null}
         <div className="ec-flow-actions">
-          {canSyncEntitlement ? (
-            <button className="ec-primary" data-testid="sync-subscription-entitlement" disabled={subscriptionBusy} onClick={() => void syncSubscriptionEntitlement()}>
-              {subscriptionBusy ? 'Syncing...' : 'Sync cover entitlement'}
+          {canRetry ? (
+            <button
+              className="ec-primary"
+              data-testid="retry-payment-activation"
+              disabled={paymentBusy}
+              onClick={() => void syncCoverPayment()}
+            >
+              {paymentBusy ? 'Retrying...' : 'Retry activation'}
             </button>
-          ) : !subscriptionPreview ? (
-            <button className="ec-primary" data-testid="review-subscription" disabled={subscriptionBusy || !selectedPlan} onClick={() => void previewSelectedSubscription()}>
-              {subscriptionBusy ? 'Checking...' : 'Review subscription'}
-            </button>
-          ) : subscriptionPreview.setupRequired ? (
-            <button className="ec-primary" data-testid="setup-subscription" disabled={!canSetup} onClick={() => void setupSelectedSubscription()}>
-              {subscriptionBusy ? 'Setting up...' : 'Create USDC setup'}
+          ) : !paymentPreview ? (
+            <button
+              className="ec-primary"
+              data-testid="review-cover-payment"
+              disabled={paymentBusy}
+              onClick={() => void previewCoverPayment()}
+            >
+              {paymentBusy ? 'Checking...' : 'Review one-off payment'}
             </button>
           ) : (
-            <button className="ec-primary" data-testid="approve-subscription" disabled={!canActivate} onClick={() => void activateSelectedSubscription()}>
-              {subscriptionBusy ? 'Approving...' : 'Approve subscription'}
+            <button
+              className="ec-primary"
+              data-testid="pay-and-activate-cover"
+              disabled={!canPay}
+              onClick={() => void activateCoverPayment()}
+            >
+              {paymentBusy ? 'Submitting...' : `Pay ${paymentPreview.amountUsdc} USDC and activate cover`}
             </button>
           )}
         </div>
@@ -1026,13 +956,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </section>
       )
     }
-    const needsSync = subscriptionView.primaryAction === 'sync'
+    const needsSync = paymentStatusView.primaryAction === 'sync'
     return (
       <section className="ec-inline-cover" data-tone={needsSync ? 'unavailable' : 'none'} data-testid="send-cover-status">
         <span>{needsSync ? 'Cover status unavailable' : 'Cover is not active'}</span>
-        <p>{subscriptionView.detail}</p>
+        <p>{paymentStatusView.detail}</p>
         <button className="ec-secondary" onClick={openCoverActivation} type="button">
-          {needsSync ? 'Sync cover' : 'Set up cover'}
+          {needsSync ? 'Retry activation' : 'Activate cover'}
         </button>
       </section>
     )

@@ -9,7 +9,7 @@
     "postinstall": "wxt prepare",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "WXT_COVER_PROXY_URL=http://127.0.0.1:8787 wxt build && playwright test",
+    "e2e": "WXT_COVER_PROXY_URL=http://127.0.0.1:18787 wxt build && playwright test",
     "dev:test": "bun scripts/dev-test.ts",
     "dev:proxy": "bun scripts/dev-proxy.ts"
   },
@@ -17,7 +17,6 @@
     "@noble/hashes": "^1.5.0",
     "@solana-program/token": "^0.14.0",
     "@solana/kit": "^6.10.0",
-    "@solana/subscriptions": "^0.3.0",
     "@solana/wallet-standard-chains": "1.1.1",
     "@solana/wallet-standard-features": "1.3.0",
     "@wallet-standard/core": "1.1.1",

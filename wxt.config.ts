@@ -9,8 +9,10 @@ export default defineConfig({
     permissions: ['storage'],
     host_permissions: [
       'http://127.0.0.1:8787/*',
-      'https://ember-v4-api-devnet.fly.dev/*',
+      'http://127.0.0.1:18787/*',
       'https://*.workers.dev/*',
+      'https://solana-devnet.g.alchemy.com/*',
+      'https://solana-mainnet.g.alchemy.com/*',
       'https://api.devnet.solana.com/*',
       'https://api.mainnet-beta.solana.com/*',
     ],

@@ -3,8 +3,8 @@ import { defineBackground } from 'wxt/utils/define-background'
 import { EmberCoverProvider, registerCoverService } from '../background/cover-service.ts'
 import { registerMessageHandlers } from '../background/message-handlers.ts'
 import { registerRequestService } from '../background/request-service.ts'
+import { PrepaidPaymentProvider, registerPrepaidPaymentService } from '../background/prepaid-payment-service.ts'
 import { registerWalletTransferService, WalletTransferProvider } from '../background/sol-transfer-service.ts'
-import { registerSubscriptionService, SolanaSubscriptionProvider } from '../background/subscription-service.ts'
 import { registerVaultService } from '../background/vault-service.ts'
 import { registerWalletDataService } from '../background/wallet-data-service.ts'
 
@@ -17,7 +17,7 @@ export default defineBackground(() => {
   registerCoverService(cover)
   registerWalletDataService()
   registerWalletTransferService(new WalletTransferProvider(controller, cover))
-  registerSubscriptionService(new SolanaSubscriptionProvider(controller, cover))
+  registerPrepaidPaymentService(new PrepaidPaymentProvider(controller, cover))
   registerRequestService(controller, cover)
   registerMessageHandlers()
 })

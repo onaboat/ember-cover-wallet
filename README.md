@@ -2,7 +2,7 @@
 
 > Most wallets warn you. Ember covers you.
 
-Ember Cover is a subscription product that gives Solana users real financial
+Ember Cover gives Solana users real financial
 protection against wallet-drain and malicious-signing losses. Where a typical
 wallet only shows a warning before you sign, Ember underwrites the transaction
 and, when it issues a covered decision, stands behind that decision with a
@@ -22,24 +22,25 @@ Website: https://www.embercover.com
   transaction and returns a clear cover decision: covered, not covered, or
   unsupported.
 - **Pays out covered losses.** A covered loss can be claimed and paid up to the
-  subscription's monthly cap, subject to the terms bound to that subscription.
+  active cover cap, subject to the terms bound to the payment entitlement.
 - **Stays out of the way.** If Ember is ever unavailable the wallet still works;
   the transaction simply earns no new cover.
 
 The specifics of how Ember reaches a cover decision are proprietary and are not
 documented in this repository.
 
-## Subscriptions
+## Cover payment
 
-Cover is sold as a subscription with tiered monthly loss caps and covered
-transaction limits. The subscription is attached to the user account, not to any
-single wallet, and caps are shared across every wallet registered under it.
+The current Devnet product uses a wallet-native one-off payment: the user sends
+exactly 1 Devnet USDC to the configured Ember treasury token account for 30 days
+of Core cover. The wallet simulates the SPL `TransferChecked` transaction before
+showing the approval action. It creates no recurring authority or token
+allowance.
 
-Billing is **wallet-native, powered by Solana subscriptions**: users subscribe
-and pay on-chain in USDC through a Solana subscription program, with no Stripe
-and no cards.
-
-(Pricing is still being finalized and is intentionally not listed here.)
+After Solana confirms the payment, the wallet sends its signature through the
+Cloudflare Worker to the Ember API. The API validates the transfer onchain and
+activates the entitlement. Signed payment state is saved before broadcast so an
+interrupted activation can retry without making a second payment.
 
 ---
 
@@ -113,4 +114,4 @@ cd clients/wallet-sdk && npm install && npm test
 ---
 
 > Status: pre-launch. Cover terms, tiers, and exclusions are defined by the
-> published terms version bound to each subscription, not by this README.
+> published terms version bound to each entitlement, not by this README.

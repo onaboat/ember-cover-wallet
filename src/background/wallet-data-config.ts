@@ -9,17 +9,30 @@ export interface WalletClusterConfig {
 
 export const DEFAULT_WALLET_CLUSTER: WalletCluster = 'devnet'
 
+declare global {
+  interface ImportMeta {
+    readonly env?: Record<string, string | boolean | undefined>
+  }
+}
+
+const env = import.meta.env ?? {}
+
+function rpcUrl(key: string, fallback: string): string {
+  const value = env[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
 export const WALLET_CLUSTER_OPTIONS: readonly WalletClusterConfig[] = [
   {
     id: 'devnet',
     label: 'Devnet',
-    rpcUrl: 'https://api.devnet.solana.com',
+    rpcUrl: rpcUrl('WXT_SOLANA_DEVNET_RPC_URL', 'https://api.devnet.solana.com'),
     explorerCluster: 'devnet',
   },
   {
     id: 'mainnet-beta',
     label: 'Mainnet',
-    rpcUrl: 'https://api.mainnet-beta.solana.com',
+    rpcUrl: rpcUrl('WXT_SOLANA_MAINNET_RPC_URL', 'https://api.mainnet-beta.solana.com'),
     explorerCluster: null,
   },
 ] as const

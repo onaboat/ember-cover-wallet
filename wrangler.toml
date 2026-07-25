@@ -1,7 +1,7 @@
 # Ember cover proxy — Cloudflare Worker.
 # Deploy:
 #   bunx wrangler login                          # one-time Cloudflare auth (interactive)
-#   bunx wrangler secret put EMBER_PARTNER_API_KEY   # paste: test-partner-key (devnet)
+#   bunx wrangler secret put EMBER_PARTNER_API_KEY   # enter the API-issued partner key
 #   bunx wrangler deploy                         # prints the https://<name>.<sub>.workers.dev URL
 # Then point the extension's COVER_CONFIG.proxyBaseUrl + host_permissions at that URL.
 name = "ember-cover-proxy"
@@ -9,6 +9,6 @@ main = "src/worker/worker.ts"
 compatibility_date = "2025-06-01"
 
 [vars]
-EMBER_API = "https://ember-v4-api-devnet.fly.dev"
+EMBER_API = "https://ember-production-de2c.up.railway.app"
 EMBER_USER_REF = "user-1"
 # EMBER_PARTNER_API_KEY is a SECRET — set with `wrangler secret put`, never put it here.

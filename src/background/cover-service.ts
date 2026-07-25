@@ -3,7 +3,10 @@ import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import { EmberClient } from '../cover/ember-client.ts'
-import type { SubscriptionEntitlementActivationRequest } from '../cover/ember-client.ts'
+import type {
+  PaymentEntitlementActivationRequest,
+  PaymentEntitlementActivationResponse,
+} from '../cover/ember-client.ts'
 import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
 
@@ -52,7 +55,9 @@ export interface CoverProvider {
   /** Call the register API to link the wallet to its entitlement; needs an authorized session. */
   registerWithApi(): Promise<boolean>
   isEnrolled(): Promise<boolean>
-  activateSubscriptionEntitlement?(args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>): Promise<boolean>
+  activatePaymentEntitlement?(
+    args: Omit<PaymentEntitlementActivationRequest, 'walletPublicKey'>,
+  ): Promise<PaymentEntitlementActivationResponse>
 }
 
 /** The SW-side VAULT signer the cover provider needs for one-time enrollment. */
@@ -144,16 +149,16 @@ export class EmberCoverProvider implements CoverProvider {
     return (await this.#activeEnrollment()) !== null
   }
 
-  async activateSubscriptionEntitlement(
-    args: Omit<SubscriptionEntitlementActivationRequest, 'walletAddress'>,
-  ): Promise<boolean> {
+  async activatePaymentEntitlement(
+    args: Omit<PaymentEntitlementActivationRequest, 'walletPublicKey'>,
+  ): Promise<PaymentEntitlementActivationResponse> {
     const walletAddress = await this.#signer.getAddress()
     if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
-      return false
+      throw new Error('Cover session is not authorized')
     }
-    return await this.#client.activateSubscriptionEntitlement({
+    return await this.#client.activatePaymentEntitlement({
       ...args,
-      walletAddress,
+      walletPublicKey: walletAddress,
     })
   }
 
@@ -170,7 +175,7 @@ export class EmberCoverProvider implements CoverProvider {
 
   /**
    * Authorize the session key for the current wallet (one vault sign). Every
-   * proxied cover call needs this, so the subscription flow calls it FIRST.
+   * proxied cover call needs this, so the prepaid payment flow calls it before activation.
    * Unlike enroll(), it never touches the register API or rolls back.
    */
   async authorizeSession(): Promise<boolean> {

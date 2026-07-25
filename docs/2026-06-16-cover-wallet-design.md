@@ -45,7 +45,8 @@ public-sourcing the repo.
 - **Auth:** Ember session key (separate ephemeral key) signs API requests; the
   wallet key only signs txs (always user-approved) + a one-time session
   authorization. This fixes the fork's lock conflict.
-- **Cluster:** devnet (the live devnet Ember API: `ember-v4-api-devnet.fly.dev`).
+- **Cluster:** devnet (the live Ember API:
+  `ember-production-de2c.up.railway.app`).
 
 ## Architecture & Components
 
@@ -127,12 +128,14 @@ seed-derived key slots into the same encrypt/import path.
   dodges the lock conflict. Compromise is contained: it can only request cover
   decisions / attach evidence, never sign a fund-moving transaction.
 
-**Activate Ember Cover:** generate the session key -> wallet key signs
-`ember-session-authorization\n<sessionPubkey>\n<walletPubkey>` (one approved
-action) -> register the wallet with Ember (nonce -> wallet-key sign -> register).
-Store the authorization. Cover becomes active only after the wallet also confirms
-an onchain Solana subscription and the Ember API activates that subscription
-entitlement.
+**Activate Ember Cover:** review and simulate an exact 1 Devnet USDC
+`TransferChecked` to the configured Ember treasury token account -> user approves
+the one-off transfer -> save the signed transaction before broadcast -> wait for
+Solana confirmation -> authorize the Ember session key -> call
+`/entitlements/payments/activate` through the Worker. The API validates the
+confirmed transfer and activates 30 days of Core cover. If confirmation or API
+activation is interrupted, the wallet retries the same saved payment signature
+and never constructs another payment automatically.
 
 **Per dapp sign request:**
 1. Content script captures the **dapp origin** and threads it to the background.
@@ -181,6 +184,7 @@ patterns: wallet-standard provider + background messaging from Samui. Libraries:
 
 ## Pre-build dependency
 
-The devnet Ember API (`ember-v4-api-devnet.fly.dev`) is already live, seeded,
-Helius-RPC-backed, scale-to-zero. The proxy points at it; partner key is a Worker
-secret (rotate the Helius key that was pasted in chat).
+The Ember API (`ember-production-de2c.up.railway.app`) is live on Railway. The
+Worker points at its public base URL with no port and injects the partner key as
+a secret. The extension's Devnet RPC endpoint is configured separately through
+its gitignored local environment.

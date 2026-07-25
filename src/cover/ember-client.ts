@@ -30,21 +30,34 @@ export interface CoverStatusRequest {
   userRef: string
 }
 
-export interface SubscriptionEntitlementActivationRequest {
-  walletAddress: string
+export interface PaymentEntitlementActivationRequest {
+  walletPublicKey: string
   cluster: string
-  planTier: string
+  paymentSignature: string
+}
+
+export interface PaymentEntitlementActivationResponse {
+  walletPublicKey: string
+  subscriptionActive: boolean
+  subscriptionStatus: string
+  tier: string
   billingPeriod: string
-  programId: string
-  paymentMint: string
-  merchantWallet: string
-  pullerWallet: string
-  planId: string
-  planPda: string
-  subscriptionAuthorityPda: string
-  subscriptionPda: string
-  setupSignature?: string
-  subscriptionSignature: string
+  currentPeriodEnd: string
+  coveredTxPerMonth: number
+  monthlyLossCapUsd: number
+  paymentSignature: string
+}
+
+export class EmberApiError extends Error {
+  readonly code: string
+  readonly status: number
+
+  constructor(code: string, status: number) {
+    super(code)
+    this.name = 'EmberApiError'
+    this.code = code
+    this.status = status
+  }
 }
 
 export interface MessagePreSignRequest {
@@ -187,13 +200,24 @@ export class EmberClient {
     }
   }
 
-  async activateSubscriptionEntitlement(req: SubscriptionEntitlementActivationRequest): Promise<boolean> {
-    try {
-      const res = await this.post('/entitlements/subscriptions/activate', req, POST_SIGN_TIMEOUT_MS)
-      return res.ok
-    } catch {
-      return false
+  async activatePaymentEntitlement(
+    req: PaymentEntitlementActivationRequest,
+  ): Promise<PaymentEntitlementActivationResponse> {
+    const res = await this.post('/entitlements/payments/activate', req, POST_SIGN_TIMEOUT_MS)
+    const body = await res.text()
+    if (!res.ok) {
+      throw new EmberApiError(parseErrorCode(body) ?? `HTTP ${res.status}`, res.status)
     }
+    const payload = JSON.parse(body) as PaymentEntitlementActivationResponse
+    if (
+      typeof payload.walletPublicKey !== 'string' ||
+      typeof payload.subscriptionActive !== 'boolean' ||
+      typeof payload.currentPeriodEnd !== 'string' ||
+      typeof payload.paymentSignature !== 'string'
+    ) {
+      throw new EmberApiError('invalid_activation_response', 502)
+    }
+    return payload
   }
 
   async messagePreSign(req: MessagePreSignRequest): Promise<CoverDecision> {
