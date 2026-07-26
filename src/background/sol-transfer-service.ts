@@ -17,6 +17,8 @@ import {
 import {
   findAssociatedTokenPda,
   getCreateAssociatedTokenIdempotentInstruction,
+  getGetAccountDataSizeInstruction,
+  getTokenSize,
   getTransferCheckedInstruction,
 } from '@solana-program/token'
 import type {
@@ -39,10 +41,9 @@ import { stringifyWithBigInts } from './safe-json.ts'
 import { formatLamportsAsSol } from './wallet-data-service.ts'
 import { walletClusterConfig } from './wallet-data-config.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
+import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from './token-metadata.ts'
 
 const SYSTEM_PROGRAM_ADDRESS = toAddress('11111111111111111111111111111111')
-const TOKEN_PROGRAM_ADDRESS = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-const TOKEN_2022_PROGRAM_ADDRESS = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 const TRANSACTION_FEE_LAMPORTS = 5_000n
 
 type RpcSend<T> = {
@@ -60,6 +61,10 @@ type SimulateValue = Readonly<{
   err: unknown | null
   fee?: bigint | number | string | null
   logs?: readonly string[] | null
+  returnData?: Readonly<{
+    data: readonly [string, string]
+    programId: string
+  }> | null
 }>
 
 interface TransferRpcClient {
@@ -75,10 +80,14 @@ interface TransferRpcClient {
           data?: Readonly<{
             parsed?: Readonly<{
               info?: Readonly<{
+                decimals?: number
+                extensions?: readonly unknown[]
                 mint?: string
                 owner?: string
+                state?: string
                 tokenAmount?: Readonly<{ amount?: string; decimals?: number }>
               }>
+              type?: string
             }>
           }>
         }>
@@ -128,6 +137,8 @@ export type WalletTransferAsset =
       programId: string
       decimals: number
       rawBalance: string
+      name?: string
+      trusted?: boolean
     }
 
 export interface WalletTransferInput {
@@ -182,6 +193,7 @@ export interface SolTransferPreview {
   createsDestinationTokenAccount: boolean
   accountRentLamports: string
   accountRentSol: string
+  tokenAccountSize: number | null
 }
 
 export interface SolTransferResult {
@@ -279,6 +291,56 @@ function toBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(byte)
   }
   return btoa(binary)
+}
+
+function fromBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+}
+
+function token2022ExtensionNames(extensions: readonly unknown[] | undefined): string[] {
+  if (!Array.isArray(extensions)) {
+    return []
+  }
+  return extensions
+    .map((extension) => {
+      const row = recordOf(extension)
+      const name = row['extension'] ?? row['extensionType'] ?? row['type']
+      return typeof name === 'string' && name.trim() ? name.trim() : 'unknown'
+    })
+    .filter((name, index, names) => names.indexOf(name) === index)
+}
+
+function assertTransferableToken2022Mint(extensions: readonly unknown[] | undefined): void {
+  const names = token2022ExtensionNames(extensions)
+  if (names.length > 0) {
+    throw new Error(
+      `Token-2022 extension "${names.join(', ')}" is not supported for wallet sends yet.`,
+    )
+  }
+}
+
+function tokenAccountSizeFromSimulation(value: SimulateValue, tokenProgram: string): number {
+  if (value.err) {
+    throw new Error(`Could not calculate Token-2022 account rent: ${stringifyWithBigInts(value.err)}`)
+  }
+  const returnData = value.returnData
+  if (!returnData || returnData.programId !== tokenProgram || returnData.data[1] !== 'base64') {
+    throw new Error('Could not calculate Token-2022 account rent.')
+  }
+  const bytes = fromBase64(returnData.data[0])
+  if (bytes.length < 8) {
+    throw new Error('Token-2022 returned an invalid account size.')
+  }
+  const size = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(0, true)
+  if (size <= 0n || size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Token-2022 returned an invalid account size.')
+  }
+  return Number(size)
 }
 
 function coverView(decision: CoverDecision): SolTransferCoverView {
@@ -439,9 +501,71 @@ export class WalletTransferProvider implements WalletTransferUI {
     const signedTransaction = await signTransactionMessageWithSigners(prepared.transactionMessage)
     const signedBytes = getBase64EncodedWireTransaction(signedTransaction)
     const signature = getSignatureFromTransaction(signedTransaction)
-    await prepared.rpc
-      .sendTransaction(signedBytes, { encoding: 'base64', maxRetries: 3, preflightCommitment: 'confirmed' })
-      .send()
+    await coverRecords.record({
+      signature,
+      walletAddress: prepared.walletAddress,
+      coverStatus: toWalletCoverStatus(prepared.decision.coverStatus),
+      riskBand: prepared.decision.riskBand,
+      requestId: prepared.decision.requestId ?? null,
+      dappOrigin: null,
+      title:
+        prepared.preview.asset.kind === 'sol'
+          ? `Sent ${prepared.preview.amount} SOL`
+          : `Sent ${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+      actionKind: prepared.preview.asset.kind === 'sol' ? 'sol_transfer' : 'token_transfer',
+      amount: `${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+      tokenSymbol: prepared.preview.asset.symbol,
+      tokenMint: prepared.preview.asset.kind === 'token' ? prepared.preview.asset.mint : null,
+      recipient: prepared.preview.destination,
+      source: prepared.preview.source,
+      feePayer: prepared.preview.source,
+      programs:
+        prepared.preview.asset.kind === 'sol'
+          ? ['System Program']
+          : [
+              prepared.preview.asset.programId === TOKEN_2022_PROGRAM_ADDRESS ? 'Token 2022' : 'Token Program',
+              ...(prepared.preview.createsDestinationTokenAccount ? ['Associated Token'] : []),
+            ],
+      cluster: prepared.cluster,
+      transactionStatus: 'signed',
+      blockhash: prepared.blockhash,
+      lastValidBlockHeight: prepared.lastValidBlockHeight,
+      broadcastOwner: 'wallet',
+      signedTransactionBase64: String(signedBytes),
+    })
+    try {
+      const returnedSignature = await prepared.rpc
+        .sendTransaction(signedBytes, {
+          encoding: 'base64',
+          maxRetries: 3,
+          preflightCommitment: 'confirmed',
+        })
+        .send()
+      if (String(returnedSignature) !== String(signature)) {
+        throw new Error('RPC returned an unexpected transaction signature.')
+      }
+      await coverRecords.updateTransactionStates([
+        {
+          signature,
+          walletAddress: prepared.walletAddress,
+          transactionStatus: 'broadcast',
+        },
+      ])
+    } catch (error) {
+      await coverRecords
+        .updateTransactionStates([
+          {
+            signature,
+            walletAddress: prepared.walletAddress,
+            transactionStatus: 'signed',
+            failureReason: `Broadcast needs retry: ${String(error)}`,
+          },
+        ])
+        .catch(() => {})
+      throw new Error(
+        `Transaction signed and saved, but broadcast was not confirmed. Do not sign again; Ember will retry it while the blockhash is valid. ${String(error)}`,
+      )
+    }
 
     if (this.#cover && isCoverable(prepared.decision) && prepared.decision.requestId) {
       void this.#cover.postSign({
@@ -452,36 +576,6 @@ export class WalletTransferProvider implements WalletTransferUI {
         walletTimestamp: new Date(this.#now()).toISOString(),
       })
     }
-
-    // Record the verdict locally so this in-wallet send shows its cover status in Activity.
-    await coverRecords
-      .record({
-        signature,
-        walletAddress: prepared.walletAddress,
-        coverStatus: toWalletCoverStatus(prepared.decision.coverStatus),
-        riskBand: prepared.decision.riskBand,
-        requestId: prepared.decision.requestId ?? null,
-        dappOrigin: null,
-        title:
-          prepared.preview.asset.kind === 'sol'
-            ? `Sent ${prepared.preview.amount} SOL`
-            : `Sent ${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
-        actionKind: prepared.preview.asset.kind === 'sol' ? 'sol_transfer' : 'token_transfer',
-        amount: `${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
-        tokenSymbol: prepared.preview.asset.symbol,
-        tokenMint: prepared.preview.asset.kind === 'token' ? prepared.preview.asset.mint : null,
-        recipient: prepared.preview.destination,
-        source: prepared.preview.source,
-        feePayer: prepared.preview.source,
-        programs:
-          prepared.preview.asset.kind === 'sol'
-            ? ['System Program']
-            : [
-                prepared.preview.asset.programId === TOKEN_2022_PROGRAM_ADDRESS ? 'Token 2022' : 'Token Program',
-                ...(prepared.preview.createsDestinationTokenAccount ? ['Associated Token'] : []),
-              ],
-      })
-      .catch(() => {})
 
     return {
       signature,
@@ -514,7 +608,20 @@ export class WalletTransferProvider implements WalletTransferUI {
     let destinationTokenAccount: string | null = null
     let createsDestinationTokenAccount = false
     let accountRentLamports = 0n
+    let tokenAccountSize: number | null = null
     const instructions: Instruction[] = []
+    const baseTransactionMessage = pipe(
+      createTransactionMessage({ version: 0 }),
+      (message) => setTransactionMessageFeePayerSigner(transactionSigner, message),
+      (message) =>
+        setTransactionMessageLifetimeUsingBlockhash(
+          {
+            blockhash: toBlockhash(latestBlockhashResponse.value.blockhash),
+            lastValidBlockHeight: toBigInt(latestBlockhashResponse.value.lastValidBlockHeight),
+          },
+          message,
+        ),
+    )
 
     if (input.asset.kind === 'sol') {
       amountBaseUnits = parseSolAmountToLamports(input.amount)
@@ -536,19 +643,39 @@ export class WalletTransferProvider implements WalletTransferUI {
       const tokenProgram = toAddress(input.asset.programId)
       const mint = parseAddress(input.asset.mint)
       const sourceTokenAccount = parseAddress(input.asset.tokenAccount)
-      const sourceTokenResponse = await rpc
-        .getAccountInfo(sourceTokenAccount, { commitment: 'confirmed', encoding: 'jsonParsed' })
-        .send()
+      const [sourceTokenResponse, mintResponse] = await Promise.all([
+        rpc
+          .getAccountInfo(sourceTokenAccount, { commitment: 'confirmed', encoding: 'jsonParsed' })
+          .send(),
+        rpc.getAccountInfo(mint, { commitment: 'confirmed', encoding: 'jsonParsed' }).send(),
+      ])
       const sourceToken = sourceTokenResponse.value
       const sourceInfo = sourceToken?.data?.parsed?.info
       if (
         !sourceToken ||
         sourceToken.owner !== input.asset.programId ||
+        sourceToken.data?.parsed?.type !== 'account' ||
         sourceInfo?.mint !== input.asset.mint ||
         sourceInfo.owner !== walletAddress ||
         sourceInfo.tokenAmount?.decimals !== input.asset.decimals
       ) {
         throw new Error('Selected token account no longer matches this wallet')
+      }
+      if (sourceInfo.state?.toLowerCase() === 'frozen') {
+        throw new Error('The selected token account is frozen and cannot send tokens.')
+      }
+      const mintAccount = mintResponse.value
+      const mintInfo = mintAccount?.data?.parsed?.info
+      if (
+        !mintAccount ||
+        mintAccount.owner !== input.asset.programId ||
+        mintAccount.data?.parsed?.type !== 'mint' ||
+        mintInfo?.decimals !== input.asset.decimals
+      ) {
+        throw new Error('The selected token mint no longer matches this asset.')
+      }
+      if (input.asset.programId === TOKEN_2022_PROGRAM_ADDRESS) {
+        assertTransferableToken2022Mint(mintInfo.extensions)
       }
       amountBaseUnits = parseTokenAmountToBaseUnits(input.amount, input.asset.decimals)
       const rawBalance = BigInt(sourceInfo.tokenAmount.amount ?? '0')
@@ -562,13 +689,61 @@ export class WalletTransferProvider implements WalletTransferUI {
         mint,
       })
       destinationTokenAccount = destinationAta
-      const [destinationTokenResponse, rentResponse] = await Promise.all([
-        rpc.getAccountInfo(destinationAta, { commitment: 'confirmed', encoding: 'jsonParsed' }).send(),
-        rpc.getMinimumBalanceForRentExemption(165, { commitment: 'confirmed' }).send(),
-      ])
+      const destinationTokenResponse = await rpc
+        .getAccountInfo(destinationAta, { commitment: 'confirmed', encoding: 'jsonParsed' })
+        .send()
       createsDestinationTokenAccount = destinationTokenResponse.value === null
-      accountRentLamports = createsDestinationTokenAccount ? toBigInt(rentResponse) : 0n
+      if (destinationTokenResponse.value) {
+        const destinationAccount = destinationTokenResponse.value
+        const destinationInfo = destinationAccount.data?.parsed?.info
+        if (
+          destinationAccount.owner !== input.asset.programId ||
+          destinationAccount.data?.parsed?.type !== 'account' ||
+          destinationInfo?.mint !== input.asset.mint ||
+          destinationInfo.owner !== input.destination.trim() ||
+          destinationInfo.tokenAmount?.decimals !== input.asset.decimals
+        ) {
+          throw new Error('The recipient token account does not match this mint and token program.')
+        }
+        if (destinationInfo.state?.toLowerCase() === 'frozen') {
+          throw new Error('The recipient token account is frozen and cannot receive tokens.')
+        }
+      }
       if (createsDestinationTokenAccount) {
+        tokenAccountSize =
+          input.asset.programId === TOKEN_2022_PROGRAM_ADDRESS
+            ? tokenAccountSizeFromSimulation(
+                (
+                  await rpc
+                    .simulateTransaction(
+                      getBase64EncodedWireTransaction(
+                        compileTransaction(
+                          appendTransactionMessageInstruction(
+                            getGetAccountDataSizeInstruction(
+                              { mint },
+                              { programAddress: tokenProgram },
+                            ),
+                            baseTransactionMessage,
+                          ),
+                        ),
+                      ),
+                      {
+                        commitment: 'confirmed',
+                        encoding: 'base64',
+                        replaceRecentBlockhash: false,
+                        sigVerify: false,
+                      },
+                    )
+                    .send()
+                ).value,
+                input.asset.programId,
+              )
+            : getTokenSize()
+        accountRentLamports = toBigInt(
+          await rpc
+            .getMinimumBalanceForRentExemption(tokenAccountSize, { commitment: 'confirmed' })
+            .send(),
+        )
         instructions.push(
           getCreateAssociatedTokenIdempotentInstruction({
             payer: transactionSigner,
@@ -594,18 +769,6 @@ export class WalletTransferProvider implements WalletTransferUI {
       )
     }
 
-    const baseTransactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (message) => setTransactionMessageFeePayerSigner(transactionSigner, message),
-      (message) =>
-        setTransactionMessageLifetimeUsingBlockhash(
-          {
-            blockhash: toBlockhash(latestBlockhashResponse.value.blockhash),
-            lastValidBlockHeight: toBigInt(latestBlockhashResponse.value.lastValidBlockHeight),
-          },
-          message,
-        ),
-    )
     const transactionMessage = instructions.reduce(
       (message, instruction) => appendTransactionMessageInstruction(instruction, message),
       baseTransactionMessage as any,
@@ -614,7 +777,7 @@ export class WalletTransferProvider implements WalletTransferUI {
     const unsignedBytes = getBase64EncodedWireTransaction(unsignedTransaction)
     const [decision, simulationResponse] = await Promise.all([
       this.#cover
-        ? this.#cover.preSign({ transactionBytes: unsignedBytes })
+        ? this.#cover.preSign({ transactionBytes: unsignedBytes, cluster })
         : Promise.resolve({
             requestId: '',
             coverStatus: 'unavailable' as const,
@@ -671,9 +834,12 @@ export class WalletTransferProvider implements WalletTransferUI {
         createsDestinationTokenAccount,
         accountRentLamports: accountRentLamports.toString(),
         accountRentSol: formatLamportsAsSol(accountRentLamports),
+        tokenAccountSize,
       } satisfies SolTransferPreview,
       rpc,
       cluster,
+      blockhash: latestBlockhashResponse.value.blockhash,
+      lastValidBlockHeight: toBigInt(latestBlockhashResponse.value.lastValidBlockHeight).toString(),
       transactionMessage,
       walletAddress,
     }

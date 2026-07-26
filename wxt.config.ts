@@ -6,7 +6,7 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react', '@wxt-dev/auto-icons'],
   manifest: ({ mode }) => ({
     name: 'Ember',
-    permissions: ['storage'],
+    permissions: ['storage', 'alarms'],
     host_permissions: [
       ...(mode === 'development' || process.env.WXT_COVER_PROXY_URL?.startsWith('http://127.0.0.1')
         ? ['http://127.0.0.1:8787/*', 'http://127.0.0.1:18787/*']

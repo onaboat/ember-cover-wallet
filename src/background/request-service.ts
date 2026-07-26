@@ -22,6 +22,7 @@ import { topRightPopupPosition } from './popup-position.ts'
 import { buildSignMessageOutputs } from './sign-message-output.ts'
 import { buildSignTransactionOutputs } from './sign-transaction-output.ts'
 import { decodeTransactionSummary } from '../entrypoints/request/decode-transaction.ts'
+import { walletClusterForChain } from '../wallet-standard/chains.ts'
 
 /** The SW-side signer the request service needs. The real VaultController satisfies this. */
 export interface VaultSigner {
@@ -188,6 +189,7 @@ export class RequestService implements RequestApproval {
         const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
         const decision = await this.#cover.preSign({
           transactionBytes,
+          cluster: walletClusterForChain(first.chain),
           ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
         })
         if (this.#request === request) {
@@ -389,6 +391,9 @@ export class RequestService implements RequestApproval {
           source: summary?.primaryAction.source ?? null,
           feePayer: summary?.feePayer ?? address,
           programs: summary?.instructions.map((instruction) => instruction.programName) ?? [],
+          cluster: walletClusterForChain(request.data[0]?.chain),
+          transactionStatus: 'signed',
+          broadcastOwner: 'dapp',
         })
       } catch {
         // a storage failure must not block closing the approval window

@@ -54,3 +54,9 @@ export async function signWithSession(message: Uint8Array): Promise<Uint8Array> 
   const { signingKey: key } = await load()
   return new Uint8Array(await crypto.subtle.sign('Ed25519', key, new Uint8Array(message)))
 }
+
+/** Drop the in-memory copy when the wallet identity is replaced or reset. */
+export function forgetSessionKey(): void {
+  signingKey = null
+  publicKeyB58 = null
+}

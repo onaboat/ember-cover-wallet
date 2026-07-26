@@ -153,6 +153,25 @@ test('not enrolled preSign returns not_covered without calling the proxy', async
   expect(called).toBe(false)
 })
 
+test('does not call a Devnet cover API for a Mainnet transaction', async () => {
+  let called = false
+  const provider = new EmberCoverProvider(signer, {
+    fetch: (async () => {
+      called = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch,
+  })
+
+  const decision = await provider.preSign({
+    transactionBytes: 'AA==',
+    cluster: 'mainnet-beta',
+  })
+
+  expect(decision.coverStatus).toBe('unavailable')
+  expect(decision.debug?.stage).toBe('cluster_mismatch')
+  expect(called).toBe(false)
+})
+
 test('reports enrolled after enroll', async () => {
   const fetchStub = (async (url: string | URL | Request) => {
     const u = String(url)

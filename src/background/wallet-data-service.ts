@@ -2,6 +2,7 @@ import { address as toAddress, createSolanaRpc, devnet, mainnet } from '@solana/
 import type { Address } from '@solana/kit'
 import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
+import { browser } from 'wxt/browser'
 import { storage } from 'wxt/utils/storage'
 
 import {
@@ -11,6 +12,18 @@ import {
   walletClusterConfig,
 } from './wallet-data-config.ts'
 import { coverRecords } from './cover-records.ts'
+import type {
+  CoverRecord,
+  CoverRecordStateUpdate,
+  WalletTransactionStatus,
+} from './cover-records.ts'
+import { stringifyWithBigInts } from './safe-json.ts'
+import {
+  shortTokenMint,
+  TOKEN_2022_PROGRAM_ADDRESS,
+  TOKEN_PROGRAM_ADDRESS,
+  trustedTokenMetadata,
+} from './token-metadata.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
 
 const CLUSTER_KEY = 'local:ember-wallet-data-cluster' as const
@@ -18,8 +31,6 @@ const DEFAULT_ACTIVITY_LIMIT = 10
 const MAX_ACTIVITY_LIMIT = 50
 const CORE_RPC_TIMEOUT_MS = 8_000
 const ENRICHMENT_TIMEOUT_MS = 3_000
-const TOKEN_PROGRAM_ADDRESS = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-const TOKEN_2022_PROGRAM_ADDRESS = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 
 type RpcSend<T> = {
   send(): Promise<T>
@@ -74,6 +85,12 @@ type WalletParsedTransactionResponse = Readonly<{
   }
 }> | null
 
+type WalletRpcSignatureStatus = Readonly<{
+  confirmationStatus: string | null
+  err: unknown | null
+  slot: bigint | number
+}>
+
 interface WalletDataRpcClient {
   getBalance(address: Address, config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<WalletBalanceRpcResponse>
   getSignaturesForAddress(
@@ -89,6 +106,21 @@ interface WalletDataRpcClient {
     filter: Readonly<{ programId: Address }>,
     config: Readonly<{ commitment: 'confirmed'; encoding: 'jsonParsed' }>,
   ): RpcSend<WalletTokenAccountsRpcResponse>
+  getSignatureStatuses?(
+    signatures: readonly string[],
+    config: Readonly<{ searchTransactionHistory: true }>,
+  ): RpcSend<Readonly<{ value: readonly (WalletRpcSignatureStatus | null)[] }>>
+  getBlockHeight?(
+    config?: Readonly<{ commitment: 'confirmed' }>,
+  ): RpcSend<bigint | number | string>
+  sendTransaction?(
+    transaction: string,
+    config: Readonly<{
+      encoding: 'base64'
+      maxRetries: number
+      preflightCommitment: 'confirmed'
+    }>,
+  ): RpcSend<string>
 }
 
 export interface WalletActivityItem {
@@ -115,6 +147,10 @@ export interface WalletTokenBalance {
   decimals: number
   uiAmount: string
   label: string
+  name: string
+  symbol: string
+  iconText: string
+  trusted: boolean
 }
 
 export type WalletCoverStatus = 'covered' | 'not_covered' | 'unavailable' | 'unknown'
@@ -139,6 +175,10 @@ export interface WalletEmberActivityItem {
   feePayer: string | null
   programs: string[]
   onchainStatus: string | null
+  cluster: WalletCluster | null
+  lastCheckedAt: string | null
+  failureReason: string | null
+  explorerUrl: string
 }
 
 export interface WalletDataSnapshot {
@@ -312,30 +352,47 @@ function activityDetailFromTransaction(
   return null
 }
 
-function shortMint(mint: string): string {
-  return mint.length > 12 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint
-}
-
-export function normalizeTokenBalances(accounts: readonly WalletRpcTokenAccount[]): WalletTokenBalance[] {
+export function normalizeTokenBalances(
+  accounts: readonly WalletRpcTokenAccount[],
+  cluster: WalletCluster = 'devnet',
+  expectedOwner?: string,
+): WalletTokenBalance[] {
   return accounts
     .map((entry) => {
       const info = entry.account.data.parsed?.info
       const mint = info?.mint
       const rawAmount = info?.tokenAmount?.amount
       const decimals = info?.tokenAmount?.decimals
-      if (!mint || rawAmount === undefined || decimals === undefined || rawAmount === '0') {
+      const programId = String(entry.account.owner)
+      if (
+        !mint ||
+        rawAmount === undefined ||
+        !/^\d+$/.test(rawAmount) ||
+        rawAmount === '0' ||
+        decimals === undefined ||
+        !Number.isInteger(decimals) ||
+        decimals < 0 ||
+        decimals > 255 ||
+        (programId !== TOKEN_PROGRAM_ADDRESS && programId !== TOKEN_2022_PROGRAM_ADDRESS) ||
+        (expectedOwner !== undefined && info?.owner !== expectedOwner)
+      ) {
         return null
       }
       const uiAmount = info?.tokenAmount?.uiAmountString ?? formatTokenAmount(rawAmount, decimals)
+      const trusted = trustedTokenMetadata(cluster, mint, programId)
       return {
         tokenAccount: String(entry.pubkey),
         mint,
         owner: info?.owner ?? null,
-        programId: String(entry.account.owner),
+        programId,
         rawAmount,
         decimals,
         uiAmount,
-        label: `Token ${shortMint(mint)}`,
+        label: trusted?.symbol ?? `Unknown ${shortTokenMint(mint)}`,
+        name: trusted?.name ?? 'Unknown token',
+        symbol: trusted?.symbol ?? shortTokenMint(mint),
+        iconText: trusted?.iconText ?? '?',
+        trusted: trusted !== null,
       } satisfies WalletTokenBalance
     })
     .filter((item): item is WalletTokenBalance => item !== null)
@@ -347,6 +404,32 @@ function stringOrNull(value: unknown): string | null {
 
 function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+}
+
+function transactionStatusFromRpc(status: WalletRpcSignatureStatus): WalletTransactionStatus {
+  if (status.err !== null) {
+    return 'failed'
+  }
+  if (status.confirmationStatus === 'finalized') {
+    return 'finalized'
+  }
+  if (status.confirmationStatus === 'confirmed') {
+    return 'confirmed'
+  }
+  return 'processed'
+}
+
+function transactionStatusFromActivity(item: WalletActivityItem): WalletTransactionStatus {
+  if (item.failed) {
+    return 'failed'
+  }
+  if (item.confirmationStatus === 'finalized') {
+    return 'finalized'
+  }
+  if (item.confirmationStatus === 'confirmed') {
+    return 'confirmed'
+  }
+  return 'processed'
 }
 
 export class WalletDataProvider implements WalletDataUI {
@@ -382,7 +465,7 @@ export class WalletDataProvider implements WalletDataUI {
         rpc.getSignaturesForAddress(publicKey, { commitment: 'confirmed', limit: activityLimit(limit) }).send(),
         this.#enrichmentTimeoutMs,
       ).catch(() => null),
-      withTimeout(this.#getTokenBalances(rpc, publicKey), this.#enrichmentTimeoutMs).catch(() => null),
+      withTimeout(this.#getTokenBalances(rpc, publicKey, cluster), this.#enrichmentTimeoutMs).catch(() => null),
     ])
     const lamports = asBigInt(balance.value)
     const normalizedActivity = activity === null ? [] : normalizeActivity(activity, cluster)
@@ -392,7 +475,12 @@ export class WalletDataProvider implements WalletDataUI {
         : await withTimeout(this.#getActivityDetails(rpc, normalizedActivity, walletAddress), this.#enrichmentTimeoutMs).catch(
             () => normalizedActivity,
           )
-    const emberRecords = await coverRecords.list(walletAddress).catch(() => null)
+    const emberRecords = await this.#reconcileCoverRecords(
+      rpc,
+      walletAddress,
+      cluster,
+      detailedActivity,
+    ).catch(() => coverRecords.list(walletAddress, cluster).catch(() => null))
     const emberActivity: WalletEmberActivityItem[] =
       emberRecords === null
         ? []
@@ -414,7 +502,11 @@ export class WalletDataProvider implements WalletDataUI {
             source: record.source ?? null,
             feePayer: record.feePayer ?? null,
             programs: record.programs ?? [],
-            onchainStatus: null,
+            onchainStatus: record.transactionStatus,
+            cluster: record.cluster,
+            lastCheckedAt: record.lastCheckedAt,
+            failureReason: record.failureReason,
+            explorerUrl: explorerTransactionUrl(record.signature, cluster),
           }))
     return {
       cluster,
@@ -428,6 +520,129 @@ export class WalletDataProvider implements WalletDataUI {
       emberActivity,
       emberActivityUnavailable: emberRecords === null,
     }
+  }
+
+  async reconcilePending(walletAddress: string): Promise<void> {
+    const cluster = await this.getCluster()
+    const rpc = this.#rpcFactory(cluster)
+    await withTimeout(
+      this.#reconcileCoverRecords(rpc, walletAddress, cluster, []),
+      this.#coreRpcTimeoutMs,
+    )
+  }
+
+  async #reconcileCoverRecords(
+    rpc: WalletDataRpcClient,
+    walletAddress: string,
+    cluster: WalletCluster,
+    activity: readonly WalletActivityItem[],
+  ): Promise<CoverRecord[]> {
+    const records = await coverRecords.list(walletAddress, cluster)
+    if (records.length === 0) {
+      return records
+    }
+    const updatesBySignature = new Map<string, CoverRecordStateUpdate>()
+    const activityBySignature = new Map(activity.map((item) => [item.signature, item]))
+    for (const record of records) {
+      const onchain = activityBySignature.get(record.signature)
+      if (onchain) {
+        updatesBySignature.set(record.signature, {
+          signature: record.signature,
+          walletAddress,
+          transactionStatus: transactionStatusFromActivity(onchain),
+          failureReason: onchain.failed ? 'The transaction failed on-chain.' : null,
+        })
+      }
+    }
+
+    const statusCandidates = records.filter(
+      (record) =>
+        !activityBySignature.has(record.signature) &&
+        record.transactionStatus !== 'finalized' &&
+        record.transactionStatus !== 'failed' &&
+        record.transactionStatus !== 'expired',
+    )
+    if (rpc.getSignatureStatuses && statusCandidates.length > 0) {
+      const response = await rpc
+        .getSignatureStatuses(
+          statusCandidates.map((record) => record.signature),
+          { searchTransactionHistory: true },
+        )
+        .send()
+      response.value.forEach((status, index) => {
+        const record = statusCandidates[index]
+        if (!record || !status) {
+          return
+        }
+        updatesBySignature.set(record.signature, {
+          signature: record.signature,
+          walletAddress,
+          transactionStatus: transactionStatusFromRpc(status),
+          failureReason: status.err === null ? null : stringifyWithBigInts(status.err),
+        })
+      })
+    }
+
+    const expiryCandidates = statusCandidates.filter(
+      (record) =>
+        !updatesBySignature.has(record.signature) &&
+        (record.transactionStatus !== 'signed' || record.broadcastOwner === 'wallet') &&
+        record.lastValidBlockHeight !== null,
+    )
+    if (rpc.getBlockHeight && expiryCandidates.length > 0) {
+      const blockHeight = asBigInt(
+        await rpc.getBlockHeight({ commitment: 'confirmed' }).send(),
+      )
+      for (const record of expiryCandidates) {
+        if (blockHeight > BigInt(record.lastValidBlockHeight!)) {
+          updatesBySignature.set(record.signature, {
+            signature: record.signature,
+            walletAddress,
+            transactionStatus: 'expired',
+            failureReason: 'The transaction was not confirmed before its blockhash expired.',
+          })
+        }
+      }
+    }
+
+    const retryCandidates = statusCandidates.filter(
+      (record) =>
+        !updatesBySignature.has(record.signature) &&
+        record.broadcastOwner === 'wallet' &&
+        record.signedTransactionBase64 !== null,
+    )
+    if (rpc.sendTransaction) {
+      for (const record of retryCandidates) {
+        try {
+          const returnedSignature = await rpc
+            .sendTransaction(record.signedTransactionBase64!, {
+              encoding: 'base64',
+              maxRetries: 3,
+              preflightCommitment: 'confirmed',
+            })
+            .send()
+          if (returnedSignature !== record.signature) {
+            throw new Error('RPC returned an unexpected transaction signature.')
+          }
+          updatesBySignature.set(record.signature, {
+            signature: record.signature,
+            walletAddress,
+            transactionStatus: 'broadcast',
+            failureReason: null,
+          })
+        } catch (error) {
+          updatesBySignature.set(record.signature, {
+            signature: record.signature,
+            walletAddress,
+            transactionStatus: record.transactionStatus,
+            failureReason: `Broadcast retry failed: ${String(error)}`,
+          })
+        }
+      }
+    }
+
+    await coverRecords.updateTransactionStates([...updatesBySignature.values()])
+    return await coverRecords.list(walletAddress, cluster)
   }
 
   async #getActivityDetails(
@@ -455,7 +670,11 @@ export class WalletDataProvider implements WalletDataUI {
     )
   }
 
-  async #getTokenBalances(rpc: WalletDataRpcClient, owner: Address): Promise<WalletTokenBalance[]> {
+  async #getTokenBalances(
+    rpc: WalletDataRpcClient,
+    owner: Address,
+    cluster: WalletCluster,
+  ): Promise<WalletTokenBalance[]> {
     const [tokenAccounts, token2022Accounts] = await Promise.all([
       rpc
         .getTokenAccountsByOwner(toAddress(owner), { programId: toAddress(TOKEN_PROGRAM_ADDRESS) }, { commitment: 'confirmed', encoding: 'jsonParsed' })
@@ -464,7 +683,11 @@ export class WalletDataProvider implements WalletDataUI {
         .getTokenAccountsByOwner(toAddress(owner), { programId: toAddress(TOKEN_2022_PROGRAM_ADDRESS) }, { commitment: 'confirmed', encoding: 'jsonParsed' })
         .send(),
     ])
-    return normalizeTokenBalances([...tokenAccounts.value, ...token2022Accounts.value])
+    return normalizeTokenBalances(
+      [...tokenAccounts.value, ...token2022Accounts.value],
+      cluster,
+      String(owner),
+    )
   }
 }
 
@@ -482,4 +705,25 @@ export function registerWalletDataService(provider = new WalletDataProvider()): 
 
 export function getWalletDataService(): ProxyService<WalletDataUI> {
   return createProxyService<WalletDataUI>(WALLET_DATA_SERVICE_KEY)
+}
+
+const ACTIVITY_RECONCILIATION_ALARM = 'ember-activity-reconciliation'
+
+export function registerActivityReconciliation(
+  provider: WalletDataProvider,
+  wallet: { getAddress(): Promise<string | null> },
+): void {
+  const reconcile = async (): Promise<void> => {
+    const address = await wallet.getAddress()
+    if (address) {
+      await provider.reconcilePending(address)
+    }
+  }
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === ACTIVITY_RECONCILIATION_ALARM) {
+      void reconcile().catch(() => {})
+    }
+  })
+  void browser.alarms.create(ACTIVITY_RECONCILIATION_ALARM, { periodInMinutes: 1 })
+  void reconcile().catch(() => {})
 }

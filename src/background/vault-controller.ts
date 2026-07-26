@@ -32,6 +32,24 @@ export class VaultController {
     this.vault.lock()
   }
 
+  async exportBackup(password: string): Promise<string> {
+    await this.vault.unlock(password)
+    return await this.vault.exportBackup()
+  }
+
+  async importBackup(blob: string, password: string): Promise<string> {
+    const address = await Vault.importBackup(this.store, blob, password)
+    this.vault.lock()
+    this.vault = new Vault(this.store)
+    return address
+  }
+
+  async resetVault(): Promise<void> {
+    this.vault.lock()
+    await this.store.clear()
+    this.vault = new Vault(this.store)
+  }
+
   /**
    * Signs ONLY when unlocked. Vault.sign throws 'vault is locked' if the key is absent OR
    * if the idle window elapsed (a successful unlock does not guarantee a successful sign).

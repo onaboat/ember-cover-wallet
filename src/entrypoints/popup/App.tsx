@@ -37,9 +37,16 @@ const ApprovalScreen = lazy(() =>
 )
 
 type WalletMode = 'wallet' | 'approval'
-type View = 'loading' | 'create' | 'unlock' | 'account'
+type View = 'loading' | 'create' | 'unlock' | 'recover' | 'account'
 type MainTab = 'assets' | 'activity'
-type AccountScreen = 'home' | 'receive' | 'send' | 'cover' | 'approval' | 'activity-detail'
+type AccountScreen =
+  | 'home'
+  | 'receive'
+  | 'send'
+  | 'cover'
+  | 'settings'
+  | 'approval'
+  | 'activity-detail'
 type SendStep = 'form' | 'review' | 'complete'
 
 interface AppProps {
@@ -78,13 +85,8 @@ function clusterLabel(cluster: WalletCluster): string {
   return cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'
 }
 
-function tokenInitial(label: string, mint: string): string {
-  const trimmed = label.replace(/^Token\s+/i, '').trim()
-  return (trimmed[0] ?? mint[0] ?? 'T').toUpperCase()
-}
-
-function tokenDisplayName(label: string, mint: string): string {
-  return mint === '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' ? 'USDC' : label
+function tokenInitial(iconText: string, mint: string): string {
+  return (iconText[0] ?? mint[0] ?? 'T').toUpperCase()
 }
 
 function activityDate(blockTime: number | null): string {
@@ -96,6 +98,17 @@ function activityState(failed: boolean, confirmationStatus: string | null): stri
   if (confirmationStatus === 'finalized') return 'Finalized'
   if (confirmationStatus) return confirmationStatus
   return 'Pending'
+}
+
+function walletTransactionStatusLabel(status: string | null): string {
+  if (status === 'signed') return 'Signed · broadcast not yet observed'
+  if (status === 'broadcast') return 'Broadcast · waiting for confirmation'
+  if (status === 'processed') return 'Processed'
+  if (status === 'confirmed') return 'Confirmed'
+  if (status === 'finalized') return 'Finalized'
+  if (status === 'failed') return 'Failed'
+  if (status === 'expired') return 'Expired'
+  return 'Status unknown'
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -202,6 +215,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [nowMs, setNowMs] = useState(Date.now())
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null)
   const [copiedActivityId, setCopiedActivityId] = useState<string | null>(null)
+  const [backupPassword, setBackupPassword] = useState('')
+  const [backupPasswordVisible, setBackupPasswordVisible] = useState(false)
+  const [backupBlob, setBackupBlob] = useState('')
+  const [backupFileName, setBackupFileName] = useState('')
+  const [backupConfirm, setBackupConfirm] = useState('')
+  const [resetConfirm, setResetConfirm] = useState('')
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupError, setBackupError] = useState('')
+  const [backupNotice, setBackupNotice] = useState('')
   const tokenBalances = arrayOrEmpty(snapshot?.tokenBalances)
   const emberActivity = arrayOrEmpty(snapshot?.emberActivity)
   const activity = arrayOrEmpty(snapshot?.activity)
@@ -213,7 +235,9 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const sendAsset: WalletTransferAsset = selectedToken
     ? {
         kind: 'token',
-        symbol: tokenDisplayName(selectedToken.label, selectedToken.mint),
+        symbol: selectedToken.symbol,
+        name: selectedToken.name,
+        trusted: selectedToken.trusted,
         mint: selectedToken.mint,
         tokenAccount: selectedToken.tokenAccount,
         programId: selectedToken.programId,
@@ -234,20 +258,21 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
 
   async function refresh() {
     if (!(await vault.hasVault())) {
+      setAddress(null)
       setView('create')
       return
     }
+    const currentAddress = await vault.getAddress()
+    setAddress(currentAddress)
     // Approval mode bypasses the standalone unlock view ONLY while a request is pending: the
     // approval screen carries its own inline unlock so the cover banner and password coexist on
     // one screen while locked. With no pending request the window is a plain wallet and must
     // respect the lock state (otherwise locking it would still show an unlocked-looking home).
     if (mode === 'approval' && (await approval.get())) {
-      setAddress(await vault.getAddress())
       setView('account')
       return
     }
     if (await vault.isUnlocked()) {
-      setAddress(await vault.getAddress())
       setView('account')
       return
     }
@@ -452,6 +477,138 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setPaymentNeedsUnlock(false)
   }
 
+  function resetRecoveryForm() {
+    setBackupPassword('')
+    setBackupBlob('')
+    setBackupFileName('')
+    setBackupConfirm('')
+    setResetConfirm('')
+    setBackupError('')
+    setBackupNotice('')
+  }
+
+  function openSettings() {
+    resetRecoveryForm()
+    setAccountScreen('settings')
+  }
+
+  async function readBackupFile(file: File | undefined) {
+    setBackupError('')
+    setBackupNotice('')
+    setBackupBlob('')
+    setBackupFileName('')
+    if (!file) {
+      return
+    }
+    if (file.size > 64 * 1024) {
+      setBackupError('Backup file is too large.')
+      return
+    }
+    try {
+      setBackupBlob(await file.text())
+      setBackupFileName(file.name)
+    } catch {
+      setBackupError('Could not read the selected backup file.')
+    }
+  }
+
+  async function exportEncryptedBackup() {
+    if (!backupPassword) {
+      setBackupError('Enter your wallet password to export the backup.')
+      return
+    }
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      const encryptedBackup = await vault.exportBackup(backupPassword)
+      const url = URL.createObjectURL(
+        new Blob([encryptedBackup], { type: 'application/json' }),
+      )
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `ember-wallet-${address?.slice(-8) ?? 'backup'}.json`
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1_000)
+      setBackupPassword('')
+      setBackupNotice('Encrypted backup downloaded. Store it separately from its password.')
+    } catch (e) {
+      const message = errorMessage(e, 'Could not export the encrypted backup.')
+      setBackupError(
+        message.toLowerCase().includes('locked out')
+          ? 'Too many failed password attempts. Wait one minute and try again.'
+          : message.toLowerCase().includes('no vault')
+            ? 'No wallet is available to back up.'
+            : 'Wrong password. No backup was exported.',
+      )
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function importEncryptedBackup() {
+    const replacePhrase = address ? `REPLACE ${address.slice(-4)}` : ''
+    if (!backupBlob) {
+      setBackupError('Select an Ember encrypted backup file.')
+      return
+    }
+    if (!backupPassword) {
+      setBackupError('Enter the password that encrypts this backup.')
+      return
+    }
+    if (replacePhrase && backupConfirm !== replacePhrase) {
+      setBackupError(`Type ${replacePhrase} to replace this wallet.`)
+      return
+    }
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      const importedAddress = await vault.importBackup(backupBlob, backupPassword)
+      await vault.unlock(backupPassword)
+      setAddress(importedAddress)
+      setCluster('devnet')
+      setSnapshot(null)
+      setMainTab('assets')
+      setAccountScreen('home')
+      setView('account')
+      resetRecoveryForm()
+      await refreshWalletData(importedAddress)
+      await refreshCoverState()
+    } catch (e) {
+      setBackupError(errorMessage(e, 'Could not import the encrypted backup.'))
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
+  async function resetWallet() {
+    const phrase = address ? `RESET ${address.slice(-4)}` : 'RESET'
+    if (resetConfirm !== phrase) {
+      setBackupError(`Type ${phrase} to permanently reset this wallet.`)
+      return
+    }
+    setBackupBusy(true)
+    setBackupError('')
+    setBackupNotice('')
+    try {
+      await vault.resetVault()
+      setAddress(null)
+      setSnapshot(null)
+      setCoverEnrolled(null)
+      setCoverStatusSnapshot(null)
+      setPaymentState(null)
+      setCluster('devnet')
+      setPassword('')
+      resetRecoveryForm()
+      setView('create')
+    } catch (e) {
+      setBackupError(errorMessage(e, 'Could not reset this wallet.'))
+    } finally {
+      setBackupBusy(false)
+    }
+  }
+
   // Payment and activation can need vault signatures, and the vault can idle-lock while this
   // screen is open. Prompt inline instead of discarding the reviewed payment.
   async function ensurePaymentUnlocked(): Promise<boolean> {
@@ -618,7 +775,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       void refreshWalletData()
       void refreshCoverState()
     } catch (e) {
-      setSendError(errorMessage(e, 'Could not send SOL'))
+      setSendError(errorMessage(e, `Could not send ${sendAsset.symbol}`))
     } finally {
       setSendBusy(false)
     }
@@ -677,6 +834,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </label>
         <button className="ec-quiet-button" data-testid="lock" onClick={() => void vault.lock().then(refresh)} type="button">
           Lock
+        </button>
+        <button
+          className="ec-quiet-button"
+          data-testid="wallet-settings"
+          onClick={openSettings}
+          type="button"
+        >
+          Backup
         </button>
       </section>
     )
@@ -800,10 +965,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <ul className="ec-token-list">
               {tokenBalances.map((token) => (
                 <li className="ec-token-row" key={token.tokenAccount} data-testid="wallet-token-item">
-                  <span className="ec-token-avatar" aria-hidden="true">{tokenInitial(token.label, token.mint)}</span>
+                  <span className="ec-token-avatar" aria-hidden="true">{tokenInitial(token.iconText, token.mint)}</span>
                   <span className="ec-token-main">
-                    <span className="ec-token-name">{token.label}</span>
-                    <span className="ec-token-mint">{shortAddress(token.mint)}</span>
+                    <span className="ec-token-name">{token.name} · {token.symbol}</span>
+                    <span className="ec-token-mint">
+                      {shortAddress(token.mint)} · {token.trusted ? 'Verified by Ember' : 'Unverified token'}
+                    </span>
                   </span>
                   <span className="ec-token-amount">{token.uiAmount}</span>
                 </li>
@@ -1009,6 +1176,149 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     )
   }
 
+  function renderRecoveryTools(includeExport: boolean) {
+    const replacePhrase = address ? `REPLACE ${address.slice(-4)}` : ''
+    const resetPhrase = address ? `RESET ${address.slice(-4)}` : 'RESET'
+    return (
+      <div className="ec-recovery-tools">
+        <section className="ec-review-card ec-recovery-intro">
+          <h3>Recovery limits</h3>
+          <p className="ec-help">
+            Ember backups are encrypted with your wallet password. A backup cannot recover a
+            forgotten backup password. Reset creates a different wallet and cannot recover funds
+            from the old address.
+          </p>
+          {address ? <p className="ec-account">{address}</p> : null}
+        </section>
+
+        <label>
+          Wallet or backup password
+          <span className="ec-password-field">
+            <input
+              autoComplete="current-password"
+              data-testid="backup-password"
+              onChange={(event) => setBackupPassword(event.currentTarget.value)}
+              type={backupPasswordVisible ? 'text' : 'password'}
+              value={backupPassword}
+            />
+            <button
+              aria-label={backupPasswordVisible ? 'Hide backup password' : 'Show backup password'}
+              className="ec-password-toggle"
+              onClick={() => setBackupPasswordVisible((visible) => !visible)}
+              type="button"
+            >
+              {backupPasswordVisible ? 'Hide' : 'Show'}
+            </button>
+          </span>
+        </label>
+
+        {includeExport ? (
+          <section className="ec-review-card">
+            <h3>Export encrypted backup</h3>
+            <p className="ec-help">
+              Download the encrypted wallet key. Keep the file and password in separate secure
+              places.
+            </p>
+            <button
+              className="ec-secondary"
+              data-testid="export-backup"
+              disabled={backupBusy}
+              onClick={() => void exportEncryptedBackup()}
+              type="button"
+            >
+              {backupBusy ? 'Working...' : 'Download encrypted backup'}
+            </button>
+          </section>
+        ) : null}
+
+        <section className="ec-review-card">
+          <h3>Import encrypted backup</h3>
+          <p className="ec-help">
+            The file is validated and decrypted before the current wallet is replaced.
+          </p>
+          <label className="ec-file-picker">
+            Backup file
+            <input
+              accept="application/json,.json"
+              data-testid="backup-file"
+              onChange={(event) => void readBackupFile(event.currentTarget.files?.[0])}
+              type="file"
+            />
+          </label>
+          {backupFileName ? <p className="ec-help">Selected: {backupFileName}</p> : null}
+          {replacePhrase ? (
+            <label>
+              Confirm replacement
+              <input
+                autoComplete="off"
+                data-testid="backup-replace-confirm"
+                onChange={(event) => setBackupConfirm(event.currentTarget.value)}
+                placeholder={replacePhrase}
+                value={backupConfirm}
+              />
+            </label>
+          ) : null}
+          <button
+            className="ec-primary"
+            data-testid="import-backup"
+            disabled={backupBusy || !backupBlob}
+            onClick={() => void importEncryptedBackup()}
+            type="button"
+          >
+            {backupBusy ? 'Validating...' : address ? 'Validate and replace wallet' : 'Import wallet'}
+          </button>
+        </section>
+
+        {address ? (
+          <section className="ec-review-card ec-danger-zone">
+            <h3>Reset wallet</h3>
+            <p className="ec-help">
+              This permanently removes the encrypted key, cover session, saved payment, activity
+              records, and connected sites from this browser.
+            </p>
+            <label>
+              Type {resetPhrase}
+              <input
+                autoComplete="off"
+                data-testid="reset-confirm"
+                onChange={(event) => setResetConfirm(event.currentTarget.value)}
+                placeholder={resetPhrase}
+                value={resetConfirm}
+              />
+            </label>
+            <button
+              className="ec-danger-button"
+              data-testid="reset-wallet"
+              disabled={backupBusy}
+              onClick={() => void resetWallet()}
+              type="button"
+            >
+              Permanently reset wallet
+            </button>
+          </section>
+        ) : null}
+
+        {backupNotice ? <p data-testid="backup-notice">{backupNotice}</p> : null}
+        {backupError ? <p data-testid="backup-error">{backupError}</p> : null}
+      </div>
+    )
+  }
+
+  function renderSettings() {
+    return (
+      <section className="ec-task-screen" data-testid="wallet-settings-screen">
+        <div className="ec-screen-head">
+          {renderBackButton(() => setAccountScreen('home'))}
+          <div>
+            <span className="ec-control-label">Wallet safety</span>
+            <h2>Backup and recovery</h2>
+          </div>
+        </div>
+        {renderRecoveryTools(true)}
+      </section>
+    )
+  }
+
   function renderReceive() {
     return (
       <section className="ec-task-screen" data-testid="receive-screen">
@@ -1189,6 +1499,10 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                           : 'Existing account'}
                       </dd>
                     </div>
+                    <div>
+                      <dt>Token identity</dt>
+                      <dd>{sendPreview.asset.trusted ? 'Verified by Ember' : 'Unverified — verify the mint address'}</dd>
+                    </div>
                   </>
                 ) : null}
                 <div>
@@ -1243,7 +1557,10 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                 ) : null}
               </section>
               {sendPreview.simulation.status === 'failure' ? (
-                <p data-testid="send-simulation-error">Simulation failed. The transaction was not sent.</p>
+                <p data-testid="send-simulation-error">
+                  Simulation failed: {sendPreview.simulation.error ?? 'unknown runtime error'}. The
+                  transaction was not signed or sent.
+                </p>
               ) : null}
             </>
           ) : null}
@@ -1290,14 +1607,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <option value="sol">SOL — {snapshot?.solBalance ?? 'unavailable'}</option>
             {tokenBalances.map((token) => (
               <option key={token.tokenAccount} value={token.tokenAccount}>
-                {tokenDisplayName(token.label, token.mint)} — {token.uiAmount}
+                {token.trusted ? token.symbol : `Unknown ${shortAddress(token.mint)}`} — {token.uiAmount}
               </option>
             ))}
           </select>
         </label>
         {sendAsset.kind === 'token' ? (
           <p className="ec-help" data-testid="send-token-identity">
-            Mint {shortAddress(sendAsset.mint)} ·{' '}
+            {sendAsset.trusted ? `${sendAsset.name ?? sendAsset.symbol} · Verified by Ember` : 'Unverified token'} ·
+            {' '}Mint {shortAddress(sendAsset.mint)} ·{' '}
             {sendAsset.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
               ? 'Token-2022'
               : 'SPL Token'}
@@ -1382,7 +1700,53 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
 
   function renderActivity() {
     const onchainSignatures = new Set(activity.map((item) => item.signature))
-    const pendingEmber = emberActivity.filter((item) => !item.signature || !onchainSignatures.has(item.signature))
+    const localOnlyEmber = emberActivity.filter((item) => !item.signature || !onchainSignatures.has(item.signature))
+    const settledEmber = localOnlyEmber.filter((item) =>
+      item.onchainStatus === 'confirmed' ||
+      item.onchainStatus === 'finalized' ||
+      item.onchainStatus === 'failed' ||
+      item.onchainStatus === 'expired',
+    )
+    const pendingEmber = localOnlyEmber.filter((item) => !settledEmber.includes(item))
+    const renderLocalActivityRow = (item: (typeof emberActivity)[number]) => (
+      <li className="ec-activity-row" key={item.id} data-testid="ember-activity-item">
+        <button
+          className="ec-activity-row__button"
+          onClick={() => {
+            setSelectedActivityId(item.id)
+            setAccountScreen('activity-detail')
+          }}
+          type="button"
+        >
+          <span
+            className="ec-activity-avatar"
+            data-direction={
+              item.onchainStatus === 'failed' || item.onchainStatus === 'expired'
+                ? 'failed'
+                : item.onchainStatus === 'confirmed' || item.onchainStatus === 'finalized'
+                  ? 'sent'
+                  : 'pending'
+            }
+            aria-hidden="true"
+          >
+            {item.onchainStatus === 'confirmed' || item.onchainStatus === 'finalized' ? '✓' : item.onchainStatus === 'failed' || item.onchainStatus === 'expired' ? '!' : '…'}
+          </span>
+          <span className="ec-activity-main">
+            <span className="ec-activity-title">{item.title ?? 'Signed transaction'}</span>
+            <span className="ec-activity-meta">
+              {walletTransactionStatusLabel(item.onchainStatus)}
+              {item.recipient ? ` · to ${shortAddress(item.recipient)}` : ''}
+            </span>
+          </span>
+          <span className="ec-activity-side">
+            {item.amount ? <span className="ec-activity-amount">{item.amount}</span> : null}
+            <span className="ec-activity-meta">{new Date(item.timestamp).toLocaleDateString()}</span>
+            <span className="ec-cover-pill" data-tone={coverTone(item.coverStatus)}>{coverStatusLabel(item.coverStatus)}</span>
+          </span>
+          <span className="ec-activity-chevron" aria-hidden="true">›</span>
+        </button>
+      </li>
+    )
     return (
       <section className="ec-account-card" data-testid="wallet-activity">
         <h2>Activity</h2>
@@ -1429,40 +1793,23 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               )
             })}
           </ul>
-        ) : snapshot && !walletDataLoading && !snapshot.activityUnavailable ? (
+        ) : snapshot && settledEmber.length === 0 && !walletDataLoading && !snapshot.activityUnavailable ? (
           <p>No transactions found.</p>
+        ) : null}
+        {settledEmber.length > 0 ? (
+          <ul className="ec-activity-list" data-testid="settled-ember-activity">
+            {settledEmber.map(renderLocalActivityRow)}
+          </ul>
         ) : null}
         {snapshot?.emberActivityUnavailable ? <p>Ember activity unavailable.</p> : null}
         {pendingEmber.length > 0 ? (
           <>
-            <h3>Pending cover records</h3>
+            <div className="ec-section-heading">
+              <h3>Pending transactions</h3>
+              <p className="ec-help">The wallet will keep checking these in the background.</p>
+            </div>
             <ul className="ec-activity-list" data-testid="ember-activity">
-              {pendingEmber.map((item) => (
-                <li className="ec-activity-row" key={item.id} data-testid="ember-activity-item">
-                  <button
-                    className="ec-activity-row__button"
-                    onClick={() => {
-                      setSelectedActivityId(item.id)
-                      setAccountScreen('activity-detail')
-                    }}
-                    type="button"
-                  >
-                    <span className="ec-activity-avatar" data-direction="pending" aria-hidden="true">…</span>
-                    <span className="ec-activity-main">
-                      <span className="ec-activity-title">{item.title ?? 'Signed transaction'}</span>
-                      <span className="ec-activity-meta">
-                        {item.onchainStatus ?? 'Signed · waiting for network'}
-                        {item.recipient ? ` · to ${shortAddress(item.recipient)}` : ''}
-                      </span>
-                    </span>
-                    <span className="ec-activity-side">
-                      {item.amount ? <span className="ec-activity-amount">{item.amount}</span> : null}
-                      <span className="ec-cover-pill" data-tone={coverTone(item.coverStatus)}>{coverStatusLabel(item.coverStatus)}</span>
-                    </span>
-                    <span className="ec-activity-chevron" aria-hidden="true">›</span>
-                  </button>
-                </li>
-              ))}
+              {pendingEmber.map(renderLocalActivityRow)}
             </ul>
           </>
         ) : null}
@@ -1486,7 +1833,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     const signature = tx?.signature ?? emberRecord?.signature ?? null
     const status = tx
       ? activityState(tx.failed, tx.confirmationStatus)
-      : emberRecord?.onchainStatus ?? 'Signed · waiting to appear on-chain'
+      : walletTransactionStatusLabel(emberRecord?.onchainStatus ?? null)
     const timestamp = tx?.blockTime
       ? new Date(tx.blockTime * 1000)
       : emberRecord?.timestamp
@@ -1508,14 +1855,26 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <h2>{title}</h2>
           </div>
         </div>
-        <section className="ec-activity-status-card" data-tone={tx?.failed ? 'failed' : tx ? 'confirmed' : 'pending'}>
+        <section
+          className="ec-activity-status-card"
+          data-tone={
+            tx?.failed || emberRecord?.onchainStatus === 'failed' || emberRecord?.onchainStatus === 'expired'
+              ? 'failed'
+              : tx || emberRecord?.onchainStatus === 'confirmed' || emberRecord?.onchainStatus === 'finalized'
+                ? 'confirmed'
+                : 'pending'
+          }
+        >
           <span>{status}</span>
           <p>
             {tx
               ? 'This transaction was found on-chain.'
-              : 'The wallet signed this transaction. It may still be awaiting broadcast or RPC indexing.'}
+              : emberRecord?.onchainStatus === 'confirmed' || emberRecord?.onchainStatus === 'finalized'
+                ? 'The network has confirmed this transaction. Detailed indexing may still be catching up.'
+                : 'The wallet signed this transaction. It may still be awaiting broadcast or RPC indexing.'}
           </p>
         </section>
+        {emberRecord?.failureReason ? <p data-testid="activity-failure-reason">{emberRecord.failureReason}</p> : null}
         <dl className="ec-data-list">
           <div>
             <dt>Date</dt>
@@ -1555,6 +1914,18 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <div>
               <dt>Slot</dt>
               <dd>{tx.slot}</dd>
+            </div>
+          ) : null}
+          {emberRecord?.cluster ? (
+            <div>
+              <dt>Network</dt>
+              <dd>{clusterLabel(emberRecord.cluster)}</dd>
+            </div>
+          ) : null}
+          {emberRecord?.lastCheckedAt ? (
+            <div>
+              <dt>Last checked</dt>
+              <dd>{new Date(emberRecord.lastCheckedAt).toLocaleString()}</dd>
             </div>
           ) : null}
           {programs.length > 0 ? (
@@ -1608,8 +1979,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               >
                 {copiedActivityId === signature ? 'Copied' : 'Copy ID'}
               </button>
-              {tx?.explorerUrl ? (
-                <a className="ec-primary ec-button-link" href={tx.explorerUrl} rel="noreferrer" target="_blank">
+              {tx?.explorerUrl || emberRecord?.explorerUrl ? (
+                <a className="ec-primary ec-button-link" href={tx?.explorerUrl ?? emberRecord?.explorerUrl} rel="noreferrer" target="_blank">
                   Explorer
                 </a>
               ) : null}
@@ -1635,6 +2006,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           {mainTab === 'assets' && accountScreen === 'receive' ? renderReceive() : null}
           {mainTab === 'assets' && accountScreen === 'send' ? renderSend() : null}
           {mainTab === 'assets' && accountScreen === 'cover' ? renderCoverActivation() : null}
+          {accountScreen === 'settings' ? renderSettings() : null}
           {accountScreen === 'activity-detail' ? renderActivityDetail() : null}
           {accountScreen === 'approval' ? (
             <Suspense fallback={<section className="ec-task-screen"><p className="ec-help">Loading request...</p></section>}>
@@ -1647,6 +2019,32 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           ) : null}
         </main>
         {accountScreen === 'home' ? renderTabs() : null}
+      </div>
+    )
+  }
+  if (view === 'recover') {
+    return (
+      <div className="ec-auth-shell ec-recovery-shell">
+        <header className="ec-topbar">
+          <div className="ec-brand">
+            <span className="ec-mark-frame">
+              <BrandMark className="ec-brand-mark" title="Ember Cover" />
+            </span>
+            <span className="ec-brand-copy">
+              <span className="ec-brand-name">Ember</span>
+              <span className="ec-brand-subtitle">Cover wallet</span>
+            </span>
+          </div>
+        </header>
+        {renderBackButton(() => {
+          resetRecoveryForm()
+          void refresh()
+        })}
+        <div>
+          <span className="ec-control-label">Wallet safety</span>
+          <h1>Restore or reset</h1>
+        </div>
+        {renderRecoveryTools(false)}
       </div>
     )
   }
@@ -1687,6 +2085,17 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       {view === 'create' ? <p className="ec-help">Use at least 8 characters. Any mix is allowed and there is no maximum length.</p> : null}
       <button className="ec-primary" data-testid="submit" onClick={() => void (view === 'create' ? onCreate() : onUnlock())}>
         {authBusy ? (view === 'create' ? 'Creating...' : 'Secure unlocking...') : view === 'create' ? 'Create' : 'Unlock'}
+      </button>
+      <button
+        className="ec-link-button"
+        data-testid="open-recovery"
+        onClick={() => {
+          resetRecoveryForm()
+          setView('recover')
+        }}
+        type="button"
+      >
+        {view === 'create' ? 'Import encrypted backup' : 'Restore or reset wallet'}
       </button>
       {authBusy ? <p data-testid="auth-busy">{view === 'create' ? 'Creating wallet...' : 'Secure unlocking...'}</p> : null}
       {error ? <p data-testid="error">{error}</p> : null}

@@ -65,6 +65,24 @@ test('backup exports and re-imports into a fresh store', async () => {
   expect((await restored.sign(new TextEncoder().encode('hi'))).length).toBe(64)
 })
 
+test('backup import rejects invalid files before expensive password work', async () => {
+  await expect(
+    Vault.importBackup(new MemoryVaultStore(), '{"argon2Params":{"m":999999999}}', 'password'),
+  ).rejects.toThrow('invalid')
+})
+
+test('backup import reports a wrong password without persisting the backup', async () => {
+  const source = new Vault(new MemoryVaultStore())
+  await source.create('Str0ng-pass-correct-horse')
+  const backup = await source.exportBackup()
+  const destination = new MemoryVaultStore()
+
+  await expect(Vault.importBackup(destination, backup, 'wrong-password')).rejects.toThrow(
+    'password is wrong',
+  )
+  expect(await destination.get()).toBeNull()
+})
+
 test('reports unlocked state', async () => {
   const v = new Vault(new MemoryVaultStore())
   await v.create('Str0ng-pass-correct-horse')

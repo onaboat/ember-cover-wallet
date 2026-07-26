@@ -29,6 +29,7 @@ export interface CoverDebugInfo {
     | 'api_pre_sign_non_ok'
     | 'api_pre_sign_error'
     | 'provider_error'
+    | 'cluster_mismatch'
     | 'approval_poll_timeout'
   apiAttempted: boolean
   proxyBaseUrl?: string

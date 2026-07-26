@@ -1,4 +1,5 @@
 import { fakeBrowser } from 'wxt/testing'
+import { SOLANA_LOCALNET_CHAIN } from '@solana/wallet-standard-chains'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 vi.mock('./request-service.ts', () => ({ requestService: vi.fn() }))
@@ -6,7 +7,7 @@ vi.mock('./request-service.ts', () => ({ requestService: vi.fn() }))
 import { requestService } from './request-service.ts'
 import { buildConnectAccount } from './build-account.ts'
 import { dappConnections } from './dapp-connections.ts'
-import { connect, disconnect } from './actions.ts'
+import { connect, disconnect, signTransaction } from './actions.ts'
 
 const ORIGIN = 'https://x'
 const ADDRESS = 'So11111111111111111111111111111111111111112'
@@ -76,4 +77,23 @@ test('disconnect removes the dapp origin authorization', async () => {
   await disconnect(ORIGIN)
 
   expect(await dappConnections.get(ORIGIN, ADDRESS)).toBeNull()
+})
+
+test('rejects unsupported transaction chains before opening an approval window', async () => {
+  const { create } = mockRequestService()
+
+  await expect(
+    signTransaction(
+      [
+        {
+          account: buildConnectAccount(ADDRESS),
+          transaction: Uint8Array.from([1]),
+          chain: SOLANA_LOCALNET_CHAIN,
+        },
+      ],
+      ORIGIN,
+    ),
+  ).rejects.toThrow('does not support')
+
+  expect(create).not.toHaveBeenCalled()
 })

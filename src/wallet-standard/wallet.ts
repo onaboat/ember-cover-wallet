@@ -1,4 +1,3 @@
-import { SOLANA_CHAINS } from '@solana/wallet-standard-chains'
 import {
   SolanaSignMessage,
   type SolanaSignMessageFeature,
@@ -28,6 +27,7 @@ import { sendMessage } from '../messaging/window.ts'
 import { signMessage } from './features/sign-message.ts'
 import { signTransaction } from './features/sign-transaction.ts'
 import { icon } from './icon.ts'
+import { EMBER_SOLANA_CHAINS } from './chains.ts'
 
 // EXACTLY the five features Ember implements. Closed intersection => tsc rejects extra/missing.
 type EmberWalletFeatures = SolanaSignMessageFeature &
@@ -47,7 +47,7 @@ export class EmberWallet implements Wallet {
 
   // "address valid on these clusters", NOT "can sign txs on them". signMessage is chain-agnostic.
   get chains(): IdentifierArray {
-    return SOLANA_CHAINS
+    return EMBER_SOLANA_CHAINS
   }
 
   get features(): EmberWalletFeatures {

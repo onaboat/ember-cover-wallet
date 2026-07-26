@@ -89,9 +89,43 @@ test('normalizes non-zero parsed token balances', () => {
       rawAmount: '1234500',
       decimals: 6,
       uiAmount: '1.2345',
-      label: 'Token Mint…1111',
+      label: 'Unknown Mint…1111',
+      name: 'Unknown token',
+      symbol: 'Mint…1111',
+      iconText: '?',
+      trusted: false,
     },
   ])
+})
+
+test('applies curated metadata only on the matching cluster and token program', () => {
+  const account = {
+    pubkey: 'usdc-account',
+    account: {
+      owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      data: {
+        parsed: {
+          info: {
+            mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+            owner: ADDRESS,
+            tokenAmount: { amount: '1000000', decimals: 6, uiAmountString: '1' },
+          },
+        },
+      },
+    },
+  }
+
+  expect(normalizeTokenBalances([account], 'devnet')[0]).toMatchObject({
+    label: 'USDC',
+    name: 'USD Coin',
+    symbol: 'USDC',
+    iconText: '$',
+    trusted: true,
+  })
+  expect(normalizeTokenBalances([account], 'mainnet-beta')[0]).toMatchObject({
+    name: 'Unknown token',
+    trusted: false,
+  })
 })
 
 test('normalizes activity into JSON-safe popup rows', () => {
@@ -244,6 +278,191 @@ test('surfaces stored cover records in emberActivity, matched by signature', asy
   expect(snapshot.emberActivity[0]?.signature).toBe('sig1')
   expect(snapshot.emberActivity[0]?.coverStatus).toBe('covered')
   expect(snapshot.emberActivityUnavailable).toBe(false)
+})
+
+test('moves a persisted broadcast from pending to confirmed using signature status', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig-pending',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      riskBand: 'low',
+      requestId: 'r',
+      dappOrigin: null,
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      cluster: 'devnet',
+      transactionStatus: 'broadcast',
+    },
+  ])
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({ send: async () => [] }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+      getSignatureStatuses: () => ({
+        send: async () => ({
+          value: [
+            {
+              confirmationStatus: 'confirmed',
+              err: null,
+              slot: 123n,
+            },
+          ],
+        }),
+      }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.emberActivity[0]?.onchainStatus).toBe('confirmed')
+  const stored = await storage.getItem<Array<{ transactionStatus: string; lastCheckedAt: string | null }>>(
+    'local:ember-cover-records',
+  )
+  expect(stored?.[0]?.transactionStatus).toBe('confirmed')
+  expect(stored?.[0]?.lastCheckedAt).toBeTruthy()
+})
+
+test('moves a broadcast to confirmed when indexing returns it in wallet activity', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig-indexed',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      cluster: 'devnet',
+      transactionStatus: 'broadcast',
+    },
+  ])
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({
+        send: async () => [
+          {
+            blockTime: 1_772_000_000n,
+            confirmationStatus: 'confirmed',
+            err: null,
+            memo: null,
+            signature: 'sig-indexed',
+            slot: 123n,
+          },
+        ],
+      }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.activity[0]?.signature).toBe('sig-indexed')
+  expect(snapshot.emberActivity[0]?.onchainStatus).toBe('confirmed')
+})
+
+test('marks an unconfirmed broadcast expired after its last valid block height', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig-expired',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      cluster: 'devnet',
+      transactionStatus: 'broadcast',
+      blockhash: 'old-blockhash',
+      lastValidBlockHeight: '100',
+    },
+  ])
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({ send: async () => [] }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+      getSignatureStatuses: () => ({ send: async () => ({ value: [null] }) }),
+      getBlockHeight: () => ({ send: async () => 101n }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(snapshot.emberActivity[0]).toMatchObject({
+    onchainStatus: 'expired',
+    failureReason: 'The transaction was not confirmed before its blockhash expired.',
+  })
+})
+
+test('retries a persisted wallet-owned signed transaction while its blockhash is valid', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig-retry',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      cluster: 'devnet',
+      transactionStatus: 'signed',
+      blockhash: 'valid-blockhash',
+      lastValidBlockHeight: '100',
+      broadcastOwner: 'wallet',
+      signedTransactionBase64: 'signed-transaction',
+    },
+  ])
+  let broadcasts = 0
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({ send: async () => [] }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+      getSignatureStatuses: () => ({ send: async () => ({ value: [null] }) }),
+      getBlockHeight: () => ({ send: async () => 99n }),
+      sendTransaction: () => ({
+        send: async () => {
+          broadcasts += 1
+          return 'sig-retry'
+        },
+      }),
+    }),
+  })
+
+  const snapshot = await provider.getSnapshot(ADDRESS, 1)
+
+  expect(broadcasts).toBe(1)
+  expect(snapshot.emberActivity[0]).toMatchObject({
+    onchainStatus: 'broadcast',
+    failureReason: null,
+  })
+})
+
+test('never broadcasts a transaction that a dapp owns', async () => {
+  await storage.setItem('local:ember-cover-records', [
+    {
+      signature: 'sig-dapp',
+      walletAddress: ADDRESS,
+      coverStatus: 'covered',
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      cluster: 'devnet',
+      transactionStatus: 'signed',
+      broadcastOwner: 'dapp',
+      signedTransactionBase64: 'must-not-send',
+    },
+  ])
+  let broadcasts = 0
+  const provider = new WalletDataProvider({
+    rpcFactory: () => ({
+      getBalance: () => ({ send: async () => ({ value: 0n }) }),
+      getSignaturesForAddress: () => ({ send: async () => [] }),
+      getTokenAccountsByOwner: () => ({ send: async () => ({ value: [] }) }),
+      getSignatureStatuses: () => ({ send: async () => ({ value: [null] }) }),
+      sendTransaction: () => ({
+        send: async () => {
+          broadcasts += 1
+          return 'sig-dapp'
+        },
+      }),
+    }),
+  })
+
+  await provider.getSnapshot(ADDRESS, 1)
+
+  expect(broadcasts).toBe(0)
 })
 
 test('does not block SOL balance when token account lookup stalls', async () => {

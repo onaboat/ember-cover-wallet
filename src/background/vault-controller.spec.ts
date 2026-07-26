@@ -34,3 +34,24 @@ test('refuses to sign while locked', async () => {
   await c.createVault('Str0ng-pass-correct-horse')
   await expect(c.sign(Uint8Array.from([1]))).rejects.toThrow('locked')
 })
+
+test('exports and imports a password-verified encrypted backup', async () => {
+  const source = new VaultController(new MemoryVaultStore())
+  const address = await source.createVault('Str0ng-pass-correct-horse')
+  const backup = await source.exportBackup('Str0ng-pass-correct-horse')
+  const restored = new VaultController(new MemoryVaultStore())
+
+  expect(await restored.importBackup(backup, 'Str0ng-pass-correct-horse')).toBe(address)
+  await restored.unlock('Str0ng-pass-correct-horse')
+  expect((await restored.sign(Uint8Array.from([1]))).length).toBe(64)
+})
+
+test('reset irreversibly clears the current vault', async () => {
+  const controller = new VaultController(new MemoryVaultStore())
+  await controller.createVault('Str0ng-pass-correct-horse')
+
+  await controller.resetVault()
+
+  expect(await controller.hasVault()).toBe(false)
+  expect(await controller.getAddress()).toBeNull()
+})

@@ -54,6 +54,26 @@ test('create a vault, lock, and unlock', async () => {
   await page.getByTestId('tab-activity').click()
   await expect(page.getByTestId('wallet-activity')).toBeVisible()
 
+  await page.getByTestId('wallet-settings').click()
+  await expect(page.getByTestId('wallet-settings-screen')).toBeVisible()
+  await page.getByTestId('backup-password').fill('Str0ng-pass-correct-horse')
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByTestId('export-backup').click()
+  const download = await downloadEvent
+  const backupPath = await download.path()
+  expect(backupPath).toBeTruthy()
+  await expect(page.getByTestId('backup-notice')).toContainText('Encrypted backup downloaded')
+
+  await page.getByTestId('reset-confirm').fill(`RESET ${(address ?? '').slice(-4)}`)
+  await page.getByTestId('reset-wallet').click()
+  await expect(page.getByRole('heading', { name: 'Create your Ember wallet' })).toBeVisible()
+
+  await page.getByTestId('open-recovery').click()
+  await page.getByTestId('backup-file').setInputFiles(backupPath ?? '')
+  await page.getByTestId('backup-password').fill('Str0ng-pass-correct-horse')
+  await page.getByTestId('import-backup').click()
+  await expect(page.getByTestId('address')).toHaveText(address ?? '', { timeout: 30000 })
+
   await page.getByTestId('lock').click()
   await page.getByTestId('password').fill('Str0ng-pass-correct-horse')
   await page.getByTestId('submit').click()

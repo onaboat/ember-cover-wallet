@@ -12,10 +12,12 @@ import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
 
 import { COVER_CONFIG } from './cover-config.ts'
 import { getSessionPublicKey, signWithSession } from './session-key.ts'
+import type { WalletCluster } from './wallet-data-config.ts'
 
 export interface PreSignArgs {
   transactionBytes: string
   dappUrl?: string
+  cluster?: WalletCluster
 }
 
 export interface PostSignArgs {
@@ -219,6 +221,16 @@ export class EmberCoverProvider implements CoverProvider {
 
   async preSign(args: PreSignArgs): Promise<CoverDecision> {
     try {
+      const coverCluster = COVER_CONFIG.cluster === 'mainnet' ? 'mainnet-beta' : 'devnet'
+      if (args.cluster !== undefined && args.cluster !== coverCluster) {
+        return unavailable({
+          stage: 'cluster_mismatch',
+          apiAttempted: false,
+          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
+          error: `Wallet transaction is ${args.cluster}; Ember Cover is configured for ${coverCluster}.`,
+          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+        })
+      }
       const walletAddress = await this.#signer.getAddress()
       if (!walletAddress) {
         return unavailable({

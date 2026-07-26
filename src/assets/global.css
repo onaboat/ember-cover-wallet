@@ -677,7 +677,7 @@ pre {
 
 /* Same chip language as Copy / Lock / address — one cohesive control set. */
 .ec-network-control select {
-  width: auto;
+  width: 100%;
   padding: 7px 14px;
   font-size: 12px;
   font-weight: 600;
@@ -888,6 +888,11 @@ pre {
   background: var(--ec-warning-soft);
 }
 
+.ec-activity-avatar[data-direction='failed'] {
+  color: var(--ec-blocked);
+  background: var(--ec-blocked-soft);
+}
+
 .ec-activity-chevron {
   flex: none;
   color: var(--ec-ink-faint);
@@ -998,6 +1003,13 @@ pre {
 
 .ec-button-link:hover {
   text-decoration: none;
+}
+
+.ec-section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: var(--ec-space-2);
 }
 
 /* =================================================================
@@ -1158,6 +1170,48 @@ label {
   font-size: 12px;
   font-weight: 700;
   padding: 8px;
+}
+
+.ec-recovery-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ec-space-4);
+}
+
+.ec-recovery-shell {
+  padding-bottom: var(--ec-space-6);
+}
+
+.ec-recovery-intro {
+  background: var(--ec-warning-soft);
+}
+
+.ec-file-picker input[type='file'] {
+  padding: var(--ec-space-3);
+  color: var(--ec-ink-muted);
+  background: var(--ec-paper-raised);
+  border: 1px dashed var(--ec-rule-strong);
+  border-radius: var(--ec-radius-md);
+}
+
+.ec-danger-zone {
+  border-color: rgba(184, 76, 63, 0.35);
+  background: var(--ec-blocked-soft);
+}
+
+.ec-danger-button {
+  width: 100%;
+  padding: 13px var(--ec-space-4);
+  border: 1px solid var(--ec-blocked);
+  border-radius: var(--ec-radius-md);
+  color: #fff;
+  background: var(--ec-blocked);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ec-danger-button:hover:not(:disabled) {
+  filter: brightness(0.94);
 }
 
 .ec-field-with-action {

@@ -62,12 +62,22 @@ test.beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('no server port')
   dappUrl = `http://127.0.0.1:${address.port}/dapp.html`
 
-  // warm the scale-to-zero devnet API
-  await fetch('https://ember-production-de2c.up.railway.app/v1/cover/pre-sign', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer test-partner-key' },
-    body: '{}',
-  }).catch(() => {})
+  // Warm the scale-to-zero Devnet API, but never let external availability
+  // consume the extension test's timeout before the browser flow even starts.
+  const warmController = new AbortController()
+  const warmTimeout = setTimeout(() => warmController.abort(), 5_000)
+  try {
+    await fetch('https://ember-production-de2c.up.railway.app/v1/cover/pre-sign', {
+      method: 'POST',
+      signal: warmController.signal,
+      headers: { 'content-type': 'application/json', authorization: 'Bearer test-partner-key' },
+      body: '{}',
+    })
+  } catch {
+    // Cover is fail-open in the wallet. Tests must remain useful while Railway wakes.
+  } finally {
+    clearTimeout(warmTimeout)
+  }
   coverServer = await startCoverProxy(18787)
 })
 

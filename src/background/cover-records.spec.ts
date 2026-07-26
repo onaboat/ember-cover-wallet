@@ -34,15 +34,72 @@ test('record persists transaction details for useful pending activity', async ()
     tokenMint: OTHER,
     recipient: OTHER,
     programs: ['Token Program'],
+    cluster: 'devnet',
+    transactionStatus: 'broadcast',
+    blockhash: 'blockhash',
+    lastValidBlockHeight: '123',
+    broadcastOwner: 'wallet',
+    signedTransactionBase64: 'signed',
   })
-  const [record] = await store().list(WALLET)
+  const [record] = await store().list(WALLET, 'devnet')
   expect(record).toMatchObject({
     title: 'Sent 1 USDC',
     amount: '1 USDC',
     tokenSymbol: 'USDC',
     recipient: OTHER,
     programs: ['Token Program'],
+    cluster: 'devnet',
+    transactionStatus: 'broadcast',
+    blockhash: 'blockhash',
+    lastValidBlockHeight: '123',
+    broadcastOwner: 'wallet',
+    signedTransactionBase64: 'signed',
   })
+})
+
+test('updates persisted transaction state without losing the original record time', async () => {
+  let now = new Date('2026-07-26T00:00:00.000Z')
+  const records = new CoverRecordStore({ now: () => now })
+  await records.record({
+    signature: 'sig',
+    walletAddress: WALLET,
+    coverStatus: 'covered',
+    cluster: 'devnet',
+    transactionStatus: 'broadcast',
+  })
+  now = new Date('2026-07-26T00:01:00.000Z')
+
+  await records.updateTransactionStates([
+    {
+      signature: 'sig',
+      walletAddress: WALLET,
+      transactionStatus: 'confirmed',
+    },
+  ])
+
+  expect(await records.list(WALLET, 'devnet')).toMatchObject([
+    {
+      recordedAt: '2026-07-26T00:00:00.000Z',
+      lastCheckedAt: '2026-07-26T00:01:00.000Z',
+      transactionStatus: 'confirmed',
+      failureReason: null,
+    },
+  ])
+})
+
+test('legacy records without a cluster are treated as Devnet only', async () => {
+  await storage.setItem(KEY, [
+    {
+      signature: 'legacy',
+      walletAddress: WALLET,
+      coverStatus: 'covered',
+      recordedAt: '2026-07-26T00:00:00.000Z',
+    },
+  ])
+  const records = store()
+
+  expect(await records.list(WALLET, 'devnet')).toHaveLength(1)
+  expect(await records.list(WALLET, 'mainnet-beta')).toHaveLength(0)
 })
 
 test('record upserts by signature so the latest verdict wins', async () => {

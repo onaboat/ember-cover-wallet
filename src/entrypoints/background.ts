@@ -6,7 +6,10 @@ import { registerRequestService } from '../background/request-service.ts'
 import { PrepaidPaymentProvider, registerPrepaidPaymentService } from '../background/prepaid-payment-service.ts'
 import { registerWalletTransferService, WalletTransferProvider } from '../background/sol-transfer-service.ts'
 import { registerVaultService } from '../background/vault-service.ts'
-import { registerWalletDataService } from '../background/wallet-data-service.ts'
+import {
+  registerActivityReconciliation,
+  registerWalletDataService,
+} from '../background/wallet-data-service.ts'
 
 export default defineBackground(() => {
   self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
@@ -15,7 +18,8 @@ export default defineBackground(() => {
   const controller = registerVaultService()
   const cover = new EmberCoverProvider(controller)
   registerCoverService(cover)
-  registerWalletDataService()
+  const walletData = registerWalletDataService()
+  registerActivityReconciliation(walletData, controller)
   registerWalletTransferService(new WalletTransferProvider(controller, cover))
   registerPrepaidPaymentService(new PrepaidPaymentProvider(controller, cover))
   registerRequestService(controller, cover)

@@ -1,8 +1,8 @@
-import { SOLANA_CHAINS } from '@solana/wallet-standard-chains'
 import { SolanaSignMessage, SolanaSignTransaction } from '@solana/wallet-standard-features'
 import type { WalletAccount } from '@wallet-standard/core'
 
 import { base58Decode } from '../cover/ember-auth.ts'
+import { EMBER_SOLANA_CHAINS } from '../wallet-standard/chains.ts'
 
 /**
  * Builds the connected WalletAccount from the vault address. publicKey = base58Decode(address)
@@ -12,7 +12,7 @@ export function buildConnectAccount(address: string): WalletAccount {
   return {
     address,
     publicKey: base58Decode(address),
-    chains: SOLANA_CHAINS,
+    chains: EMBER_SOLANA_CHAINS,
     features: [SolanaSignMessage, SolanaSignTransaction],
     label: 'Ember',
   }

@@ -9,6 +9,7 @@ import type {
 import { buildConnectAccount } from './build-account.ts'
 import { dappConnections } from './dapp-connections.ts'
 import { requestService } from './request-service.ts'
+import { walletClusterForChain } from '../wallet-standard/chains.ts'
 
 function connectedAccount(address: string): TransportConnectOutput {
   return { accounts: [buildConnectAccount(address)] } as unknown as TransportConnectOutput
@@ -49,5 +50,8 @@ export async function signTransaction(
   inputs: SolanaSignTransactionInput[],
   origin?: string,
 ): Promise<TransportSignTransactionOutput[]> {
+  for (const input of inputs) {
+    walletClusterForChain(input.chain)
+  }
   return await requestService().create('signTransaction', inputs, origin)
 }
