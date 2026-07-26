@@ -2,6 +2,9 @@ node_modules
 dist
 .wxt
 .output
+chrome-mv3
+playwright-report
+test-results
 *.local
 .DS_Store
 .env

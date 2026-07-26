@@ -62,22 +62,6 @@ test.beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('no server port')
   dappUrl = `http://127.0.0.1:${address.port}/dapp.html`
 
-  // Warm the scale-to-zero Devnet API, but never let external availability
-  // consume the extension test's timeout before the browser flow even starts.
-  const warmController = new AbortController()
-  const warmTimeout = setTimeout(() => warmController.abort(), 5_000)
-  try {
-    await fetch('https://ember-production-de2c.up.railway.app/v1/cover/pre-sign', {
-      method: 'POST',
-      signal: warmController.signal,
-      headers: { 'content-type': 'application/json', authorization: 'Bearer test-partner-key' },
-      body: '{}',
-    })
-  } catch {
-    // Cover is fail-open in the wallet. Tests must remain useful while Railway wakes.
-  } finally {
-    clearTimeout(warmTimeout)
-  }
   coverServer = await startCoverProxy(18787)
 })
 
@@ -121,19 +105,18 @@ async function openCoverActivation(context: BrowserContext, extensionId: string)
 }
 
 async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
-  const hasCoverSurface =
-    (await page.getByTestId('tx').isVisible().catch(() => false)) ||
-    (await page.getByTestId('message-overview').isVisible().catch(() => false))
-  if (hasCoverSurface) {
-    await expect(page.getByTestId('cover')).toBeVisible({ timeout: 7000 })
-    await expect(page.getByTestId('approve')).not.toHaveText('Checking cover...', { timeout: 7000 })
-  }
+  await expect(page.getByTestId('tx').or(page.getByTestId('message-overview'))).toBeVisible({
+    timeout: 7000,
+  })
+  await expect(page.getByTestId('cover')).toBeVisible({ timeout: 7000 })
+  await expect(page.getByTestId('approve')).not.toHaveText('Checking cover...', { timeout: 7000 })
   for (const testId of ['cover-ack', 'impact-ack', 'message-ack']) {
     const checkbox = page.getByTestId(testId)
     if (await checkbox.isVisible()) {
       await checkbox.check()
     }
   }
+  await expect(page.getByTestId('approve')).toBeEnabled({ timeout: 7000 })
 }
 
 test('dapp connects and gets a signature verifiable against the pubkey over the exact bytes', async () => {

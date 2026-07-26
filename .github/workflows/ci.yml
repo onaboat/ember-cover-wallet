@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wallet:
+    name: Typecheck, unit tests, and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun run check-types
+      - run: bun run test
+      - run: bun run build
+
+  browser-e2e:
+    name: Browser extension E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - name: Run extension flows in Chromium
+        run: xvfb-run --auto-servernum bun run e2e
+
+  artifacts:
+    name: Reproducible extension artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Reject generated extension output in source control
+        run: |
+          if git ls-files chrome-mv3 test-results playwright-report | grep -q .; then
+            echo "Generated extension or browser-test output is tracked."
+            exit 1
+          fi
+      - name: Build the extension twice
+        run: |
+          bun run build
+          find .output/chrome-mv3 -type f -print0 | LC_ALL=C sort -z \
+            | xargs -0 sha256sum > /tmp/ember-extension-first.sha256
+          rm -rf .output
+          bun run build
+          find .output/chrome-mv3 -type f -print0 | LC_ALL=C sort -z \
+            | xargs -0 sha256sum > /tmp/ember-extension-second.sha256
+          diff -u /tmp/ember-extension-first.sha256 /tmp/ember-extension-second.sha256
+      - name: Write extension artifact manifest
+        run: |
+          mkdir -p artifact-manifests
+          cp /tmp/ember-extension-second.sha256 artifact-manifests/ember-extension.sha256
+          cp .output/chrome-mv3/manifest.json artifact-manifests/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ember-extension-manifests
+          path: artifact-manifests
+          if-no-files-found: error

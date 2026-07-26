@@ -1,1 +1,0 @@
-import{D as e,O as t,r as n,t as r}from"./App-CejCr6F_.js";var i=t(),a=e(),o=n(),s=document.getElementById(`root`);if(!s)throw Error(`Root element not found`);(0,a.createRoot)(s).render((0,o.jsx)(i.StrictMode,{children:(0,o.jsx)(r,{mode:`approval`})}));
