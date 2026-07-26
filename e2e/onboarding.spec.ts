@@ -31,6 +31,21 @@ test('create a vault, lock, and unlock', async () => {
   await expect(page.getByTestId('wallet-balance')).toBeVisible()
   await expect(page.getByTestId('wallet-tokens')).toBeVisible()
   await expect(page.getByTestId('wallet-cover-status')).toBeVisible()
+  const frame = await page.evaluate(() => {
+    const root = document.querySelector('#root')?.getBoundingClientRect()
+    const topbar = document.querySelector('.ec-topbar')?.getBoundingClientRect()
+    return {
+      viewportWidth: window.innerWidth,
+      rootRight: root?.right ?? -1,
+      topbarRight: topbar?.right ?? -1,
+    }
+  })
+  expect(Math.abs(frame.rootRight - frame.viewportWidth)).toBeLessThanOrEqual(1)
+  expect(Math.abs(frame.topbarRight - frame.viewportWidth)).toBeLessThanOrEqual(1)
+  await page.getByTestId('send-sol').click()
+  await expect(page.getByTestId('send-asset-select')).toBeVisible()
+  await expect(page.getByTestId('send-asset-select').locator('option').first()).toHaveText(/SOL/)
+  await page.getByRole('button', { name: 'Back' }).click()
   await page.getByTestId('receive').click()
   await expect(page.getByTestId('receive-qr')).toBeVisible()
   await expect(page.getByTestId('receive-address')).toHaveText(address ?? '')

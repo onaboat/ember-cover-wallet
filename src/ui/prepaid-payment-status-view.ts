@@ -1,6 +1,7 @@
 import type { LocalPrepaidPaymentState } from '../background/prepaid-payment-service.ts'
 import type { WalletCluster } from '../background/wallet-data-config.ts'
 import type { CoverStatusSnapshot } from '../cover/ember-types.ts'
+import { coverPeriodExpired, coverStatusActive } from '../cover/ember-types.ts'
 
 export type PaymentBadgeTone =
   | 'checking'
@@ -20,7 +21,7 @@ export interface PaymentStatusView {
   badgeTone: PaymentBadgeTone
   detail: string
   metrics: PaymentStatusMetric[]
-  primaryAction: 'activate' | 'manage' | 'sync'
+  primaryAction: 'activate' | 'manage' | 'refresh' | 'sync'
   title: string
 }
 
@@ -29,6 +30,7 @@ export interface PaymentStatusInput {
   coverEnrolled: boolean | null
   coverStatusLoading: boolean
   coverStatusSnapshot: CoverStatusSnapshot | null
+  nowMs?: number
   paymentState: LocalPrepaidPaymentState | null
 }
 
@@ -49,7 +51,14 @@ function stateMetrics(state: LocalPrepaidPaymentState): PaymentStatusMetric[] {
 }
 
 export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStatusView {
-  const { cluster, coverEnrolled, coverStatusLoading, coverStatusSnapshot, paymentState } = input
+  const {
+    cluster,
+    coverEnrolled,
+    coverStatusLoading,
+    coverStatusSnapshot,
+    nowMs = Date.now(),
+    paymentState,
+  } = input
   if (coverStatusLoading) {
     return {
       badgeLabel: 'CHECKING',
@@ -72,7 +81,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
     }
   }
 
-  if (coverStatusSnapshot?.subscriptionActive && coverStatusSnapshot.walletRegistered) {
+  if (coverStatusSnapshot && coverStatusActive(coverStatusSnapshot, nowMs)) {
     return {
       badgeLabel: 'PROTECTED',
       badgeTone: 'protected',
@@ -118,12 +127,47 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
         title: 'Coverage',
       }
     }
+    if (paymentState.status === 'expired_unconfirmed') {
+      return {
+        badgeLabel: 'NOT SENT',
+        badgeTone: 'none',
+        detail: 'The previous payment never confirmed and can no longer land. You can review a new payment.',
+        metrics: stateMetrics(paymentState),
+        primaryAction: 'activate',
+        title: 'Coverage',
+      }
+    }
+  }
+
+  if (coverStatusSnapshot && coverPeriodExpired(coverStatusSnapshot, nowMs)) {
+    return {
+      badgeLabel: 'EXPIRED',
+      badgeTone: 'none',
+      detail: 'Your 30-day Ember Cover period has ended. Make a new one-off payment to renew.',
+      metrics: paymentState ? stateMetrics(paymentState) : [],
+      primaryAction: 'activate',
+      title: 'Coverage',
+    }
+  }
+
+  if (coverStatusSnapshot && !coverStatusSnapshot.subscriptionActive) {
+    return {
+      badgeLabel: 'NO COVER',
+      badgeTone: 'none',
+      detail: 'Ember Cover is not active for this wallet.',
+      metrics: paymentState ? stateMetrics(paymentState) : [],
+      primaryAction: 'activate',
+      title: 'Coverage',
+    }
+  }
+
+  if (paymentState) {
     return {
       badgeLabel: 'UNAVAILABLE',
       badgeTone: 'unavailable',
-      detail: 'Payment activation is saved, but live cover status could not be verified.',
+      detail: 'Payment history is saved, but live cover status could not be verified.',
       metrics: stateMetrics(paymentState),
-      primaryAction: 'sync',
+      primaryAction: 'refresh',
       title: 'Coverage',
     }
   }
@@ -134,7 +178,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
       badgeTone: 'unavailable',
       detail: 'Cover authorization exists, but no active payment could be verified.',
       metrics: [],
-      primaryAction: 'activate',
+      primaryAction: 'refresh',
       title: 'Coverage',
     }
   }

@@ -199,7 +199,7 @@ test('approveSignTransaction rejects multiple transactions so the UI cannot sign
   svc.reject()
 })
 
-test('approve leaves the window open (does not remove it)', async () => {
+test('approve closes the one-purpose approval window', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
   const remove = vi.spyOn(fakeBrowser.windows, 'remove').mockResolvedValue(undefined as never)
@@ -207,10 +207,10 @@ test('approve leaves the window open (does not remove it)', async () => {
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   await pending
-  expect(remove).not.toHaveBeenCalled()
+  expect(remove).toHaveBeenCalledWith(1)
 })
 
-test('the pending slot is cleared after approve so the window becomes a plain wallet', async () => {
+test('the pending slot is cleared before the approval window closes', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
   const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
@@ -220,14 +220,14 @@ test('the pending slot is cleared after approve so the window becomes a plain wa
   expect(svc.get()).toBeNull()
 })
 
-test('closing the window after approve does not settle the promise a second time', async () => {
+test('the approval-window removal event after approve does not settle the promise a second time', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 7 } as never)
   const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   const [out] = await pending
-  // The user closes the still-open wallet window: onRemoved must be a no-op now.
+  // The service closes the one-purpose approval window: onRemoved must be a no-op now.
   fakeBrowser.windows.onRemoved.trigger(7)
   expect(out?.signedTransaction).toBeDefined()
 })

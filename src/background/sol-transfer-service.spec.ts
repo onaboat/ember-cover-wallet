@@ -3,11 +3,19 @@ import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 import { base58Encode } from '../cover/ember-auth.ts'
-import { maxSolSendLamports, parseSolAmountToLamports, WalletTransferProvider } from './sol-transfer-service.ts'
+import {
+  maxSolSendLamports,
+  parseSolAmountToLamports,
+  parseTokenAmountToBaseUnits,
+  WalletTransferProvider,
+} from './sol-transfer-service.ts'
 
 const SOURCE = base58Encode(new Uint8Array(32).fill(1))
 const DESTINATION = base58Encode(new Uint8Array(32).fill(2))
 const BLOCKHASH = '11111111111111111111111111111111'
+const TOKEN_ACCOUNT = base58Encode(new Uint8Array(32).fill(3))
+const TOKEN_MINT = base58Encode(new Uint8Array(32).fill(4))
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
 beforeEach(() => {
   fakeBrowser.reset()
@@ -84,6 +92,63 @@ test('parses SOL amounts to lamports', () => {
 test('calculates fee-aware SOL max', () => {
   expect(maxSolSendLamports(5_000n)).toBe(0n)
   expect(maxSolSendLamports(5_001n)).toBe(1n)
+})
+
+test('parses token amounts using the selected mint decimals', () => {
+  expect(parseTokenAmountToBaseUnits('1.25', 6)).toBe(1_250_000n)
+  expect(() => parseTokenAmountToBaseUnits('1.0000001', 6)).toThrow('6 decimal')
+  expect(() => parseTokenAmountToBaseUnits('0', 6)).toThrow('greater than 0')
+})
+
+test('previews an SPL token transfer and recipient account creation without signing', async () => {
+  const signer = signerStub()
+  const provider = new WalletTransferProvider(signer, coverStub('covered'), {
+    rpcFactory: () => ({
+      ...rpcStub(),
+      getAccountInfo: (account) => ({
+        send: async () => ({
+          value:
+            account === TOKEN_ACCOUNT
+              ? {
+                  owner: TOKEN_PROGRAM,
+                  data: {
+                    parsed: {
+                      info: {
+                        mint: TOKEN_MINT,
+                        owner: SOURCE,
+                        tokenAmount: { amount: '2500000', decimals: 6 },
+                      },
+                    },
+                  },
+                }
+              : null,
+        }),
+      }),
+      getMinimumBalanceForRentExemption: () => ({ send: async () => 2_039_280n }),
+    }),
+  })
+
+  const preview = await provider.previewTransfer({
+    amount: '1.25',
+    asset: {
+      kind: 'token',
+      symbol: 'USDC',
+      mint: TOKEN_MINT,
+      tokenAccount: TOKEN_ACCOUNT,
+      programId: TOKEN_PROGRAM,
+      decimals: 6,
+      rawBalance: '2500000',
+    },
+    destination: DESTINATION,
+  })
+
+  expect(preview.asset.kind).toBe('token')
+  expect(preview.amountBaseUnits).toBe('1250000')
+  expect(preview.tokenBalanceAfter).toBe('1.25')
+  expect(preview.createsDestinationTokenAccount).toBe(true)
+  expect(preview.accountRentLamports).toBe('2039280')
+  expect(preview.simulation.status).toBe('success')
+  expect(signer.sign).not.toHaveBeenCalled()
 })
 
 test('preview shows cover and estimated debits', async () => {

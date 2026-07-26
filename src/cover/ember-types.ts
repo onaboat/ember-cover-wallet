@@ -8,9 +8,11 @@ export interface CoverCapContext {
 
 export interface CoverStatusSnapshot {
   subscriptionActive: boolean
+  subscriptionStatus: string
   walletRegistered: boolean
   tier: string
   month: string
+  currentPeriodEnd: string | null
   coveredTxPerMonth: number
   usedCoveredTxThisMonth: number
   remainingCoveredTxThisMonth: number
@@ -84,6 +86,7 @@ export function normalizeCoverCapContext(payload: unknown): CoverCapContext | nu
 
 export function normalizeCoverStatusSnapshot(payload: unknown): CoverStatusSnapshot | null {
   const value = recordOf(payload)
+  const currentPeriodEnd = value['currentPeriodEnd']
   const coveredTxPerMonth = numberFrom(value['coveredTxPerMonth'])
   const usedCoveredTxThisMonth = numberFrom(value['usedCoveredTxThisMonth'])
   const remainingCoveredTxThisMonth = numberFrom(value['remainingCoveredTxThisMonth'])
@@ -92,9 +95,14 @@ export function normalizeCoverStatusSnapshot(payload: unknown): CoverStatusSnaps
   const remainingLossCapUsd = numberFrom(value['remainingLossCapUsd'])
   if (
     typeof value['subscriptionActive'] !== 'boolean' ||
+    typeof value['subscriptionStatus'] !== 'string' ||
     typeof value['walletRegistered'] !== 'boolean' ||
     typeof value['tier'] !== 'string' ||
     typeof value['month'] !== 'string' ||
+    !(
+      currentPeriodEnd === null ||
+      (typeof currentPeriodEnd === 'string' && !Number.isNaN(Date.parse(currentPeriodEnd)))
+    ) ||
     coveredTxPerMonth === null ||
     usedCoveredTxThisMonth === null ||
     remainingCoveredTxThisMonth === null ||
@@ -106,9 +114,11 @@ export function normalizeCoverStatusSnapshot(payload: unknown): CoverStatusSnaps
   }
   return {
     subscriptionActive: value['subscriptionActive'],
+    subscriptionStatus: value['subscriptionStatus'],
     walletRegistered: value['walletRegistered'],
     tier: value['tier'],
     month: value['month'],
+    currentPeriodEnd,
     coveredTxPerMonth,
     usedCoveredTxThisMonth,
     remainingCoveredTxThisMonth,
@@ -116,6 +126,22 @@ export function normalizeCoverStatusSnapshot(payload: unknown): CoverStatusSnaps
     usedLossCapUsd,
     remainingLossCapUsd,
   }
+}
+
+export function coverPeriodExpired(snapshot: CoverStatusSnapshot, nowMs = Date.now()): boolean {
+  if (snapshot.subscriptionStatus === 'expired') {
+    return true
+  }
+  return snapshot.currentPeriodEnd !== null && Date.parse(snapshot.currentPeriodEnd) <= nowMs
+}
+
+export function coverStatusActive(snapshot: CoverStatusSnapshot, nowMs = Date.now()): boolean {
+  return (
+    snapshot.subscriptionActive &&
+    snapshot.subscriptionStatus === 'active' &&
+    snapshot.walletRegistered &&
+    !coverPeriodExpired(snapshot, nowMs)
+  )
 }
 
 export function coverCapExhausted(decision: Pick<CoverDecision, 'reasonCodes' | 'coverStatus'>): boolean {

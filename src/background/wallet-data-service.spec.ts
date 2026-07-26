@@ -129,6 +129,8 @@ test('normalizes activity into JSON-safe popup rows', () => {
       title: 'On-chain transaction',
       amount: null,
       counterparty: null,
+      feeLamports: null,
+      programs: [],
     },
     {
       signature: 'def',
@@ -141,6 +143,8 @@ test('normalizes activity into JSON-safe popup rows', () => {
       title: 'Failed transaction',
       amount: null,
       counterparty: null,
+      feeLamports: null,
+      programs: [],
     },
   ])
 })

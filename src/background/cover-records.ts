@@ -26,6 +26,15 @@ export interface CoverRecord {
   requestId: string | null
   dappOrigin: string | null
   recordedAt: string
+  title: string | null
+  actionKind: string | null
+  amount: string | null
+  tokenSymbol: string | null
+  tokenMint: string | null
+  recipient: string | null
+  source: string | null
+  feePayer: string | null
+  programs: string[]
 }
 
 export interface CoverRecordInput {
@@ -35,6 +44,15 @@ export interface CoverRecordInput {
   riskBand?: string | null
   requestId?: string | null
   dappOrigin?: string | null
+  title?: string | null
+  actionKind?: string | null
+  amount?: string | null
+  tokenSymbol?: string | null
+  tokenMint?: string | null
+  recipient?: string | null
+  source?: string | null
+  feePayer?: string | null
+  programs?: string[]
 }
 
 interface CoverRecordStoreDeps {
@@ -72,6 +90,15 @@ export class CoverRecordStore {
       requestId: input.requestId ?? null,
       dappOrigin: input.dappOrigin ?? null,
       recordedAt: this.#now().toISOString(),
+      title: input.title ?? null,
+      actionKind: input.actionKind ?? null,
+      amount: input.amount ?? null,
+      tokenSymbol: input.tokenSymbol ?? null,
+      tokenMint: input.tokenMint ?? null,
+      recipient: input.recipient ?? null,
+      source: input.source ?? null,
+      feePayer: input.feePayer ?? null,
+      programs: input.programs ?? [],
     }
     await this.#write([...records.filter((record) => record.signature !== input.signature), next])
     return next

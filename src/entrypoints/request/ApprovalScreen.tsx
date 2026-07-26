@@ -234,6 +234,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const [address, setAddress] = useState<string | null>(null)
   const [needsUnlock, setNeedsUnlock] = useState(false)
   const [password, setPassword] = useState('')
+  const [passwordVisible, setPasswordVisible] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [coverGaveUp, setCoverGaveUp] = useState(false)
@@ -243,6 +244,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const [coverAcknowledged, setCoverAcknowledged] = useState(false)
   const [impactAcknowledged, setImpactAcknowledged] = useState(false)
   const [messageAcknowledged, setMessageAcknowledged] = useState(false)
+  const [debugOpen, setDebugOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -491,7 +493,12 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
       ['Error', debug.error],
     ] as const
     return (
-      <details className="ec-debug" data-testid="cover-debug">
+      <details
+        className="ec-debug"
+        data-testid="cover-debug"
+        open={debugOpen}
+        onToggle={(event) => setDebugOpen(event.currentTarget.open)}
+      >
         <summary>Cover debug</summary>
         <dl className="ec-debug-list">
           {rows.map(([label, value]) => (
@@ -581,13 +588,24 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
         {needsUnlock ? (
           <label>
             Password
-            <input
-              data-testid="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
-            />
+            <span className="ec-password-field">
+              <input
+                autoComplete="current-password"
+                data-testid="password"
+                type={passwordVisible ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+              />
+              <button
+                aria-label={passwordVisible ? 'Hide password' : 'Show password'}
+                className="ec-password-toggle"
+                onClick={() => setPasswordVisible((visible) => !visible)}
+                type="button"
+              >
+                {passwordVisible ? 'Hide' : 'Show'}
+              </button>
+            </span>
           </label>
         ) : null}
         <div className="ec-actions">

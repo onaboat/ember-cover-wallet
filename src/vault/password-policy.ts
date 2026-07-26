@@ -3,16 +3,10 @@ export interface PasswordAssessment {
   reason?: string
 }
 
-const CLASSES = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/]
-
-/** Reject anything under 12 chars or mixing fewer than 3 character classes. */
+/** Keep disposable/test wallets easy to access: minimum length only, with no maximum. */
 export function assessPassword(password: string): PasswordAssessment {
-  if (password.length < 12) {
-    return { ok: false, reason: 'Password must be at least 12 characters.' }
-  }
-  const classes = CLASSES.filter((re) => re.test(password)).length
-  if (classes < 3) {
-    return { ok: false, reason: 'Password must mix at least 3 of: lowercase, uppercase, digits, symbols.' }
+  if (password.length < 8) {
+    return { ok: false, reason: 'Password must be at least 8 characters.' }
   }
   return { ok: true }
 }

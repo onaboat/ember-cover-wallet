@@ -6,9 +6,11 @@ import { prepaidPaymentStatusView } from './prepaid-payment-status-view.ts'
 
 const snapshot: CoverStatusSnapshot = {
   subscriptionActive: true,
+  subscriptionStatus: 'active',
   walletRegistered: true,
   tier: 'Core',
   month: '2026-07',
+  currentPeriodEnd: '2026-08-24T00:00:00Z',
   coveredTxPerMonth: 100,
   usedCoveredTxThisMonth: 7,
   remainingCoveredTxThisMonth: 93,
@@ -94,5 +96,55 @@ test('offers one-off activation when there is no cover or saved payment', () => 
     badgeLabel: 'NO COVER',
     badgeTone: 'none',
     primaryAction: 'activate',
+  })
+})
+
+test('offers renewal when the live API reports an expired period', () => {
+  expect(
+    prepaidPaymentStatusView({
+      cluster: 'devnet',
+      coverEnrolled: true,
+      coverStatusLoading: false,
+      coverStatusSnapshot: {
+        ...snapshot,
+        subscriptionActive: false,
+        subscriptionStatus: 'expired',
+      },
+      nowMs: Date.parse('2026-08-25T00:00:00Z'),
+      paymentState: state({ status: 'active', currentPeriodEnd: '2026-08-24T00:00:00Z' }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'EXPIRED',
+    primaryAction: 'activate',
+  })
+})
+
+test('allows a new review after an unconfirmed payment blockhash expires', () => {
+  expect(
+    prepaidPaymentStatusView({
+      cluster: 'devnet',
+      coverEnrolled: false,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      paymentState: state({ status: 'expired_unconfirmed' }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'NOT SENT',
+    primaryAction: 'activate',
+  })
+})
+
+test('requires a live status refresh instead of offering another payment when status is unavailable', () => {
+  expect(
+    prepaidPaymentStatusView({
+      cluster: 'devnet',
+      coverEnrolled: true,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      paymentState: state({ status: 'active' }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'UNAVAILABLE',
+    primaryAction: 'refresh',
   })
 })

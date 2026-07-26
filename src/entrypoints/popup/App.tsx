@@ -9,8 +9,13 @@ import type {
   PrepaidPaymentResult,
 } from '../../background/prepaid-payment-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
-import { getWalletTransferService, parseSolAmountToLamports } from '../../background/sol-transfer-service.ts'
+import {
+  getWalletTransferService,
+  parseSolAmountToLamports,
+  parseTokenAmountToBaseUnits,
+} from '../../background/sol-transfer-service.ts'
 import type { SolTransferPreview, SolTransferResult } from '../../background/sol-transfer-service.ts'
+import type { WalletTransferAsset } from '../../background/sol-transfer-service.ts'
 import { getVaultService } from '../../background/vault-service.ts'
 import { formatLamportsAsSol } from '../../background/wallet-data-service.ts'
 import type { WalletDataSnapshot } from '../../background/wallet-data-service.ts'
@@ -19,6 +24,7 @@ import type { WalletCluster } from '../../background/wallet-data-config.ts'
 import { WALLET_CLUSTER_OPTIONS } from '../../background/wallet-data-config.ts'
 import { coverCapReviewText, formatCoverStatusSnapshot } from '../../cover/cover-cap-view.ts'
 import type { CoverStatusSnapshot } from '../../cover/ember-types.ts'
+import { coverStatusActive } from '../../cover/ember-types.ts'
 import { BrandMark } from '../../ui/BrandMark.tsx'
 import { prepaidPaymentStatusView } from '../../ui/prepaid-payment-status-view.ts'
 import { isVaultLockedError } from '../../vault/vault-lock.ts'
@@ -33,7 +39,7 @@ const ApprovalScreen = lazy(() =>
 type WalletMode = 'wallet' | 'approval'
 type View = 'loading' | 'create' | 'unlock' | 'account'
 type MainTab = 'assets' | 'activity'
-type AccountScreen = 'home' | 'receive' | 'send' | 'cover' | 'approval'
+type AccountScreen = 'home' | 'receive' | 'send' | 'cover' | 'approval' | 'activity-detail'
 type SendStep = 'form' | 'review' | 'complete'
 
 interface AppProps {
@@ -77,6 +83,10 @@ function tokenInitial(label: string, mint: string): string {
   return (trimmed[0] ?? mint[0] ?? 'T').toUpperCase()
 }
 
+function tokenDisplayName(label: string, mint: string): string {
+  return mint === '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' ? 'USDC' : label
+}
+
 function activityDate(blockTime: number | null): string {
   return blockTime ? new Date(blockTime * 1000).toLocaleDateString() : 'Pending'
 }
@@ -90,6 +100,20 @@ function activityState(failed: boolean, confirmationStatus: string | null): stri
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function paymentErrorMessage(error: unknown, fallback: string): string {
+  const message = typeof error === 'string' ? error : errorMessage(error, fallback)
+  const messages: readonly [string, string][] = [
+    ['tx_not_confirmed', 'The payment is not confirmed yet. Retry activation without paying again.'],
+    ['rpc_unavailable', 'Solana confirmation is temporarily unavailable. Retry activation without paying again.'],
+    ['cluster_mismatch', 'The payment was made on the wrong Solana network.'],
+    ['amount_too_low', 'The confirmed payment amount was below the required 1 USDC.'],
+    ['no_matching_transfer', 'The confirmed transaction did not contain the required Ember treasury payment.'],
+    ['payment_already_used', 'This payment signature has already been used for another entitlement.'],
+    ['cover_status_unavailable', 'Live cover status is unavailable. Check again before approving another payment.'],
+  ]
+  return messages.find(([code]) => message.includes(code))?.[1] ?? message
 }
 
 function maxSendableSol(snapshot: WalletDataSnapshot | null): string {
@@ -108,16 +132,27 @@ function isValidSolanaAddress(value: string): boolean {
   }
 }
 
-function amountValidation(amount: string, snapshot: WalletDataSnapshot | null): string {
+function amountValidation(
+  amount: string,
+  snapshot: WalletDataSnapshot | null,
+  asset: WalletTransferAsset,
+): string {
   if (!amount.trim()) return ''
   try {
-    const lamports = parseSolAmountToLamports(amount)
-    if (snapshot && lamports > BigInt(snapshot.lamports) - BASE_FEE_LAMPORTS) {
-      return `Not enough SOL for amount and network fee. Max is ${maxSendableSol(snapshot)} SOL.`
+    if (asset.kind === 'sol') {
+      const lamports = parseSolAmountToLamports(amount)
+      if (snapshot && lamports > BigInt(snapshot.lamports) - BASE_FEE_LAMPORTS) {
+        return `Not enough SOL for amount and network fee. Max is ${maxSendableSol(snapshot)} SOL.`
+      }
+    } else {
+      const baseUnits = parseTokenAmountToBaseUnits(amount, asset.decimals)
+      if (baseUnits > BigInt(asset.rawBalance)) {
+        return `Not enough ${asset.symbol}.`
+      }
     }
     return ''
   } catch (error) {
-    return errorMessage(error, 'Enter a valid SOL amount')
+    return errorMessage(error, `Enter a valid ${asset.symbol} amount`)
   }
 }
 
@@ -134,6 +169,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [approvalPending, setApprovalPending] = useState(mode === 'approval')
   const [address, setAddress] = useState<string | null>(null)
   const [password, setPassword] = useState('')
+  const [passwordVisible, setPasswordVisible] = useState(false)
   const [error, setError] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [coverEnrolled, setCoverEnrolled] = useState<boolean | null>(null)
@@ -155,6 +191,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [sendRecipient, setSendRecipient] = useState('')
   const [sendRecipientFromClipboard, setSendRecipientFromClipboard] = useState(false)
   const [sendAmount, setSendAmount] = useState('')
+  const [sendAssetId, setSendAssetId] = useState('sol')
   const [sendPreview, setSendPreview] = useState<SolTransferPreview | null>(null)
   const [sendResult, setSendResult] = useState<SolTransferResult | null>(null)
   const [sendError, setSendError] = useState('')
@@ -163,6 +200,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [uncoveredAck, setUncoveredAck] = useState(false)
   const [highRiskAck, setHighRiskAck] = useState(false)
   const [nowMs, setNowMs] = useState(Date.now())
+  const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null)
+  const [copiedActivityId, setCopiedActivityId] = useState<string | null>(null)
   const tokenBalances = arrayOrEmpty(snapshot?.tokenBalances)
   const emberActivity = arrayOrEmpty(snapshot?.emberActivity)
   const activity = arrayOrEmpty(snapshot?.activity)
@@ -170,13 +209,26 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const recipientValid = recipientTrimmed ? isValidSolanaAddress(recipientTrimmed) : false
   const recipientIsSelf = !!address && recipientTrimmed === address
   const recipientError = recipientTrimmed && !recipientValid ? 'Enter a valid Solana address.' : ''
-  const selfSendError = recipientIsSelf ? 'You cannot send SOL to this wallet.' : ''
-  const sendAmountError = amountValidation(sendAmount, snapshot)
+  const selectedToken = tokenBalances.find((token) => token.tokenAccount === sendAssetId)
+  const sendAsset: WalletTransferAsset = selectedToken
+    ? {
+        kind: 'token',
+        symbol: tokenDisplayName(selectedToken.label, selectedToken.mint),
+        mint: selectedToken.mint,
+        tokenAccount: selectedToken.tokenAccount,
+        programId: selectedToken.programId,
+        decimals: selectedToken.decimals,
+        rawBalance: selectedToken.rawAmount,
+      }
+    : { kind: 'sol', symbol: 'SOL' }
+  const selfSendError = recipientIsSelf ? `You cannot send ${sendAsset.symbol} to this wallet.` : ''
+  const sendAmountError = amountValidation(sendAmount, snapshot, sendAsset)
   const paymentStatusView = prepaidPaymentStatusView({
     cluster,
     coverEnrolled,
     coverStatusLoading,
     coverStatusSnapshot,
+    nowMs,
     paymentState,
   })
 
@@ -382,6 +434,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setSendRecipient('')
     setSendRecipientFromClipboard(false)
     setSendAmount('')
+    setSendAssetId('sol')
     setSendPreview(null)
     setSendResult(null)
     setSendError('')
@@ -423,7 +476,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   }
 
   function handlePaymentError(e: unknown, fallback: string) {
-    const message = errorMessage(e, fallback)
+    const message = paymentErrorMessage(e, fallback)
     if (isVaultLockedError(message)) {
       setPaymentNeedsUnlock(true)
       setPaymentError('Wallet re-locked. Enter your password and try again.')
@@ -510,7 +563,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       if (result.apiCoverActive) {
         setPaymentNotice('Cover activation completed. No second payment was made.')
       } else {
-        setPaymentNotice(result.activationError ?? 'Payment confirmation or API activation is still pending.')
+        setPaymentNotice(
+          paymentErrorMessage(
+            result.activationError,
+            'Payment confirmation or API activation is still pending.',
+          ),
+        )
       }
     } catch (e) {
       handlePaymentError(e, 'Could not retry payment activation')
@@ -527,7 +585,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setHighRiskAck(false)
     setNowMs(Date.now())
     try {
-      setSendPreview(await transfers.previewSolTransfer({ amountSol: sendAmount, cluster, destination: recipientTrimmed }))
+      setSendPreview(
+        await transfers.previewTransfer({
+          amount: sendAmount,
+          asset: sendAsset,
+          cluster,
+          destination: recipientTrimmed,
+        }),
+      )
       void refreshCoverState()
     } catch (e) {
       setSendError(errorMessage(e, 'Could not review send'))
@@ -540,8 +605,9 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setSendBusy(true)
     setSendError('')
     try {
-      const result = await transfers.sendSolTransfer({
-        amountSol: sendAmount,
+      const result = await transfers.sendTransfer({
+        amount: sendAmount,
+        asset: sendAsset,
         cluster,
         destination: recipientTrimmed,
         acknowledgeHighRisk: highRiskAck,
@@ -649,8 +715,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         ? 'Manage Cover'
         : paymentStatusView.primaryAction === 'sync'
           ? 'Retry activation'
+          : paymentStatusView.primaryAction === 'refresh'
+            ? 'Check cover'
           : 'Activate cover'
-    const actionTestId = paymentStatusView.primaryAction === 'manage' ? 'manage-cover' : 'activate-cover'
+    const actionTestId =
+      paymentStatusView.primaryAction === 'manage'
+        ? 'manage-cover'
+        : paymentStatusView.primaryAction === 'refresh'
+          ? 'refresh-cover-status'
+          : 'activate-cover'
     return (
       <section className="ec-cover-strip" data-testid="wallet-cover-status">
         <div className="ec-cover-strip__main">
@@ -669,7 +742,11 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           <button
             className={paymentStatusView.primaryAction === 'activate' ? 'ec-primary' : 'ec-secondary'}
             data-testid={actionTestId}
-            onClick={openCoverActivation}
+            onClick={
+              paymentStatusView.primaryAction === 'refresh'
+                ? () => void refreshCoverState()
+                : openCoverActivation
+            }
             type="button"
           >
             {actionLabel}
@@ -741,12 +818,17 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   }
 
   function renderCoverActivation() {
+    const canStartPayment = paymentStatusView.primaryAction === 'activate'
     const canPay =
+      canStartPayment &&
       !!paymentPreview &&
       paymentPreview.errors.length === 0 &&
       paymentPreview.simulation.status === 'success' &&
       !paymentBusy
-    const canRetry = !!paymentState?.paymentSignature && paymentState.status !== 'active' && !paymentBusy
+    const canRetry =
+      paymentStatusView.primaryAction === 'sync' &&
+      !!paymentState?.paymentSignature &&
+      !paymentBusy
     return (
       <section className="ec-task-screen" data-testid="cover-activation">
         <div className="ec-screen-head">
@@ -887,6 +969,22 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             >
               {paymentBusy ? 'Retrying...' : 'Retry activation'}
             </button>
+          ) : paymentStatusView.primaryAction === 'refresh' ? (
+            <button
+              className="ec-secondary"
+              data-testid="refresh-cover-status"
+              disabled={coverStatusLoading}
+              onClick={() => void refreshCoverState()}
+            >
+              {coverStatusLoading ? 'Checking...' : 'Check cover status'}
+            </button>
+          ) : !canStartPayment ? (
+            <button
+              className="ec-secondary"
+              onClick={() => setAccountScreen(approvalPending ? 'approval' : 'home')}
+            >
+              Done
+            </button>
           ) : !paymentPreview ? (
             <button
               className="ec-primary"
@@ -948,7 +1046,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </section>
       )
     }
-    if (coverStatusSnapshot?.subscriptionActive && coverStatusSnapshot.walletRegistered) {
+    if (coverStatusSnapshot && coverStatusActive(coverStatusSnapshot, nowMs)) {
       return (
         <section className="ec-inline-cover" data-tone="covered" data-testid="send-cover-status">
           <span>Protected</span>
@@ -957,12 +1055,21 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       )
     }
     const needsSync = paymentStatusView.primaryAction === 'sync'
+    const needsRefresh = paymentStatusView.primaryAction === 'refresh'
     return (
-      <section className="ec-inline-cover" data-tone={needsSync ? 'unavailable' : 'none'} data-testid="send-cover-status">
-        <span>{needsSync ? 'Cover status unavailable' : 'Cover is not active'}</span>
+      <section
+        className="ec-inline-cover"
+        data-tone={needsSync || needsRefresh ? 'unavailable' : 'none'}
+        data-testid="send-cover-status"
+      >
+        <span>{needsSync || needsRefresh ? 'Cover status unavailable' : 'Cover is not active'}</span>
         <p>{paymentStatusView.detail}</p>
-        <button className="ec-secondary" onClick={openCoverActivation} type="button">
-          {needsSync ? 'Retry activation' : 'Activate cover'}
+        <button
+          className="ec-secondary"
+          onClick={needsRefresh ? () => void refreshCoverState() : openCoverActivation}
+          type="button"
+        >
+          {needsRefresh ? 'Check cover' : needsSync ? 'Retry activation' : 'Activate cover'}
         </button>
       </section>
     )
@@ -976,7 +1083,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <span className="ec-screen-head__spacer" />
             <div>
               <span className="ec-control-label">Submitted</span>
-              <h2>Send complete</h2>
+              <h2>Send submitted</h2>
             </div>
           </div>
           <p className="ec-help">{sendResult?.cover.label ?? 'Submitted'}</p>
@@ -1040,7 +1147,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               <dl className="ec-data-list">
                 <div>
                   <dt>Outgoing</dt>
-                  <dd>{sendPreview.amountSol} SOL</dd>
+                  <dd>{sendPreview.amount} {sendPreview.asset.symbol}</dd>
                 </div>
                 <div>
                   <dt>From</dt>
@@ -1054,18 +1161,54 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                   <dt>Network fee</dt>
                   <dd>{sendPreview.feeSol} SOL</dd>
                 </div>
+                {sendPreview.asset.kind === 'token' ? (
+                  <>
+                    <div>
+                      <dt>Token mint</dt>
+                      <dd title={sendPreview.asset.mint}>{shortAddress(sendPreview.asset.mint)}</dd>
+                    </div>
+                    <div>
+                      <dt>Token program</dt>
+                      <dd>
+                        {sendPreview.asset.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+                          ? 'Token-2022'
+                          : 'SPL Token'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Recipient token account</dt>
+                      <dd title={sendPreview.destinationTokenAccount ?? undefined}>
+                        {shortAddress(sendPreview.destinationTokenAccount)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Account creation</dt>
+                      <dd>
+                        {sendPreview.createsDestinationTokenAccount
+                          ? `${sendPreview.accountRentSol} SOL estimated rent`
+                          : 'Existing account'}
+                      </dd>
+                    </div>
+                  </>
+                ) : null}
                 <div>
                   <dt>Network</dt>
                   <dd>{cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'}</dd>
                 </div>
                 <div>
-                  <dt>Total debit</dt>
+                  <dt>{sendPreview.asset.kind === 'sol' ? 'Total debit' : 'SOL fee and rent'}</dt>
                   <dd>{sendPreview.totalDebitSol} SOL</dd>
                 </div>
                 <div>
                   <dt>Balance after</dt>
                   <dd>{sendPreview.balanceAfterSol} SOL</dd>
                 </div>
+                {sendPreview.asset.kind === 'token' ? (
+                  <div>
+                    <dt>{sendPreview.asset.symbol} after</dt>
+                    <dd>{sendPreview.tokenBalanceAfter}</dd>
+                  </div>
+                ) : null}
               </dl>
               <section className="ec-review-card ec-cover-decision" data-testid="send-cover">
                 <h3>{sendPreview.cover.label}</h3>
@@ -1129,9 +1272,37 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           {renderBackButton(() => setAccountScreen('home'))}
           <div>
             <span className="ec-control-label">{clusterLabel(cluster)}</span>
-            <h2>Send SOL</h2>
+            <h2>Send</h2>
           </div>
         </div>
+        <label>
+          Asset
+          <select
+            data-testid="send-asset-select"
+            onChange={(event) => {
+              setSendAssetId(event.currentTarget.value)
+              setSendAmount('')
+              setSendPreview(null)
+              setSendError('')
+            }}
+            value={sendAssetId}
+          >
+            <option value="sol">SOL — {snapshot?.solBalance ?? 'unavailable'}</option>
+            {tokenBalances.map((token) => (
+              <option key={token.tokenAccount} value={token.tokenAccount}>
+                {tokenDisplayName(token.label, token.mint)} — {token.uiAmount}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sendAsset.kind === 'token' ? (
+          <p className="ec-help" data-testid="send-token-identity">
+            Mint {shortAddress(sendAsset.mint)} ·{' '}
+            {sendAsset.programId === 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+              ? 'Token-2022'
+              : 'SPL Token'}
+          </p>
+        ) : null}
         <div className="ec-field-with-action">
           <label>
             To
@@ -1172,11 +1343,23 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               value={sendAmount}
             />
           </label>
-          <button className="ec-quiet-button" data-testid="send-max" onClick={() => setSendAmount(maxSendableSol(snapshot))}>
+          <button
+            className="ec-quiet-button"
+            data-testid="send-max"
+            onClick={() => setSendAmount(selectedToken?.uiAmount ?? maxSendableSol(snapshot))}
+          >
             Max
           </button>
         </div>
-        <p className="ec-help">Available {snapshot ? `${snapshot.solBalance} SOL` : 'unavailable'}</p>
+        <p className="ec-help">
+          Available{' '}
+          {sendAsset.kind === 'sol'
+            ? snapshot
+              ? `${snapshot.solBalance} SOL`
+              : 'unavailable'
+            : `${selectedToken?.uiAmount ?? '0'} ${sendAsset.symbol}`}
+          {sendAsset.kind === 'token' ? ` · ${snapshot?.solBalance ?? '0'} SOL for fees/rent` : ''}
+        </p>
         {renderSendCoverState()}
         {sendAmountError ? <p data-testid="send-amount-error">{sendAmountError}</p> : null}
         {sendError ? <p data-testid="send-error">{sendError}</p> : null}
@@ -1215,22 +1398,33 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               const counterparty = emberRecord?.recipient ?? tx.counterparty
               return (
                 <li className="ec-activity-row" key={tx.signature} data-testid="wallet-activity-item">
-                  <span className="ec-activity-main">
-                    <span className="ec-activity-title">{emberRecord?.title ?? tx.title}</span>
-                    <span className="ec-activity-meta">
-                      {activityState(tx.failed, tx.confirmationStatus)} · {activityDate(tx.blockTime)}
-                      {counterparty ? ` · ${tx.direction === 'received' ? 'from' : 'to'} ${shortAddress(counterparty)}` : ''}
+                  <button
+                    className="ec-activity-row__button"
+                    onClick={() => {
+                      setSelectedActivityId(tx.signature)
+                      setAccountScreen('activity-detail')
+                    }}
+                    type="button"
+                  >
+                    <span className="ec-activity-avatar" data-direction={tx.direction} aria-hidden="true">
+                      {tx.direction === 'received' ? '↓' : tx.direction === 'sent' ? '↑' : '•'}
                     </span>
-                  </span>
-                  <span className="ec-activity-side">
-                    {amount ? <span className="ec-activity-amount">{amount}</span> : null}
-                    {coverStatus !== 'unknown' ? (
-                      <span className="ec-cover-pill" data-tone={coverTone(coverStatus)}>{coverStatusLabel(coverStatus)}</span>
-                    ) : null}
-                    <a className="ec-link-button" href={tx.explorerUrl} rel="noreferrer" target="_blank">
-                      Explorer
-                    </a>
-                  </span>
+                    <span className="ec-activity-main">
+                      <span className="ec-activity-title">{emberRecord?.title ?? tx.title}</span>
+                      <span className="ec-activity-meta">
+                        {activityState(tx.failed, tx.confirmationStatus)}
+                        {counterparty ? ` · ${tx.direction === 'received' ? 'from' : 'to'} ${shortAddress(counterparty)}` : ''}
+                      </span>
+                    </span>
+                    <span className="ec-activity-side">
+                      {amount ? <span className="ec-activity-amount">{amount}</span> : null}
+                      <span className="ec-activity-meta">{activityDate(tx.blockTime)}</span>
+                      {coverStatus !== 'unknown' ? (
+                        <span className="ec-cover-pill" data-tone={coverTone(coverStatus)}>{coverStatusLabel(coverStatus)}</span>
+                      ) : null}
+                    </span>
+                    <span className="ec-activity-chevron" aria-hidden="true">›</span>
+                  </button>
                 </li>
               )
             })}
@@ -1245,21 +1439,182 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <ul className="ec-activity-list" data-testid="ember-activity">
               {pendingEmber.map((item) => (
                 <li className="ec-activity-row" key={item.id} data-testid="ember-activity-item">
-                  <span className="ec-activity-main">
-                    <span className="ec-activity-title">{item.title ?? 'Transaction'}</span>
-                    <span className="ec-activity-meta">
-                      {item.onchainStatus ?? 'Pending'}
-                      {item.recipient ? ` · to ${shortAddress(item.recipient)}` : ''}
+                  <button
+                    className="ec-activity-row__button"
+                    onClick={() => {
+                      setSelectedActivityId(item.id)
+                      setAccountScreen('activity-detail')
+                    }}
+                    type="button"
+                  >
+                    <span className="ec-activity-avatar" data-direction="pending" aria-hidden="true">…</span>
+                    <span className="ec-activity-main">
+                      <span className="ec-activity-title">{item.title ?? 'Signed transaction'}</span>
+                      <span className="ec-activity-meta">
+                        {item.onchainStatus ?? 'Signed · waiting for network'}
+                        {item.recipient ? ` · to ${shortAddress(item.recipient)}` : ''}
+                      </span>
                     </span>
-                  </span>
-                  <span className="ec-activity-side">
-                    {item.amount ? <span className="ec-activity-amount">{item.amount}</span> : null}
-                    <span className="ec-cover-pill" data-tone={coverTone(item.coverStatus)}>{coverStatusLabel(item.coverStatus)}</span>
-                  </span>
+                    <span className="ec-activity-side">
+                      {item.amount ? <span className="ec-activity-amount">{item.amount}</span> : null}
+                      <span className="ec-cover-pill" data-tone={coverTone(item.coverStatus)}>{coverStatusLabel(item.coverStatus)}</span>
+                    </span>
+                    <span className="ec-activity-chevron" aria-hidden="true">›</span>
+                  </button>
                 </li>
               ))}
             </ul>
           </>
+        ) : null}
+      </section>
+    )
+  }
+
+  function renderActivityDetail() {
+    const tx = activity.find((item) => item.signature === selectedActivityId)
+    const emberRecord = emberActivity.find(
+      (item) => item.id === selectedActivityId || item.signature === selectedActivityId,
+    )
+    if (!tx && !emberRecord) {
+      return (
+        <section className="ec-task-screen" data-testid="activity-detail">
+          {renderBackButton(() => setAccountScreen('home'))}
+          <p>Transaction details are unavailable.</p>
+        </section>
+      )
+    }
+    const signature = tx?.signature ?? emberRecord?.signature ?? null
+    const status = tx
+      ? activityState(tx.failed, tx.confirmationStatus)
+      : emberRecord?.onchainStatus ?? 'Signed · waiting to appear on-chain'
+    const timestamp = tx?.blockTime
+      ? new Date(tx.blockTime * 1000)
+      : emberRecord?.timestamp
+        ? new Date(emberRecord.timestamp)
+        : null
+    const title = emberRecord?.title ?? tx?.title ?? 'Transaction'
+    const amount = emberRecord?.amount ?? tx?.amount
+    const counterparty = emberRecord?.recipient ?? tx?.counterparty
+    const programs = emberRecord?.programs.length ? emberRecord.programs : tx?.programs ?? []
+    return (
+      <section className="ec-task-screen ec-activity-detail" data-testid="activity-detail">
+        <div className="ec-screen-head">
+          {renderBackButton(() => {
+            setAccountScreen('home')
+            setMainTab('activity')
+          })}
+          <div>
+            <span className="ec-control-label">{clusterLabel(cluster)}</span>
+            <h2>{title}</h2>
+          </div>
+        </div>
+        <section className="ec-activity-status-card" data-tone={tx?.failed ? 'failed' : tx ? 'confirmed' : 'pending'}>
+          <span>{status}</span>
+          <p>
+            {tx
+              ? 'This transaction was found on-chain.'
+              : 'The wallet signed this transaction. It may still be awaiting broadcast or RPC indexing.'}
+          </p>
+        </section>
+        <dl className="ec-data-list">
+          <div>
+            <dt>Date</dt>
+            <dd>{timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp.toLocaleString() : 'Pending'}</dd>
+          </div>
+          {amount ? (
+            <div>
+              <dt>Transaction result</dt>
+              <dd>{tx?.direction === 'received' ? '+' : '-'}{amount}</dd>
+            </div>
+          ) : null}
+          {counterparty ? (
+            <div>
+              <dt>{tx?.direction === 'received' ? 'From' : 'To'}</dt>
+              <dd title={counterparty}>{shortAddress(counterparty)}</dd>
+            </div>
+          ) : null}
+          {emberRecord?.source ? (
+            <div>
+              <dt>Source</dt>
+              <dd title={emberRecord.source}>{shortAddress(emberRecord.source)}</dd>
+            </div>
+          ) : null}
+          {emberRecord?.tokenMint ? (
+            <div>
+              <dt>Token mint</dt>
+              <dd title={emberRecord.tokenMint}>{shortAddress(emberRecord.tokenMint)}</dd>
+            </div>
+          ) : null}
+          {tx?.feeLamports ? (
+            <div>
+              <dt>Network fee</dt>
+              <dd>{formatLamportsAsSol(BigInt(tx.feeLamports))} SOL</dd>
+            </div>
+          ) : null}
+          {tx ? (
+            <div>
+              <dt>Slot</dt>
+              <dd>{tx.slot}</dd>
+            </div>
+          ) : null}
+          {programs.length > 0 ? (
+            <div>
+              <dt>Programs</dt>
+              <dd>{programs.join(', ')}</dd>
+            </div>
+          ) : null}
+        </dl>
+        {emberRecord ? (
+          <section className="ec-review-card ec-activity-cover-detail">
+            <h3>Ember Cover</h3>
+            <dl className="ec-data-list">
+              <div>
+                <dt>Status</dt>
+                <dd><span className="ec-cover-pill" data-tone={coverTone(emberRecord.coverStatus)}>{coverStatusLabel(emberRecord.coverStatus)}</span></dd>
+              </div>
+              <div>
+                <dt>Risk</dt>
+                <dd>{emberRecord.riskBand ?? 'Unknown'}</dd>
+              </div>
+              {emberRecord.dappOrigin ? (
+                <div>
+                  <dt>Site</dt>
+                  <dd>{emberRecord.dappOrigin}</dd>
+                </div>
+              ) : null}
+              {emberRecord.requestId ? (
+                <div>
+                  <dt>Cover request</dt>
+                  <dd title={emberRecord.requestId}>{shortAddress(emberRecord.requestId)}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </section>
+        ) : null}
+        {signature ? (
+          <section className="ec-review-card">
+            <h3>Transaction ID</h3>
+            <p className="ec-account" title={signature}>{shortAddress(signature)}</p>
+            <div className="ec-action-pair">
+              <button
+                className="ec-secondary"
+                onClick={() => {
+                  void navigator.clipboard.writeText(signature).then(() => {
+                    setCopiedActivityId(signature)
+                    setTimeout(() => setCopiedActivityId(null), 1500)
+                  })
+                }}
+                type="button"
+              >
+                {copiedActivityId === signature ? 'Copied' : 'Copy ID'}
+              </button>
+              {tx?.explorerUrl ? (
+                <a className="ec-primary ec-button-link" href={tx.explorerUrl} rel="noreferrer" target="_blank">
+                  Explorer
+                </a>
+              ) : null}
+            </div>
+          </section>
         ) : null}
       </section>
     )
@@ -1280,6 +1635,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           {mainTab === 'assets' && accountScreen === 'receive' ? renderReceive() : null}
           {mainTab === 'assets' && accountScreen === 'send' ? renderSend() : null}
           {mainTab === 'assets' && accountScreen === 'cover' ? renderCoverActivation() : null}
+          {accountScreen === 'activity-detail' ? renderActivityDetail() : null}
           {accountScreen === 'approval' ? (
             <Suspense fallback={<section className="ec-task-screen"><p className="ec-help">Loading request...</p></section>}>
               <ApprovalScreen
@@ -1308,7 +1664,27 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </div>
       </header>
       <h1>{view === 'create' ? 'Create your Ember wallet' : 'Unlock'}</h1>
-      <input data-testid="password" onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
+      <label>
+        Password
+        <span className="ec-password-field">
+          <input
+            autoComplete={view === 'create' ? 'new-password' : 'current-password'}
+            data-testid="password"
+            onChange={(event) => setPassword(event.target.value)}
+            type={passwordVisible ? 'text' : 'password'}
+            value={password}
+          />
+          <button
+            aria-label={passwordVisible ? 'Hide password' : 'Show password'}
+            className="ec-password-toggle"
+            onClick={() => setPasswordVisible((visible) => !visible)}
+            type="button"
+          >
+            {passwordVisible ? 'Hide' : 'Show'}
+          </button>
+        </span>
+      </label>
+      {view === 'create' ? <p className="ec-help">Use at least 8 characters. Any mix is allowed and there is no maximum length.</p> : null}
       <button className="ec-primary" data-testid="submit" onClick={() => void (view === 'create' ? onCreate() : onUnlock())}>
         {authBusy ? (view === 'create' ? 'Creating...' : 'Secure unlocking...') : view === 'create' ? 'Create' : 'Unlock'}
       </button>
