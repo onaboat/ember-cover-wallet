@@ -22,6 +22,29 @@ test('record persists a cover record keyed by signature', async () => {
   expect(stored?.[0]?.signature).toBe('sig1')
 })
 
+test('record persists transaction details for useful pending activity', async () => {
+  await store().record({
+    signature: 'sig1',
+    walletAddress: WALLET,
+    coverStatus: 'covered',
+    title: 'Sent 1 USDC',
+    actionKind: 'token_transfer',
+    amount: '1 USDC',
+    tokenSymbol: 'USDC',
+    tokenMint: OTHER,
+    recipient: OTHER,
+    programs: ['Token Program'],
+  })
+  const [record] = await store().list(WALLET)
+  expect(record).toMatchObject({
+    title: 'Sent 1 USDC',
+    amount: '1 USDC',
+    tokenSymbol: 'USDC',
+    recipient: OTHER,
+    programs: ['Token Program'],
+  })
+})
+
 test('record upserts by signature so the latest verdict wins', async () => {
   const records = store()
   await records.record({ signature: 'sig1', walletAddress: WALLET, coverStatus: 'covered' })

@@ -18,9 +18,11 @@ test('formats cap usage for a covered review', () => {
 test('formats the non-consuming status snapshot', () => {
   const snapshot = {
     subscriptionActive: true,
+    subscriptionStatus: 'active',
     walletRegistered: true,
     tier: 'demo',
     month: '2026-06',
+    currentPeriodEnd: '2026-07-01T00:00:00Z',
     coveredTxPerMonth: 100,
     usedCoveredTxThisMonth: 1,
     remainingCoveredTxThisMonth: 99,

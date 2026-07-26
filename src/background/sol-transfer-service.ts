@@ -14,6 +14,11 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit'
+import {
+  findAssociatedTokenPda,
+  getCreateAssociatedTokenIdempotentInstruction,
+  getTransferCheckedInstruction,
+} from '@solana-program/token'
 import type {
   Address,
   Base64EncodedWireTransaction,
@@ -36,6 +41,8 @@ import { walletClusterConfig } from './wallet-data-config.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
 
 const SYSTEM_PROGRAM_ADDRESS = toAddress('11111111111111111111111111111111')
+const TOKEN_PROGRAM_ADDRESS = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+const TOKEN_2022_PROGRAM_ADDRESS = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 const TRANSACTION_FEE_LAMPORTS = 5_000n
 
 type RpcSend<T> = {
@@ -58,6 +65,30 @@ type SimulateValue = Readonly<{
 interface TransferRpcClient {
   getBalance(address: Address, config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<bigint | number | string>>
   getLatestBlockhash(config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<LatestBlockhashValue>>
+  getAccountInfo?(
+    address: Address,
+    config: Readonly<{ commitment: 'confirmed'; encoding: 'jsonParsed' }>,
+  ): RpcSend<
+    RpcValue<
+      | Readonly<{
+          owner: string
+          data?: Readonly<{
+            parsed?: Readonly<{
+              info?: Readonly<{
+                mint?: string
+                owner?: string
+                tokenAmount?: Readonly<{ amount?: string; decimals?: number }>
+              }>
+            }>
+          }>
+        }>
+      | null
+    >
+  >
+  getMinimumBalanceForRentExemption?(
+    size: bigint | number,
+    config?: Readonly<{ commitment: 'confirmed' }>,
+  ): RpcSend<bigint | number | string>
   simulateTransaction(
     transaction: Base64EncodedWireTransaction,
     config: Readonly<{
@@ -84,6 +115,33 @@ export interface SolTransferInput {
   destination: string
 }
 
+export type WalletTransferAsset =
+  | {
+      kind: 'sol'
+      symbol: 'SOL'
+    }
+  | {
+      kind: 'token'
+      symbol: string
+      mint: string
+      tokenAccount: string
+      programId: string
+      decimals: number
+      rawBalance: string
+    }
+
+export interface WalletTransferInput {
+  amount: string
+  asset: WalletTransferAsset
+  cluster?: WalletCluster
+  destination: string
+}
+
+export interface WalletTransferSendInput extends WalletTransferInput {
+  acknowledgeHighRisk?: boolean
+  acknowledgeUncovered?: boolean
+}
+
 export interface SolTransferSendInput extends SolTransferInput {
   acknowledgeHighRisk?: boolean
   acknowledgeUncovered?: boolean
@@ -102,6 +160,9 @@ export interface SolTransferCoverView {
 }
 
 export interface SolTransferPreview {
+  asset: WalletTransferAsset
+  amount: string
+  amountBaseUnits: string
   amountLamports: string
   amountSol: string
   balanceAfterSol: string
@@ -116,6 +177,11 @@ export interface SolTransferPreview {
   }
   source: string
   totalDebitSol: string
+  tokenBalanceAfter: string | null
+  destinationTokenAccount: string | null
+  createsDestinationTokenAccount: boolean
+  accountRentLamports: string
+  accountRentSol: string
 }
 
 export interface SolTransferResult {
@@ -125,6 +191,8 @@ export interface SolTransferResult {
 }
 
 export interface WalletTransferUI {
+  previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview>
+  sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult>
   previewSolTransfer(input: SolTransferInput): Promise<SolTransferPreview>
   sendSolTransfer(input: SolTransferSendInput): Promise<SolTransferResult>
 }
@@ -167,6 +235,34 @@ export function parseSolAmountToLamports(input: string): bigint {
     throw new Error('Amount must be greater than 0')
   }
   return lamports
+}
+
+export function parseTokenAmountToBaseUnits(input: string, decimals: number): bigint {
+  const trimmed = input.trim()
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new Error('Token decimals are invalid')
+  }
+  if (!/^(?:\d+|\d*\.\d+)$/.test(trimmed)) {
+    throw new Error('Enter a valid token amount')
+  }
+  const [wholePart = '0', fractionPart = ''] = trimmed.split('.')
+  if (fractionPart.length > decimals) {
+    throw new Error(`This token supports up to ${decimals} decimal places`)
+  }
+  const scale = 10n ** BigInt(decimals)
+  const amount = BigInt(wholePart || '0') * scale + BigInt(fractionPart.padEnd(decimals, '0') || '0')
+  if (amount <= 0n) {
+    throw new Error('Amount must be greater than 0')
+  }
+  return amount
+}
+
+function formatBaseUnits(value: bigint, decimals: number): string {
+  const scale = 10n ** BigInt(decimals)
+  const whole = value / scale
+  const fraction = value % scale
+  const trimmed = decimals > 0 ? fraction.toString().padStart(decimals, '0').replace(/0+$/, '') : ''
+  return `${whole.toString()}${trimmed ? `.${trimmed}` : ''}`
 }
 
 export function maxSolSendLamports(balanceLamports: bigint): bigint {
@@ -300,11 +396,31 @@ export class WalletTransferProvider implements WalletTransferUI {
   }
 
   async previewSolTransfer(input: SolTransferInput): Promise<SolTransferPreview> {
+    return await this.previewTransfer({
+      amount: input.amountSol,
+      asset: { kind: 'sol', symbol: 'SOL' },
+      ...(input.cluster === undefined ? {} : { cluster: input.cluster }),
+      destination: input.destination,
+    })
+  }
+
+  async sendSolTransfer(input: SolTransferSendInput): Promise<SolTransferResult> {
+    return await this.sendTransfer({
+      amount: input.amountSol,
+      asset: { kind: 'sol', symbol: 'SOL' },
+      ...(input.cluster === undefined ? {} : { cluster: input.cluster }),
+      destination: input.destination,
+      ...(input.acknowledgeHighRisk === undefined ? {} : { acknowledgeHighRisk: input.acknowledgeHighRisk }),
+      ...(input.acknowledgeUncovered === undefined ? {} : { acknowledgeUncovered: input.acknowledgeUncovered }),
+    })
+  }
+
+  async previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview> {
     const prepared = await this.#prepare(input)
     return prepared.preview
   }
 
-  async sendSolTransfer(input: SolTransferSendInput): Promise<SolTransferResult> {
+  async sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult> {
     const prepared = await this.#prepare(input)
     const { cover, simulation } = prepared.preview
     if (simulation.status !== 'success') {
@@ -346,6 +462,24 @@ export class WalletTransferProvider implements WalletTransferUI {
         riskBand: prepared.decision.riskBand,
         requestId: prepared.decision.requestId ?? null,
         dappOrigin: null,
+        title:
+          prepared.preview.asset.kind === 'sol'
+            ? `Sent ${prepared.preview.amount} SOL`
+            : `Sent ${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+        actionKind: prepared.preview.asset.kind === 'sol' ? 'sol_transfer' : 'token_transfer',
+        amount: `${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+        tokenSymbol: prepared.preview.asset.symbol,
+        tokenMint: prepared.preview.asset.kind === 'token' ? prepared.preview.asset.mint : null,
+        recipient: prepared.preview.destination,
+        source: prepared.preview.source,
+        feePayer: prepared.preview.source,
+        programs:
+          prepared.preview.asset.kind === 'sol'
+            ? ['System Program']
+            : [
+                prepared.preview.asset.programId === TOKEN_2022_PROGRAM_ADDRESS ? 'Token 2022' : 'Token Program',
+                ...(prepared.preview.createsDestinationTokenAccount ? ['Associated Token'] : []),
+              ],
       })
       .catch(() => {})
 
@@ -356,12 +490,11 @@ export class WalletTransferProvider implements WalletTransferUI {
     }
   }
 
-  async #prepare(input: SolTransferInput) {
+  async #prepare(input: WalletTransferInput) {
     const walletAddress = await this.#signer.getAddress()
     if (!walletAddress) {
       throw new Error('No wallet')
     }
-    const amountLamports = parseSolAmountToLamports(input.amountSol)
     const destination = parseAddress(input.destination.trim())
     const source = toAddress(walletAddress)
     if (destination === source) {
@@ -374,12 +507,94 @@ export class WalletTransferProvider implements WalletTransferUI {
       rpc.getLatestBlockhash({ commitment: 'confirmed' }).send(),
     ])
     const balanceLamports = toBigInt(balanceResponse.value)
-    const maxSendable = maxSolSendLamports(balanceLamports)
-    if (amountLamports > maxSendable) {
-      throw new Error(`Not enough SOL for amount and network fee. Max is ${formatLamportsAsSol(maxSendable)} SOL.`)
-    }
     const transactionSigner = createVaultTransactionSigner(walletAddress, (message) => this.#signer.sign(message))
-    const transactionMessage = pipe(
+    let amountBaseUnits: bigint
+    let amountSol = '0'
+    let tokenBalanceAfter: string | null = null
+    let destinationTokenAccount: string | null = null
+    let createsDestinationTokenAccount = false
+    let accountRentLamports = 0n
+    const instructions: Instruction[] = []
+
+    if (input.asset.kind === 'sol') {
+      amountBaseUnits = parseSolAmountToLamports(input.amount)
+      const maxSendable = maxSolSendLamports(balanceLamports)
+      if (amountBaseUnits > maxSendable) {
+        throw new Error(`Not enough SOL for amount and network fee. Max is ${formatLamportsAsSol(maxSendable)} SOL.`)
+      }
+      amountSol = formatLamportsAsSol(amountBaseUnits)
+      instructions.push(
+        createSystemTransferInstruction({ amount: amountBaseUnits, destination, source: transactionSigner }),
+      )
+    } else {
+      if (!rpc.getAccountInfo || !rpc.getMinimumBalanceForRentExemption) {
+        throw new Error('Token account lookup is unavailable')
+      }
+      if (input.asset.programId !== TOKEN_PROGRAM_ADDRESS && input.asset.programId !== TOKEN_2022_PROGRAM_ADDRESS) {
+        throw new Error('Unsupported token program')
+      }
+      const tokenProgram = toAddress(input.asset.programId)
+      const mint = parseAddress(input.asset.mint)
+      const sourceTokenAccount = parseAddress(input.asset.tokenAccount)
+      const sourceTokenResponse = await rpc
+        .getAccountInfo(sourceTokenAccount, { commitment: 'confirmed', encoding: 'jsonParsed' })
+        .send()
+      const sourceToken = sourceTokenResponse.value
+      const sourceInfo = sourceToken?.data?.parsed?.info
+      if (
+        !sourceToken ||
+        sourceToken.owner !== input.asset.programId ||
+        sourceInfo?.mint !== input.asset.mint ||
+        sourceInfo.owner !== walletAddress ||
+        sourceInfo.tokenAmount?.decimals !== input.asset.decimals
+      ) {
+        throw new Error('Selected token account no longer matches this wallet')
+      }
+      amountBaseUnits = parseTokenAmountToBaseUnits(input.amount, input.asset.decimals)
+      const rawBalance = BigInt(sourceInfo.tokenAmount.amount ?? '0')
+      if (amountBaseUnits > rawBalance) {
+        throw new Error(`Not enough ${input.asset.symbol}. Max is ${formatBaseUnits(rawBalance, input.asset.decimals)}.`)
+      }
+      tokenBalanceAfter = formatBaseUnits(rawBalance - amountBaseUnits, input.asset.decimals)
+      const [destinationAta] = await findAssociatedTokenPda({
+        owner: destination,
+        tokenProgram,
+        mint,
+      })
+      destinationTokenAccount = destinationAta
+      const [destinationTokenResponse, rentResponse] = await Promise.all([
+        rpc.getAccountInfo(destinationAta, { commitment: 'confirmed', encoding: 'jsonParsed' }).send(),
+        rpc.getMinimumBalanceForRentExemption(165, { commitment: 'confirmed' }).send(),
+      ])
+      createsDestinationTokenAccount = destinationTokenResponse.value === null
+      accountRentLamports = createsDestinationTokenAccount ? toBigInt(rentResponse) : 0n
+      if (createsDestinationTokenAccount) {
+        instructions.push(
+          getCreateAssociatedTokenIdempotentInstruction({
+            payer: transactionSigner,
+            ata: destinationAta,
+            owner: destination,
+            mint,
+            tokenProgram,
+          }),
+        )
+      }
+      instructions.push(
+        getTransferCheckedInstruction(
+          {
+            source: sourceTokenAccount,
+            mint,
+            destination: destinationAta,
+            authority: transactionSigner,
+            amount: amountBaseUnits,
+            decimals: input.asset.decimals,
+          },
+          { programAddress: tokenProgram },
+        ),
+      )
+    }
+
+    const baseTransactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (message) => setTransactionMessageFeePayerSigner(transactionSigner, message),
       (message) =>
@@ -390,11 +605,10 @@ export class WalletTransferProvider implements WalletTransferUI {
           },
           message,
         ),
-      (message) =>
-        appendTransactionMessageInstruction(
-          createSystemTransferInstruction({ amount: amountLamports, destination, source: transactionSigner }),
-          message,
-        ),
+    )
+    const transactionMessage = instructions.reduce(
+      (message, instruction) => appendTransactionMessageInstruction(instruction, message),
+      baseTransactionMessage as any,
     )
     const unsignedTransaction = compileTransaction(transactionMessage)
     const unsignedBytes = getBase64EncodedWireTransaction(unsignedTransaction)
@@ -418,14 +632,28 @@ export class WalletTransferProvider implements WalletTransferUI {
         .send(),
     ])
     const feeLamports = simulationResponse.value.fee == null ? TRANSACTION_FEE_LAMPORTS : toBigInt(simulationResponse.value.fee)
-    const totalDebit = amountLamports + feeLamports
+    const totalDebit =
+      input.asset.kind === 'sol' ? amountBaseUnits + feeLamports : feeLamports + accountRentLamports
+    if (totalDebit > balanceLamports) {
+      throw new Error(
+        input.asset.kind === 'sol'
+          ? `Not enough SOL for amount and network fee.`
+          : `Not enough SOL for the network fee${createsDestinationTokenAccount ? ' and recipient token account rent' : ''}.`,
+      )
+    }
     const balanceAfter = balanceLamports > totalDebit ? balanceLamports - totalDebit : 0n
     const simulationError = simulationResponse.value.err ? stringifyWithBigInts(simulationResponse.value.err) : null
     return {
       decision,
       preview: {
-        amountLamports: amountLamports.toString(),
-        amountSol: formatLamportsAsSol(amountLamports),
+        asset: input.asset,
+        amount: formatBaseUnits(
+          amountBaseUnits,
+          input.asset.kind === 'sol' ? 9 : input.asset.decimals,
+        ),
+        amountBaseUnits: amountBaseUnits.toString(),
+        amountLamports: input.asset.kind === 'sol' ? amountBaseUnits.toString() : '0',
+        amountSol,
         balanceAfterSol: formatLamportsAsSol(balanceAfter),
         cover: coverView(decision),
         destination: input.destination,
@@ -438,6 +666,11 @@ export class WalletTransferProvider implements WalletTransferUI {
         },
         source: walletAddress,
         totalDebitSol: formatLamportsAsSol(totalDebit),
+        tokenBalanceAfter,
+        destinationTokenAccount,
+        createsDestinationTokenAccount,
+        accountRentLamports: accountRentLamports.toString(),
+        accountRentSol: formatLamportsAsSol(accountRentLamports),
       } satisfies SolTransferPreview,
       rpc,
       cluster,
@@ -457,6 +690,8 @@ const WALLET_TRANSFER_SERVICE_KEY = 'ember.WalletTransferService' as ProxyServic
 
 export function registerWalletTransferService(provider: WalletTransferUI): void {
   const facade: WalletTransferUI = {
+    previewTransfer: (input) => provider.previewTransfer(input),
+    sendTransfer: (input) => provider.sendTransfer(input),
     previewSolTransfer: (input) => provider.previewSolTransfer(input),
     sendSolTransfer: (input) => provider.sendSolTransfer(input),
   }

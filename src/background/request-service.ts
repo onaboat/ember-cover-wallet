@@ -21,6 +21,7 @@ import type { CoverProvider } from './cover-service.ts'
 import { topRightPopupPosition } from './popup-position.ts'
 import { buildSignMessageOutputs } from './sign-message-output.ts'
 import { buildSignTransactionOutputs } from './sign-transaction-output.ts'
+import { decodeTransactionSummary } from '../entrypoints/request/decode-transaction.ts'
 
 /** The SW-side signer the request service needs. The real VaultController satisfies this. */
 export interface VaultSigner {
@@ -269,9 +270,8 @@ export class RequestService implements RequestApproval {
     }
     const account = buildConnectAccount(address)
     request.resolve({ accounts: [account] } as unknown as TransportConnectOutput)
-    // Clear the pending slot immediately after resolving (before any awaited side effects)
-    // so the window can stay open as a plain wallet and onRemoved becomes a guaranteed no-op.
     this.#clear()
+    void this.#closeWindow(request.windowId)
   }
 
   /** SW-side: sign through the injected vault signer (key never leaves SW). */
@@ -302,6 +302,7 @@ export class RequestService implements RequestApproval {
     }
     request.resolve(outputs as unknown as TransportSignMessageOutput[])
     this.#clear()
+    void this.#closeWindow(request.windowId)
     const first = outputs[0]
     const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
     if (
@@ -352,6 +353,7 @@ export class RequestService implements RequestApproval {
     }
     request.resolve(outputs as unknown as TransportSignTransactionOutput[])
     this.#clear()
+    void this.#closeWindow(request.windowId)
     const signedTransaction = outputs[0]?.signedTransaction
     // The transaction's primary (fee-payer) signature is its on-chain id — the same
     // base58 value getSignaturesForAddress returns — so the Activity feed can match it.
@@ -369,6 +371,8 @@ export class RequestService implements RequestApproval {
     // and the user still wants to see "not covered" on those sends. Best-effort.
     if (decision && signature) {
       try {
+        const unsignedTransaction = request.data[0]?.transaction
+        const summary = unsignedTransaction ? decodeTransactionSummary(unsignedTransaction) : null
         await coverRecords.record({
           signature,
           walletAddress: address,
@@ -376,6 +380,15 @@ export class RequestService implements RequestApproval {
           riskBand: decision.riskBand,
           requestId: decision.requestId ?? null,
           dappOrigin: request.origin ?? null,
+          title: summary?.primaryAction.label ?? null,
+          actionKind: summary?.primaryAction.kind ?? null,
+          amount: summary?.primaryAction.amount ?? null,
+          tokenSymbol: summary?.primaryAction.kind === 'sol_transfer' ? 'SOL' : null,
+          tokenMint: summary?.primaryAction.tokenMint ?? null,
+          recipient: summary?.primaryAction.recipient ?? null,
+          source: summary?.primaryAction.source ?? null,
+          feePayer: summary?.feePayer ?? address,
+          programs: summary?.instructions.map((instruction) => instruction.programName) ?? [],
         })
       } catch {
         // a storage failure must not block closing the approval window
@@ -452,11 +465,15 @@ export class RequestService implements RequestApproval {
     const id = this.#request?.windowId
     this.#clear()
     if (id !== undefined) {
-      try {
-        await browser.windows.remove(id)
-      } catch {
-        // already gone
-      }
+      await this.#closeWindow(id)
+    }
+  }
+
+  async #closeWindow(id: number): Promise<void> {
+    try {
+      await browser.windows.remove(id)
+    } catch {
+      // already gone
     }
   }
 }

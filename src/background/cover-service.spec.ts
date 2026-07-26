@@ -63,9 +63,11 @@ test('status uses the enrolled wallet session and returns the cap snapshot', asy
       return new Response(
         JSON.stringify({
           subscriptionActive: true,
+          subscriptionStatus: 'active',
           walletRegistered: true,
           tier: 'demo',
           month: '2026-06',
+          currentPeriodEnd: '2026-07-01T00:00:00Z',
           coveredTxPerMonth: 100,
           usedCoveredTxThisMonth: 1,
           remainingCoveredTxThisMonth: 99,

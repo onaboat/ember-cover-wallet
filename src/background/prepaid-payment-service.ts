@@ -7,7 +7,9 @@ import {
   createTransactionMessage,
   devnet,
   getBase64EncodedWireTransaction,
+  getCompiledTransactionMessageDecoder,
   getSignatureFromTransaction,
+  getTransactionDecoder,
   pipe,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
@@ -31,6 +33,7 @@ import { formatUsdcBaseUnits, prepaidPaymentConfig } from './prepaid-payment-con
 import { stringifyWithBigInts } from './safe-json.ts'
 import { explorerTransactionUrl, walletClusterConfig } from './wallet-data-config.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
+import { coverPeriodExpired, coverStatusActive } from '../cover/ember-types.ts'
 
 type RpcSend<T> = { send(): Promise<T> }
 type RpcValue<T> = Readonly<{ value: T }>
@@ -59,6 +62,10 @@ type SignatureStatus = Readonly<{
 
 export interface PaymentRpcClient {
   getBalance(address: Address, config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<bigint | number | string>>
+  isBlockhashValid(
+    blockhash: string,
+    config?: Readonly<{ commitment: 'confirmed' }>,
+  ): RpcSend<RpcValue<boolean>>
   getLatestBlockhash(config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<LatestBlockhashValue>>
   getTokenAccountBalance(
     address: Address,
@@ -98,6 +105,7 @@ export type PrepaidPaymentStatus =
   | 'activation_pending'
   | 'active'
   | 'failed_recoverable'
+  | 'expired_unconfirmed'
 
 export interface PrepaidPaymentPreview {
   amountBaseUnits: string
@@ -123,10 +131,12 @@ export interface PrepaidPaymentPreview {
 }
 
 export interface LocalPrepaidPaymentState {
-  version: 1
+  version: 1 | 2
   amountBaseUnits: string
+  blockhash?: string
   cluster: WalletCluster
   currentPeriodEnd?: string
+  lastValidBlockHeight?: string
   lastError?: string
   lastUpdatedAt: string
   paymentSignature: string
@@ -166,7 +176,9 @@ const DEFAULT_FEE_LAMPORTS = 5_000n
 
 type PaymentTransactionMessage = Parameters<typeof signTransactionMessageWithSigners>[0]
 type PreparedPaymentStateSource = {
+  blockhash: string
   config: ReturnType<typeof prepaidPaymentConfig>
+  lastValidBlockHeight: bigint
   preview: PrepaidPaymentPreview
 }
 
@@ -216,6 +228,27 @@ function transactionFailure(error: unknown): Error {
   return new Error(`Payment transaction failed: ${stringifyWithBigInts(error)}`)
 }
 
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+function savedTransactionBlockhash(state: LocalPrepaidPaymentState): string | null {
+  if (state.blockhash) {
+    return state.blockhash
+  }
+  try {
+    const transaction = getTransactionDecoder().decode(decodeBase64(state.signedTransactionBase64))
+    return String(getCompiledTransactionMessageDecoder().decode(transaction.messageBytes).lifetimeToken)
+  } catch {
+    return null
+  }
+}
+
 export class PrepaidPaymentProvider implements PrepaidPaymentUI {
   #confirmationAttempts: number
   #confirmationIntervalMs: number
@@ -249,6 +282,11 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
   }
 
   async activatePayment(input: PrepaidPaymentInput): Promise<PrepaidPaymentResult> {
+    const walletAddress = await this.#signer.getAddress()
+    if (!walletAddress) {
+      throw new Error('No wallet')
+    }
+    await this.#assertCanStartPayment(walletAddress)
     const prepared = await this.#prepare(input)
     if (prepared.preview.errors.length > 0) {
       throw new Error(prepared.preview.errors[0])
@@ -305,20 +343,52 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
       return null
     }
     if (state.status === 'active') {
-      return this.#result(state, true, null)
+      return await this.#reconcileActiveState(state)
     }
 
     const rpc = this.#rpcFactory(state.cluster)
     let confirmed = await this.#waitForConfirmation(rpc, state.paymentSignature as Signature)
     if (!confirmed && state.signedTransactionBase64) {
+      const savedBlockhash = savedTransactionBlockhash(state)
+      if (!savedBlockhash) {
+        state = await this.#updateState(state, {
+          status: 'failed_recoverable',
+          lastError: 'The saved payment blockhash could not be verified. Do not submit another payment yet.',
+        })
+        return this.#result(state, false, state.lastError ?? null)
+      }
+      let blockhashValid: boolean
       try {
-        await rpc
+        blockhashValid = (
+          await rpc
+            .isBlockhashValid(savedBlockhash, { commitment: 'confirmed' })
+            .send()
+        ).value
+      } catch {
+        state = await this.#updateState(state, {
+          status: 'failed_recoverable',
+          lastError: 'The payment could not be checked on Devnet. Do not submit another payment yet.',
+        })
+        return this.#result(state, false, state.lastError ?? null)
+      }
+      if (!blockhashValid) {
+        state = await this.#updateState(state, {
+          status: 'expired_unconfirmed',
+          lastError: 'The previous signed payment did not confirm and its blockhash has expired.',
+        })
+        return this.#result(state, false, state.lastError ?? null)
+      }
+      try {
+        const returnedSignature = await rpc
           .sendTransaction(state.signedTransactionBase64 as Base64EncodedWireTransaction, {
             encoding: 'base64',
             maxRetries: 3,
             preflightCommitment: 'confirmed',
           })
           .send()
+        if (String(returnedSignature) !== state.paymentSignature) {
+          throw new Error('RPC returned an unexpected payment signature')
+        }
         state = await this.#updateState(state, {
           status: 'confirmation_pending',
           lastError: undefined,
@@ -342,6 +412,38 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
     }
     state = await this.#updateState(state, { status: 'activation_pending', lastError: undefined })
     return await this.#activateApi(state)
+  }
+
+  async #assertCanStartPayment(walletAddress: string): Promise<void> {
+    const state = await this.localPayment(walletAddress)
+    if (!state || state.status === 'expired_unconfirmed') {
+      return
+    }
+    if (state.status !== 'active') {
+      throw new Error('A saved payment still needs recovery. Retry it before approving another payment.')
+    }
+    const snapshot = await this.#cover?.status()
+    if (!snapshot) {
+      throw new Error('Live cover status is unavailable. Check again before approving another payment.')
+    }
+    if (!coverStatusActive(snapshot, this.#now())) {
+      return
+    }
+    throw new Error('Ember Cover is already active for this wallet.')
+  }
+
+  async #reconcileActiveState(state: LocalPrepaidPaymentState): Promise<PrepaidPaymentResult> {
+    const snapshot = await this.#cover?.status()
+    if (!snapshot) {
+      return this.#result(state, false, 'Live cover status is unavailable.')
+    }
+    if (coverStatusActive(snapshot, this.#now())) {
+      return this.#result(state, true, null)
+    }
+    if (coverPeriodExpired(snapshot, this.#now())) {
+      return this.#result(state, false, 'Cover has expired. Review a new one-off payment to renew.')
+    }
+    return this.#result(state, false, 'Ember Cover is not active for this wallet.')
   }
 
   async #prepare(input: PrepaidPaymentInput) {
@@ -388,14 +490,16 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
       },
       { programAddress: config.tokenProgram },
     )
+    const paymentBlockhash = latestBlockhashResponse.value.blockhash
+    const lastValidBlockHeight = toBigInt(latestBlockhashResponse.value.lastValidBlockHeight)
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (message) => setTransactionMessageFeePayerSigner(walletSigner, message),
       (message) =>
         setTransactionMessageLifetimeUsingBlockhash(
           {
-            blockhash: toBlockhash(latestBlockhashResponse.value.blockhash),
-            lastValidBlockHeight: toBigInt(latestBlockhashResponse.value.lastValidBlockHeight),
+            blockhash: toBlockhash(paymentBlockhash),
+            lastValidBlockHeight,
           },
           message,
         ),
@@ -434,7 +538,9 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
     }
 
     return {
+      blockhash: paymentBlockhash,
       config,
+      lastValidBlockHeight,
       preview: {
         amountBaseUnits: config.amountBaseUnits.toString(),
         amountUsdc: config.amountUsdc,
@@ -492,6 +598,10 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
       if (!activation?.subscriptionActive) {
         throw new Error('The Ember API did not activate cover')
       }
+      const periodEndMs = Date.parse(activation.currentPeriodEnd)
+      if (Number.isNaN(periodEndMs) || periodEndMs <= this.#now()) {
+        throw new Error('The Ember API returned an expired cover period')
+      }
       const active = await this.#updateState(state, {
         currentPeriodEnd: activation.currentPeriodEnd,
         status: 'active',
@@ -515,9 +625,11 @@ export class PrepaidPaymentProvider implements PrepaidPaymentUI {
     status: PrepaidPaymentStatus
   }): Promise<LocalPrepaidPaymentState> {
     const state: LocalPrepaidPaymentState = {
-      version: 1,
+      version: 2,
       amountBaseUnits: args.prepared.config.amountBaseUnits.toString(),
+      blockhash: args.prepared.blockhash,
       cluster: args.prepared.preview.cluster,
+      lastValidBlockHeight: args.prepared.lastValidBlockHeight.toString(),
       lastUpdatedAt: new Date(this.#now()).toISOString(),
       paymentSignature: args.signature,
       signedTransactionBase64: args.signedTransactionBase64,

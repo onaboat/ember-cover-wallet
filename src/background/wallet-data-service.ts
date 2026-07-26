@@ -64,6 +64,9 @@ type WalletTokenAccountsRpcResponse = Readonly<{
 }>
 
 type WalletParsedTransactionResponse = Readonly<{
+  meta?: {
+    fee?: bigint | number | string
+  }
   transaction?: {
     message?: {
       instructions?: readonly unknown[]
@@ -99,6 +102,8 @@ export interface WalletActivityItem {
   title: string
   amount: string | null
   counterparty: string | null
+  feeLamports: string | null
+  programs: string[]
 }
 
 export interface WalletTokenBalance {
@@ -130,6 +135,9 @@ export interface WalletEmberActivityItem {
   tokenSymbol: string | null
   tokenMint: string | null
   recipient: string | null
+  source: string | null
+  feePayer: string | null
+  programs: string[]
   onchainStatus: string | null
 }
 
@@ -238,6 +246,8 @@ export function normalizeActivity(
     title: item.err === null ? 'On-chain transaction' : 'Failed transaction',
     amount: null,
     counterparty: null,
+    feeLamports: null,
+    programs: [],
   }))
 }
 
@@ -256,12 +266,21 @@ function parsedInstructionOf(value: unknown): Record<string, unknown> | null {
   return recordOf(parsed['info'])
 }
 
+function programNameOf(value: unknown): string | null {
+  const row = recordOf(value)
+  const program = stringOrNull(row['program'])
+  if (program) return program
+  return stringOrNull(row['programId'])
+}
+
 function activityDetailFromTransaction(
   transaction: WalletParsedTransactionResponse,
   walletAddress: string,
-): Pick<WalletActivityItem, 'amount' | 'counterparty' | 'direction' | 'title'> | null {
+): Pick<WalletActivityItem, 'amount' | 'counterparty' | 'direction' | 'title' | 'feeLamports' | 'programs'> | null {
   const instructions = transaction?.transaction?.message?.instructions
   if (!Array.isArray(instructions)) return null
+  const fee = transaction?.meta?.fee
+  const programs = [...new Set(instructions.map(programNameOf).filter((item): item is string => item !== null))]
   for (const instruction of instructions) {
     const info = parsedInstructionOf(instruction)
     if (!info) continue
@@ -275,6 +294,8 @@ function activityDetailFromTransaction(
         counterparty: destination,
         direction: 'sent',
         title: `Sent ${formatLamportsAsSol(lamports)} SOL`,
+        feeLamports: fee === undefined ? null : asBigInt(fee).toString(),
+        programs,
       }
     }
     if (destination === walletAddress) {
@@ -283,6 +304,8 @@ function activityDetailFromTransaction(
         counterparty: source,
         direction: 'received',
         title: `Received ${formatLamportsAsSol(lamports)} SOL`,
+        feeLamports: fee === undefined ? null : asBigInt(fee).toString(),
+        programs,
       }
     }
   }
@@ -383,12 +406,14 @@ export class WalletDataProvider implements WalletDataUI {
             signature: record.signature,
             coverStatus: record.coverStatus,
             riskBand: record.riskBand,
-            // The cover decision carries no transfer metadata; App falls back to the on-chain row's.
-            title: null,
-            amount: null,
-            tokenSymbol: null,
-            tokenMint: null,
-            recipient: null,
+            title: record.title ?? null,
+            amount: record.amount ?? null,
+            tokenSymbol: record.tokenSymbol ?? null,
+            tokenMint: record.tokenMint ?? null,
+            recipient: record.recipient ?? null,
+            source: record.source ?? null,
+            feePayer: record.feePayer ?? null,
+            programs: record.programs ?? [],
             onchainStatus: null,
           }))
     return {

@@ -1,8 +1,10 @@
 import { fakeBrowser } from 'wxt/testing'
 import { storage } from 'wxt/utils/storage'
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
+import { getSignatureFromTransaction, getTransactionDecoder } from '@solana/kit'
 
 import { decodeTransactionSummary } from '../entrypoints/request/decode-transaction.ts'
+import type { CoverStatusSnapshot } from '../cover/ember-types.ts'
 import type { CoverProvider } from './cover-service.ts'
 import {
   PrepaidPaymentProvider,
@@ -35,6 +37,7 @@ function confirmedRpc(): PaymentRpcClient {
   const unused = () => ({ send: async () => Promise.reject(new Error('unexpected RPC call')) })
   return {
     getBalance: unused,
+    isBlockhashValid: unused,
     getLatestBlockhash: unused,
     getTokenAccountBalance: unused,
     simulateTransaction: unused,
@@ -44,7 +47,7 @@ function confirmedRpc(): PaymentRpcClient {
         value: [{ confirmationStatus: 'confirmed', err: null }],
       }),
     }),
-  } as PaymentRpcClient
+  } as unknown as PaymentRpcClient
 }
 
 const unavailable = {
@@ -53,6 +56,26 @@ const unavailable = {
   riskBand: 'severe' as const,
   reasonCodes: [],
   decisionExpiresAt: new Date(0).toISOString(),
+}
+
+function coverSnapshot(
+  overrides: Partial<CoverStatusSnapshot> = {},
+): CoverStatusSnapshot {
+  return {
+    subscriptionActive: true,
+    subscriptionStatus: 'active',
+    walletRegistered: true,
+    tier: 'Core',
+    month: '2026-07',
+    currentPeriodEnd: '2026-08-24T00:00:00Z',
+    coveredTxPerMonth: 100,
+    usedCoveredTxThisMonth: 0,
+    remainingCoveredTxThisMonth: 100,
+    monthlyLossCapUsd: 10000,
+    usedLossCapUsd: 0,
+    remainingLossCapUsd: 10000,
+    ...overrides,
+  }
 }
 
 beforeEach(() => {
@@ -93,6 +116,7 @@ test('preview simulates one exact TransferChecked payment to the treasury', asyn
         return { value: { err: null, fee: 5_000n, logs: [] } }
       },
     }),
+    isBlockhashValid: () => ({ send: async () => ({ value: true }) }),
     sendTransaction: () => ({ send: async () => Promise.reject(new Error('unexpected send')) }),
     getSignatureStatuses: () => ({ send: async () => ({ value: [null] }) }),
   } as unknown as PaymentRpcClient
@@ -120,6 +144,106 @@ test('preview simulates one exact TransferChecked payment to the treasury', asyn
     tokenMint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
     recipient: 'AmXrozEs535RMiwSxkjhcyuq5reC9ntvtBXCef8wCP6s',
     source: preview.userUsdcAta,
+  })
+})
+
+test('activation signs and sends one simulated payment before activating cover', async () => {
+  const calls: string[] = []
+  let signedTransaction = ''
+  const rpc = {
+    getBalance: () => ({ send: async () => ({ value: 1_000_000n }) }),
+    getLatestBlockhash: () => ({
+      send: async () => ({
+        value: {
+          blockhash: '11111111111111111111111111111111',
+          lastValidBlockHeight: 1_000n,
+        },
+      }),
+    }),
+    getTokenAccountBalance: () => ({
+      send: async () => ({
+        value: { amount: '2000000', decimals: 6, uiAmountString: '2' },
+      }),
+    }),
+    simulateTransaction: () => ({
+      send: async () => {
+        calls.push('simulate')
+        return { value: { err: null, fee: 5_000n, logs: [] } }
+      },
+    }),
+    isBlockhashValid: () => ({ send: async () => ({ value: true }) }),
+    sendTransaction: (transaction: string) => ({
+      send: async () => {
+        calls.push('send')
+        signedTransaction = transaction
+        return getSignatureFromTransaction(
+          getTransactionDecoder().decode(new Uint8Array(Buffer.from(transaction, 'base64'))),
+        )
+      },
+    }),
+    getSignatureStatuses: () => ({
+      send: async () => ({
+        value: [{ confirmationStatus: 'confirmed', err: null }],
+      }),
+    }),
+  } as unknown as PaymentRpcClient
+  const cover: CoverProvider = {
+    preSign: async () => unavailable,
+    postSign: async () => {},
+    status: async () => null,
+    preSignMessage: async () => unavailable,
+    postSignMessage: async () => {},
+    enroll: async () => true,
+    authorizeSession: async () => {
+      calls.push('authorize')
+      return true
+    },
+    registerWithApi: async () => true,
+    isEnrolled: async () => true,
+    activatePaymentEntitlement: async (request) => {
+      calls.push(`activate:${request.paymentSignature}`)
+      return {
+        walletPublicKey: ADDRESS,
+        subscriptionActive: true,
+        subscriptionStatus: 'active',
+        tier: 'Core',
+        billingPeriod: '30_days',
+        currentPeriodEnd: '2026-08-24T00:00:00Z',
+        coveredTxPerMonth: 100,
+        monthlyLossCapUsd: 10000,
+        paymentSignature: request.paymentSignature,
+      }
+    },
+  }
+  const provider = new PrepaidPaymentProvider(
+    {
+      getAddress: async () => ADDRESS,
+      sign: async () => {
+        calls.push('sign')
+        return new Uint8Array(64).fill(7)
+      },
+    },
+    cover,
+    {
+      confirmationAttempts: 1,
+      now: () => Date.parse('2026-07-25T00:00:00Z'),
+      rpcFactory: () => rpc,
+      sleep: async () => {},
+    },
+  )
+
+  const result = await provider.activatePayment({ cluster: 'devnet' })
+
+  expect(signedTransaction).not.toBe('')
+  expect(calls).toEqual(['simulate', 'sign', 'send', 'authorize', `activate:${result.signature}`])
+  expect(result).toMatchObject({
+    apiCoverActive: true,
+    state: {
+      version: 2,
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: '1000',
+      status: 'active',
+    },
   })
 })
 
@@ -177,4 +301,102 @@ test('sync activates a confirmed saved payment without creating another payment'
       currentPeriodEnd: '2026-08-24T00:00:00Z',
     },
   })
+})
+
+test('sync retires an unconfirmed payment after its blockhash expires', async () => {
+  const sendTransaction = vi.fn()
+  const unused = () => ({ send: async () => Promise.reject(new Error('unexpected RPC call')) })
+  const rpc = {
+    getBalance: unused,
+    getLatestBlockhash: unused,
+    getTokenAccountBalance: unused,
+    simulateTransaction: unused,
+    sendTransaction,
+    getSignatureStatuses: () => ({ send: async () => ({ value: [null] }) }),
+    isBlockhashValid: () => ({ send: async () => ({ value: false }) }),
+  } as unknown as PaymentRpcClient
+  const provider = new PrepaidPaymentProvider(
+    { getAddress: async () => ADDRESS, sign: async () => new Uint8Array(64) },
+    undefined,
+    {
+      confirmationAttempts: 1,
+      rpcFactory: () => rpc,
+      sleep: async () => {},
+    },
+  )
+  await storage.setItem(
+    PAYMENT_KEY,
+    state({
+      version: 2,
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: '1000',
+      status: 'confirmation_pending',
+    }),
+  )
+
+  const result = await provider.syncPayment(ADDRESS)
+
+  expect(sendTransaction).not.toHaveBeenCalled()
+  expect(result).toMatchObject({
+    apiCoverActive: false,
+    state: { status: 'expired_unconfirmed' },
+  })
+})
+
+test('active local state becomes renewable only when the live cover period is expired', async () => {
+  const cover: CoverProvider = {
+    preSign: async () => unavailable,
+    postSign: async () => {},
+    status: async () =>
+      coverSnapshot({
+        subscriptionActive: false,
+        subscriptionStatus: 'expired',
+        currentPeriodEnd: '2026-07-24T00:00:00Z',
+      }),
+    preSignMessage: async () => unavailable,
+    postSignMessage: async () => {},
+    enroll: async () => true,
+    authorizeSession: async () => true,
+    registerWithApi: async () => true,
+    isEnrolled: async () => true,
+  }
+  const rpcFactory = vi.fn()
+  const provider = new PrepaidPaymentProvider(
+    { getAddress: async () => ADDRESS, sign: async () => new Uint8Array(64) },
+    cover,
+    {
+      now: () => Date.parse('2026-07-25T00:00:00Z'),
+      rpcFactory,
+    },
+  )
+  await storage.setItem(
+    PAYMENT_KEY,
+    state({
+      status: 'active',
+      currentPeriodEnd: '2026-07-24T00:00:00Z',
+    }),
+  )
+
+  const result = await provider.syncPayment(ADDRESS)
+
+  expect(rpcFactory).not.toHaveBeenCalled()
+  expect(result).toMatchObject({
+    apiCoverActive: false,
+    activationError: 'Cover has expired. Review a new one-off payment to renew.',
+  })
+})
+
+test('a pending saved payment blocks a second payment approval', async () => {
+  const rpcFactory = vi.fn()
+  const provider = new PrepaidPaymentProvider(
+    { getAddress: async () => ADDRESS, sign: async () => new Uint8Array(64) },
+    undefined,
+    { rpcFactory },
+  )
+  await storage.setItem(PAYMENT_KEY, state({ status: 'confirmation_pending' }))
+
+  await expect(provider.activatePayment({ cluster: 'devnet' })).rejects.toThrow(
+    'A saved payment still needs recovery',
+  )
+  expect(rpcFactory).not.toHaveBeenCalled()
 })

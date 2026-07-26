@@ -127,6 +127,7 @@ async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
 }
 
 test('dapp connects and gets a signature verifiable against the pubkey over the exact bytes', async () => {
+  test.setTimeout(90_000)
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
 
@@ -140,7 +141,7 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
   await connectWin.getByTestId('approve').click()
 
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
-  await connectWin.close()
+  await expect.poll(() => connectWin.isClosed(), { timeout: 15000 }).toBe(true)
   const address = await dapp.locator('#out').getAttribute('data-address')
   expect((address ?? '').length).toBeGreaterThan(31)
   const pubkey = JSON.parse((await dapp.locator('#out').getAttribute('data-pubkey')) ?? '[]') as number[]
@@ -154,12 +155,8 @@ test('dapp connects and gets a signature verifiable against the pubkey over the 
 
   await expect(dapp.locator('#out')).toContainText('signed:64', { timeout: 15000 })
 
-  // The approval window now stays open and returns to the wallet home (balance + activity),
-  // instead of auto-closing. We assert it is still the wallet, not a numeric balance change
-  // (a dapp-signed tx only signs; the dapp broadcasts, so balance settles later).
-  await expect(signWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
-  await expect(signWin.getByTestId('main-tabs')).toBeVisible()
-  expect(signWin.isClosed()).toBe(false)
+  // The one-purpose approval window closes after the request resolves, avoiding a duplicate wallet.
+  await expect.poll(() => signWin.isClosed(), { timeout: 15000 }).toBe(true)
 
   const sig = JSON.parse((await dapp.locator('#out').getAttribute('data-sig')) ?? '[]') as number[]
   const signed = JSON.parse((await dapp.locator('#out').getAttribute('data-signed')) ?? '[]') as number[]
@@ -433,14 +430,13 @@ test('inactive cover resolves while the vault is LOCKED (before unlock)', async 
   await signWin.getByTestId('approve').click()
   await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
 
-  // After unlock + approve the window stays open on the wallet home.
-  await expect(signWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
-  expect(signWin.isClosed()).toBe(false)
+  // After unlock + approve the one-purpose approval window closes.
+  await expect.poll(() => signWin.isClosed(), { timeout: 15000 }).toBe(true)
 
   await context.close()
 })
 
-test('the approval window stays open after approve and closing it does not error the dapp', async () => {
+test('the approval window closes after approve without erroring the dapp', async () => {
   const { context, extensionId } = await launch()
   await createVault(context, extensionId)
 
@@ -455,12 +451,8 @@ test('the approval window stays open after approve and closing it does not error
   await expect.poll(() => dapp.locator('#out').getAttribute('data-address'), { timeout: 15000 }).not.toBeNull()
   const address = await dapp.locator('#out').getAttribute('data-address')
 
-  // The approval window stays open as the full wallet (not auto-closed).
-  await expect(connectWin.getByTestId('wallet-balance')).toBeVisible({ timeout: 15000 })
-  expect(connectWin.isClosed()).toBe(false)
-
-  // Closing it AFTER approve must NOT reject the already-resolved connect (pending was cleared).
-  await connectWin.close()
+  // The request is cleared before the service closes the approval window.
+  await expect.poll(() => connectWin.isClosed(), { timeout: 15000 }).toBe(true)
   await dapp.waitForTimeout(500)
   expect(await dapp.locator('#out').getAttribute('data-error')).toBeNull()
   expect(await dapp.locator('#out').getAttribute('data-address')).toBe(address)

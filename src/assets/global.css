@@ -82,7 +82,8 @@
 }
 
 html {
-  width: var(--ec-app-width);
+  width: 100%;
+  min-width: var(--ec-app-width);
   height: var(--ec-app-height);
   background: var(--ec-paper);
   color: var(--ec-ink);
@@ -843,6 +844,57 @@ pre {
   border-bottom: 1px solid var(--ec-rule);
 }
 
+.ec-activity-row {
+  padding: 0;
+}
+
+.ec-activity-row__button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--ec-space-3);
+  padding: var(--ec-space-3) 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.ec-activity-row__button:hover .ec-activity-title {
+  color: var(--ec-accent-strong);
+}
+
+.ec-activity-avatar {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ec-paper-muted);
+  color: var(--ec-ink-muted);
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.ec-activity-avatar[data-direction='received'] {
+  color: var(--ec-covered);
+  background: var(--ec-covered-soft);
+}
+
+.ec-activity-avatar[data-direction='sent'] {
+  color: var(--ec-accent-strong);
+  background: var(--ec-warning-soft);
+}
+
+.ec-activity-chevron {
+  flex: none;
+  color: var(--ec-ink-faint);
+  font-size: 24px;
+  line-height: 1;
+}
+
 .ec-token-row:last-child,
 .ec-activity-row:last-child {
   border-bottom: none;
@@ -902,6 +954,50 @@ pre {
 .ec-activity-amount {
   font-size: 13px;
   font-weight: 600;
+}
+
+.ec-activity-detail {
+  padding-bottom: var(--ec-space-6);
+}
+
+.ec-activity-status-card {
+  padding: var(--ec-space-3);
+  border-radius: var(--ec-radius-md);
+  background: var(--ec-info-soft);
+}
+
+.ec-activity-status-card > span {
+  display: block;
+  font-weight: 800;
+}
+
+.ec-activity-status-card p {
+  margin-top: 2px;
+  color: var(--ec-ink-muted);
+  font-size: 12px;
+}
+
+.ec-activity-status-card[data-tone='confirmed'] {
+  background: var(--ec-covered-soft);
+}
+
+.ec-activity-status-card[data-tone='failed'] {
+  background: var(--ec-blocked-soft);
+}
+
+.ec-activity-cover-detail {
+  border-color: rgba(46, 159, 85, 0.24);
+}
+
+.ec-button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.ec-button-link:hover {
+  text-decoration: none;
 }
 
 /* =================================================================
@@ -1038,6 +1134,30 @@ label {
   font-size: 12px;
   font-weight: 600;
   color: var(--ec-ink-muted);
+}
+
+.ec-password-field {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+
+.ec-password-field input {
+  width: 100%;
+  padding-right: 58px;
+}
+
+.ec-password-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--ec-accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px;
 }
 
 .ec-field-with-action {
