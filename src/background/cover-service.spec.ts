@@ -36,8 +36,10 @@ const PAYMENT = {
 } satisfies PaymentResponse
 const COVERAGE = {
   activatedAt: '2026-07-28T00:00:00.000Z',
-  aggregateLimitMicros: '10000000000',
+  aggregateLimitMicros: '120000000000',
   appealWindowDays: 30,
+  benefitPeriodCount: 12,
+  benefitPeriodLimitMicros: '10000000000',
   coverageEndsAt: '2027-07-28T00:00:00.000Z',
   coverageInstanceId: 'coverage_test',
   coverageStartsAt: '2026-07-28T00:00:00.000Z',
@@ -53,6 +55,10 @@ const COVERAGE = {
   policyVersion: 'policy-v1',
   protectedWallet: WALLET,
   quoteId: 'quote_test',
+  currentBenefitPeriodEndsAt: '2026-08-28T00:00:00.000Z',
+  currentBenefitPeriodOrdinal: 1,
+  currentBenefitPeriodStartsAt: '2026-07-28T00:00:00.000Z',
+  remainingBenefitPeriodLimitMicros: '10000000000',
   status: 'active',
   termsVersion: 'terms-v1',
   waitingPeriodDays: 0,

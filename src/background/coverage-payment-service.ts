@@ -120,7 +120,10 @@ export interface CoveragePaymentSigner {
 
 export interface CoverageOfferView {
   aggregateLimitMicros: string
+  benefitPeriodCount: number
+  benefitPeriodLimitMicros: string
   coverageDurationDays: number
+  coverageDurationMonths: number
   coveredTransactionLimit: number
   deductibleMicros: string
   displayName: string
@@ -145,8 +148,11 @@ export interface CoveragePaymentPreview {
   amountBaseUnits: string
   amountDisplay: string
   asset: string
+  benefitPeriodCount: number
+  benefitPeriodLimitMicros: string
   cluster: WalletCluster
   durationDays: number
+  durationMonths: number
   errors: string[]
   feeLamports: string
   offerId: string
@@ -261,7 +267,10 @@ function createVaultTransactionSigner(
 function offerView(offer: AvailableOfferResponse): CoverageOfferView {
   return {
     aggregateLimitMicros: offer.aggregateLimitMicros,
+    benefitPeriodCount: offer.benefitPeriodCount,
+    benefitPeriodLimitMicros: offer.benefitPeriodLimitMicros,
     coverageDurationDays: offer.coverageDurationDays,
+    coverageDurationMonths: offer.coverageDurationMonths,
     coveredTransactionLimit: offer.coveredTransactionLimit,
     deductibleMicros: offer.deductibleMicros,
     displayName: offer.displayName,
@@ -472,11 +481,23 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
     const payment = payload.payment
     if (
       payload.mode !== 'live' ||
+      payload.schemaVersion !== 3 ||
       !payload.paymentAllowed ||
       !payload.createsCoverage ||
       payload.offer.environment !== 'production'
     ) {
       throw new Error('This verified quote is non-payable test data')
+    }
+    const schedule = payload.benefitSchedule
+    if (
+      !schedule ||
+      schedule.coverageDurationMonths !== 12 ||
+      schedule.benefitPeriodCount !== 12 ||
+      schedule.benefitPeriodLimit !== '10000000000' ||
+      payload.offer.aggregateLimit !== '120000000000' ||
+      payload.offer.perLossLimit !== '10000000000'
+    ) {
+      throw new Error('The quote does not contain the approved P15 monthly benefit schedule')
     }
     if (
       payload.protectedWallet !== walletAddress ||
@@ -611,8 +632,11 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
         amountBaseUnits: payment.amount,
         amountDisplay: displayBaseUnits(payment.amount, payment.decimals),
         asset: payload.offer.paymentAsset,
+        benefitPeriodCount: schedule.benefitPeriodCount,
+        benefitPeriodLimitMicros: schedule.benefitPeriodLimit,
         cluster,
         durationDays: payload.offer.coverageDurationDays,
+        durationMonths: schedule.coverageDurationMonths,
         errors,
         feeLamports: feeLamports.toString(),
         offerId: payload.offer.offerId,

@@ -292,18 +292,25 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
       walletRegistered: true,
       tier: coverage.offerId,
       month: new Date().toISOString().slice(0, 7),
-      currentPeriodEnd: coverage.coverageEndsAt,
+      currentPeriodEnd:
+        coverage.currentBenefitPeriodEndsAt ?? coverage.coverageEndsAt,
       coveredTxPerMonth: coverage.coveredTransactionLimit,
       usedCoveredTxThisMonth: used,
       remainingCoveredTxThisMonth: remaining,
-      monthlyLossCapUsd: microsToUsd(coverage.aggregateLimitMicros),
+      monthlyLossCapUsd: microsToUsd(coverage.benefitPeriodLimitMicros),
       usedLossCapUsd: Math.max(
         0,
-        microsToUsd(coverage.aggregateLimitMicros) -
-          microsToUsd(latestDecision?.remainingAggregateLimitMicros ?? coverage.aggregateLimitMicros),
+        microsToUsd(coverage.benefitPeriodLimitMicros) -
+          microsToUsd(
+            latestDecision?.remainingAggregateLimitMicros ??
+              coverage.remainingBenefitPeriodLimitMicros ??
+              coverage.benefitPeriodLimitMicros,
+          ),
       ),
       remainingLossCapUsd: microsToUsd(
-        latestDecision?.remainingAggregateLimitMicros ?? coverage.aggregateLimitMicros,
+        latestDecision?.remainingAggregateLimitMicros ??
+          coverage.remainingBenefitPeriodLimitMicros ??
+          coverage.benefitPeriodLimitMicros,
       ),
     }
   }

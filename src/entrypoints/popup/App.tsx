@@ -103,6 +103,10 @@ function formatBaseUnits(value: string, decimals: number): string {
   return fraction ? `${whole}.${fraction}` : whole.toString()
 }
 
+function formatUsdMicros(value: string): string {
+  return `$${formatBaseUnits(value, 6)}`
+}
+
 function usdToMicros(value: string): string {
   const trimmed = value.trim()
   if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(trimmed)) {
@@ -1266,7 +1270,18 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                     </div>
                     <div>
                       <dt>Duration</dt>
-                      <dd>{selectedOffer.coverageDurationDays} days</dd>
+                      <dd>
+                        {selectedOffer.coverageDurationMonths} months /{' '}
+                        {selectedOffer.benefitPeriodCount} activation-anchored periods
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Benefit per period</dt>
+                      <dd>{formatUsdMicros(selectedOffer.benefitPeriodLimitMicros)}</dd>
+                    </div>
+                    <div>
+                      <dt>Annual maximum</dt>
+                      <dd>{formatUsdMicros(selectedOffer.aggregateLimitMicros)}</dd>
                     </div>
                     <div>
                       <dt>Transaction checks</dt>
@@ -1351,7 +1366,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               </div>
               <div>
                 <dt>Duration</dt>
-                <dd>{paymentPreview.durationDays} days</dd>
+                <dd>
+                  {paymentPreview.durationMonths} months /{' '}
+                  {paymentPreview.benefitPeriodCount} activation-anchored periods
+                </dd>
+              </div>
+              <div>
+                <dt>Benefit per period</dt>
+                <dd>{formatUsdMicros(paymentPreview.benefitPeriodLimitMicros)}</dd>
               </div>
               <div>
                 <dt>Network</dt>

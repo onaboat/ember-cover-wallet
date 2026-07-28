@@ -23,6 +23,8 @@ const COVERAGE = {
   activatedAt: '2026-07-28T00:00:00.000Z',
   aggregateLimitMicros: '1000000',
   appealWindowDays: 30,
+  benefitPeriodCount: 1,
+  benefitPeriodLimitMicros: '1000000',
   coverageEndsAt: '2027-07-28T00:00:00.000Z',
   coverageInstanceId: 'coverage_test',
   coverageStartsAt: '2026-07-28T00:00:00.000Z',

@@ -5,7 +5,7 @@
     "": {
       "name": "ember-cover-wallet",
       "dependencies": {
-        "@embercover/wallet-sdk": "file:vendor/embercover-wallet-sdk-1.1.1.tgz",
+        "@embercover/wallet-sdk": "file:vendor/embercover-wallet-sdk-1.2.1.tgz",
         "@noble/hashes": "^1.5.0",
         "@solana-program/token": "^0.14.0",
         "@solana/kit": "^6.10.0",
@@ -55,7 +55,7 @@
 
     "@devicefarmer/adbkit-monkey": ["@devicefarmer/adbkit-monkey@1.2.1", "", {}, "sha512-ZzZY/b66W2Jd6NHbAhLyDWOEIBWC11VizGFk7Wx7M61JZRz7HR9Cq5P+65RKWUU7u6wgsE8Lmh9nE4Mz+U2eTg=="],
 
-    "@embercover/wallet-sdk": ["@embercover/wallet-sdk@vendor/embercover-wallet-sdk-1.1.1.tgz", { "dependencies": { "zod": "4.4.3" } }, "sha512-BIBF81waq0gzFS+bpj4vuo+DlSHOq+sHjV0zAsAnL0vKs530Oy34uGaMlhrJnDBMt8iCKYayPRYYKV/XpHOu6g=="],
+    "@embercover/wallet-sdk": ["@embercover/wallet-sdk@vendor/embercover-wallet-sdk-1.2.1.tgz", { "dependencies": { "zod": "4.4.3" } }, "sha512-6rk9X4GlXI2ituUEnW5+5r5J9dEb2fPgs0pdRgvRmLjzDJuwDYC65j8MQCpSU0aHvuPs65yU91wAinIWEd/PHg=="],
 
     "@emnapi/core": ["@emnapi/core@1.10.0", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.1", "tslib": "^2.4.0" } }, "sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw=="],
 
