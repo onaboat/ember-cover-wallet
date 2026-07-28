@@ -396,7 +396,7 @@ function coverView(decision: CoverDecision): SolTransferCoverView {
     ...coveredTxCountImpact,
     label: 'Not covered',
     body: coverCapExhausted(decision)
-      ? 'No Ember Cover checks left this month.'
+      ? 'No Ember Cover checks left in this coverage period.'
       : 'Ember Cover will not apply to this send.',
     requiresHighRiskAck: false,
     requiresUncoveredAck: true,
@@ -494,7 +494,7 @@ export class WalletTransferProvider implements WalletTransferUI {
     if (cover.requiresHighRiskAck && !input.acknowledgeHighRisk) {
       throw new Error('Confirm you understand this covered send is high risk')
     }
-    if (cover.coverStatus === 'covered' && this.#now() >= Date.parse(cover.decisionExpiresAt)) {
+    if (prepared.decision.requestId && this.#now() >= Date.parse(cover.decisionExpiresAt)) {
       throw new Error('Cover decision expired. Review the send again.')
     }
 
@@ -533,6 +533,21 @@ export class WalletTransferProvider implements WalletTransferUI {
       broadcastOwner: 'wallet',
       signedTransactionBase64: String(signedBytes),
     })
+    if (
+      this.#cover &&
+      prepared.decision.coverStatus !== 'unavailable' &&
+      prepared.decision.requestId
+    ) {
+      // Persist exact evidence before the first broadcast attempt. A service
+      // worker restart can therefore recover delivery without signing again.
+      await this.#cover.postSign({
+        requestId: prepared.decision.requestId,
+        signedBytes,
+        signature,
+        signingWalletPublicKey: prepared.walletAddress,
+        walletTimestamp: new Date(this.#now()).toISOString(),
+      })
+    }
     try {
       const returnedSignature = await prepared.rpc
         .sendTransaction(signedBytes, {
@@ -565,16 +580,6 @@ export class WalletTransferProvider implements WalletTransferUI {
       throw new Error(
         `Transaction signed and saved, but broadcast was not confirmed. Do not sign again; Ember will retry it while the blockhash is valid. ${String(error)}`,
       )
-    }
-
-    if (this.#cover && isCoverable(prepared.decision) && prepared.decision.requestId) {
-      void this.#cover.postSign({
-        requestId: prepared.decision.requestId,
-        signedBytes,
-        signature,
-        signingWalletPublicKey: prepared.walletAddress,
-        walletTimestamp: new Date(this.#now()).toISOString(),
-      })
     }
 
     return {

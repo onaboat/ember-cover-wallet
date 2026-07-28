@@ -1,17 +1,40 @@
+import type {
+  ClaimEligibilityResponse,
+  CreateClaimRequest,
+  EmberFetch,
+  EmberWalletClient,
+  ProductionClaimResponse,
+  SigningReview,
+} from '@embercover/wallet-sdk'
 import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
-import { storage } from 'wxt/utils/storage'
 
-import { EmberClient } from '../cover/ember-client.ts'
 import type {
-  PaymentEntitlementActivationRequest,
-  PaymentEntitlementActivationResponse,
-} from '../cover/ember-client.ts'
-import type { CoverDebugInfo, CoverDecision, CoverStatusSnapshot } from '../cover/ember-types.ts'
-import { sessionAuthorizationPayload } from '../cover/session-auth.ts'
+  CoverDebugInfo,
+  CoverDecision,
+  CoverStatusSnapshot,
+} from '../cover/ember-types.ts'
+import {
+  EMBER_CONFIG,
+} from '../cover/ember-config.ts'
+import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
 
-import { COVER_CONFIG } from './cover-config.ts'
-import { getSessionPublicKey, signWithSession } from './session-key.ts'
+import {
+  EmberClientCoordinator,
+} from './ember-client-coordinator.ts'
+import type {
+  EmberSessionStatus,
+  EmberVaultSigner,
+} from './ember-client-coordinator.ts'
+import {
+  emberLifecycleStore,
+} from './ember-lifecycle-store.ts'
+import type {
+  WalletLifecycleSnapshot,
+} from './ember-lifecycle-store.ts'
+import {
+  evidenceOutbox,
+} from './evidence-outbox.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
 
 export interface PreSignArgs {
@@ -21,6 +44,7 @@ export interface PreSignArgs {
 }
 
 export interface PostSignArgs {
+  /** P14 keeps the old property name at this boundary; its value is the SDK decisionId. */
   requestId: string
   signedBytes: string
   signature?: string
@@ -37,6 +61,7 @@ export interface MessagePreSignArgs {
 }
 
 export interface MessagePostSignArgs {
+  /** P14 keeps the old property name at this boundary; its value is the SDK decisionId. */
   requestId: string
   signedMessage: string
   signature: string
@@ -52,319 +77,351 @@ export interface CoverProvider {
   preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision>
   postSignMessage(args: MessagePostSignArgs): Promise<void>
   enroll(): Promise<boolean>
-  /** Authorize the session key only (one vault sign), without calling the register API. */
-  authorizeSession(): Promise<boolean>
-  /** Call the register API to link the wallet to its entitlement; needs an authorized session. */
-  registerWithApi(): Promise<boolean>
   isEnrolled(): Promise<boolean>
-  activatePaymentEntitlement?(
-    args: Omit<PaymentEntitlementActivationRequest, 'walletPublicKey'>,
-  ): Promise<PaymentEntitlementActivationResponse>
 }
 
-/** The SW-side VAULT signer the cover provider needs for one-time enrollment. */
-export interface CoverWalletSigner {
-  getAddress(): Promise<string | null>
-  sign(message: Uint8Array): Promise<Uint8Array>
+export interface EmberLifecycleProvider extends CoverProvider {
+  revoke(): Promise<void>
+  sessionStatus(): Promise<EmberSessionStatus>
+  lifecycle(): Promise<WalletLifecycleSnapshot | null>
+  activeClient(): Promise<EmberWalletClient | null>
+  claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse>
+  createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse>
 }
 
-interface Enrollment {
-  sessionPublicKey: string
-  /** base64 of the wallet's signature over sessionAuthorizationPayload(session, wallet). */
-  walletAuthSig: string
-  walletAddress: string
+export type CoverWalletSigner = EmberVaultSigner
+
+interface ProviderDependencies {
+  config?: EmberRuntimeConfig
+  fetch?: EmberFetch
+  coordinator?: EmberClientCoordinator
 }
 
-const ENROLL_KEY = 'local:ember-cover-enrollment' as const
-const b64 = (b: Uint8Array): string => btoa(String.fromCharCode(...b))
-
-function unavailable(debug?: CoverDebugInfo): CoverDecision {
+function unavailable(
+  reason: string,
+  debug?: CoverDebugInfo,
+): CoverDecision {
   return {
     requestId: '',
     coverStatus: 'unavailable',
     riskBand: 'severe',
-    reasonCodes: [],
+    reasonCodes: [reason],
     decisionExpiresAt: new Date(0).toISOString(),
     ...(debug === undefined ? {} : { debug }),
   }
 }
 
-function notCovered(debug?: CoverDebugInfo): CoverDecision {
+function notCovered(
+  reason: string,
+  debug?: CoverDebugInfo,
+): CoverDecision {
   return {
     requestId: '',
     coverStatus: 'not_covered',
     riskBand: 'low',
-    reasonCodes: [],
+    reasonCodes: [reason],
     decisionExpiresAt: new Date(0).toISOString(),
     ...(debug === undefined ? {} : { debug }),
   }
 }
 
-async function activeEnrollmentForWallet(walletAddress: string): Promise<Enrollment | null> {
-  const e = await storage.getItem<Enrollment>(ENROLL_KEY)
-  if (!e || e.walletAddress !== walletAddress) {
-    return null
-  }
-  const sessionPublicKey = await getSessionPublicKey()
-  if (e.sessionPublicKey !== sessionPublicKey) {
-    return null
-  }
-  return e
+function microsToUsd(value: string): number {
+  const micros = Number(value)
+  return Number.isFinite(micros) && micros >= 0 ? micros / 1_000_000 : 0
 }
 
-export async function coverSessionHeaderForWallet(walletAddress: string): Promise<string | undefined> {
-  const e = await activeEnrollmentForWallet(walletAddress)
-  return e ? `${e.sessionPublicKey}.${e.walletAuthSig}` : undefined
+function decisionView(review: SigningReview): CoverDecision {
+  if (review.status !== 'reviewed') {
+    const debug: CoverDebugInfo = {
+      stage: 'api_pre_sign_non_ok',
+      apiAttempted: true,
+      ...(review.requestId ? { requestId: review.requestId } : {}),
+      coverStatus: review.coverStatus,
+      error: review.reason,
+    }
+    return review.status === 'not_covered'
+      ? notCovered(review.reason, debug)
+      : unavailable(review.reason, debug)
+  }
+  const decision = review.decision
+  return {
+    requestId: decision.decisionId,
+    coverStatus: decision.coverStatus,
+    riskBand: decision.riskBand,
+    reasonCodes: [...decision.reasonCodes],
+    decisionExpiresAt: decision.decisionExpiresAt,
+    coveredTxCountImpact: decision.evaluationCountImpact,
+    capContext: {
+      monthlyLossCapUsd: microsToUsd(decision.remainingAggregateLimitMicros),
+      remainingCoveredTxThisMonth: decision.remainingUnderwritingEvaluations,
+    },
+    debug: {
+      stage: 'api_pre_sign_ok',
+      apiAttempted: true,
+      requestId: decision.decisionId,
+      coverStatus: decision.coverStatus,
+      riskBand: decision.riskBand,
+      decisionExpiresAt: decision.decisionExpiresAt,
+      reasonCodeCount: decision.reasonCodes.length,
+      enrolled: true,
+      walletAddress: decision.protectedWallet,
+    },
+  }
 }
 
 /**
- * Two-sig cover provider. Cover requests are signed by the SESSION key (silent, no unlock) and
- * carry the wallet's one-time authorization; walletPublicKey is the VAULT address (the tx signer).
- * The vault key is used ONLY at enroll() (authorize the session key + register), one unlock.
+ * Direct, secretless Ember SDK provider.
+ *
+ * This no longer calls the compatibility Worker or injects a partner secret.
+ * Server responses remain authoritative; local lifecycle data is only a cache
+ * and evidence is durably queued before signed bytes leave the wallet.
  */
-export class EmberCoverProvider implements CoverProvider {
-  #signer: CoverWalletSigner
-  #client: EmberClient
+export class EmberCoverProvider implements EmberLifecycleProvider {
+  private readonly config: EmberRuntimeConfig
+  private readonly coordinator: EmberClientCoordinator
+  private readonly signer: CoverWalletSigner
 
-  constructor(signer: CoverWalletSigner, deps: { fetch?: typeof fetch } = {}) {
-    this.#signer = signer
-    this.#client = new EmberClient(COVER_CONFIG, signWithSession, {
-      ...deps,
-      sessionAuthHeader: () => this.#sessionHeader(),
-    })
+  constructor(signer: CoverWalletSigner, dependencies: ProviderDependencies = {}) {
+    this.signer = signer
+    this.config = dependencies.config ?? EMBER_CONFIG
+    this.coordinator =
+      dependencies.coordinator ??
+      new EmberClientCoordinator(signer, {
+        config: this.config,
+        ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
+      })
   }
 
-  async #sessionHeader(): Promise<string | undefined> {
-    const e = await this.#activeEnrollment()
-    return e ? `${e.sessionPublicKey}.${e.walletAuthSig}` : undefined
+  async activeClient(): Promise<EmberWalletClient | null> {
+    return await this.coordinator.activeClient()
   }
 
-  async #activeEnrollment(walletAddress?: string): Promise<Enrollment | null> {
-    const currentWalletAddress = walletAddress ?? (await this.#signer.getAddress())
-    if (!currentWalletAddress) {
-      return null
-    }
-    return await activeEnrollmentForWallet(currentWalletAddress)
-  }
-
-  async isEnrolled(): Promise<boolean> {
-    return (await this.#activeEnrollment()) !== null
-  }
-
-  async activatePaymentEntitlement(
-    args: Omit<PaymentEntitlementActivationRequest, 'walletPublicKey'>,
-  ): Promise<PaymentEntitlementActivationResponse> {
-    const walletAddress = await this.#signer.getAddress()
-    if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
-      throw new Error('Cover session is not authorized')
-    }
-    return await this.#client.activatePaymentEntitlement({
-      ...args,
-      walletPublicKey: walletAddress,
-    })
-  }
-
-  /** Persist the wallet's one-time authorization of the session key (one vault sign). */
-  async #storeSessionAuthorization(walletAddress: string): Promise<void> {
-    const sessionPublicKey = await getSessionPublicKey()
-    const walletAuthSig = await this.#signer.sign(sessionAuthorizationPayload(sessionPublicKey, walletAddress))
-    await storage.setItem<Enrollment>(ENROLL_KEY, {
-      sessionPublicKey,
-      walletAuthSig: b64(walletAuthSig),
-      walletAddress,
-    })
-  }
-
-  /**
-   * Authorize the session key for the current wallet (one vault sign). Every
-   * proxied cover call needs this, so the prepaid payment flow calls it before activation.
-   * Unlike enroll(), it never touches the register API or rolls back.
-   */
-  async authorizeSession(): Promise<boolean> {
-    const walletAddress = await this.#signer.getAddress()
-    if (!walletAddress) {
-      return false
-    }
-    await this.#storeSessionAuthorization(walletAddress)
+  async enroll(): Promise<boolean> {
+    await this.coordinator.enroll()
     return true
   }
 
-  /**
-   * Register the wallet with the cover API (links it to its entitlement). Needs
-   * an authorized session (call authorizeSession first) and, in the wallet-native
-   * flow, an already-activated entitlement. Does NOT roll back the session.
-   */
-  async registerWithApi(): Promise<boolean> {
-    const walletAddress = await this.#signer.getAddress()
-    if (!walletAddress) {
-      return false
-    }
-    return await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
+  async revoke(): Promise<void> {
+    await this.coordinator.revoke()
   }
 
-  /** One-time: vault authorizes the session key + registers the vault address. Needs unlock. */
-  async enroll(): Promise<boolean> {
-    const walletAddress = await this.#signer.getAddress()
-    if (!walletAddress) {
-      return false
+  async sessionStatus(): Promise<EmberSessionStatus> {
+    return await this.coordinator.status()
+  }
+
+  async isEnrolled(): Promise<boolean> {
+    return (await this.coordinator.status()).phase === 'active'
+  }
+
+  async lifecycle(): Promise<WalletLifecycleSnapshot | null> {
+    const walletAddress = await this.signer.getAddress()
+    if (!walletAddress) return null
+    const client = await this.activeClient()
+    if (!client) {
+      const cached = await emberLifecycleStore.load(walletAddress)
+      return {
+        ...cached,
+        authority:
+          cached.payment || cached.coverage || cached.decisions.length > 0 || cached.claims.length > 0
+            ? 'cache'
+            : 'unavailable',
+        error: 'A live Ember session is required to verify lifecycle records',
+      }
     }
-    // Persist the authorization first — register's two-sig header reads it from storage.
-    await this.#storeSessionAuthorization(walletAddress)
-    // Register the vault address; the NONCE is signed by the vault key (proves control of it).
-    const registered = await this.#client.register(walletAddress, (m) => this.#signer.sign(m))
-    if (!registered) {
-      // Roll back: a failed registration must NOT leave the wallet looking "enrolled".
-      await storage.removeItem(ENROLL_KEY)
-    }
-    return registered
+    return await emberLifecycleStore.refresh(walletAddress, client)
   }
 
   async preSign(args: PreSignArgs): Promise<CoverDecision> {
-    try {
-      const coverCluster = COVER_CONFIG.cluster === 'mainnet' ? 'mainnet-beta' : 'devnet'
-      if (args.cluster !== undefined && args.cluster !== coverCluster) {
-        return unavailable({
-          stage: 'cluster_mismatch',
-          apiAttempted: false,
-          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-          error: `Wallet transaction is ${args.cluster}; Ember Cover is configured for ${coverCluster}.`,
-          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
-        })
-      }
-      const walletAddress = await this.#signer.getAddress()
-      if (!walletAddress) {
-        return unavailable({
-          stage: 'no_wallet',
-          apiAttempted: false,
-          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-        })
-      }
-      if (!(await this.#activeEnrollment(walletAddress))) {
-        return notCovered({
-          stage: 'not_enrolled',
-          apiAttempted: false,
-          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-          walletAddress,
-          enrolled: false,
-          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
-        })
-      }
-      const decision = await this.#client.preSign({
-        walletPublicKey: walletAddress,
-        userRef: '',
-        transactionBytes: args.transactionBytes,
+    if (args.cluster !== undefined && args.cluster !== this.config.expectedCluster) {
+      return unavailable('cluster_mismatch', {
+        stage: 'cluster_mismatch',
+        apiAttempted: false,
+        error: `Wallet transaction is ${args.cluster}; Ember is configured for ${this.config.expectedCluster}.`,
         ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
       })
-      return {
-        ...decision,
-        debug: {
-          ...decision.debug,
-          enrolled: true,
-        } as CoverDebugInfo,
-      }
-    } catch {
-      return unavailable({
-        stage: 'provider_error',
-        apiAttempted: false,
-        proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-      })
     }
-  }
-
-  async status(): Promise<CoverStatusSnapshot | null> {
-    try {
-      const walletAddress = await this.#signer.getAddress()
-      if (!walletAddress || !(await this.#activeEnrollment(walletAddress))) {
-        return null
-      }
-      return await this.#client.status({ walletPublicKey: walletAddress, userRef: '' })
-    } catch {
-      return null
-    }
+    return await this.review({
+      kind: 'transaction',
+      transactionBytes: args.transactionBytes,
+      ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+    })
   }
 
   async preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision> {
-    try {
-      const walletAddress = await this.#signer.getAddress()
-      if (!walletAddress) {
-        return unavailable({
-          stage: 'no_wallet',
-          apiAttempted: false,
-          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-        })
-      }
-      if (!(await this.#activeEnrollment(walletAddress))) {
-        return notCovered({
-          stage: 'not_enrolled',
-          apiAttempted: false,
-          proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-          walletAddress,
-          enrolled: false,
-          ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
-        })
-      }
-      const decision = await this.#client.messagePreSign({
-        walletPublicKey: walletAddress,
-        userRef: '',
-        messageBytes: args.messageBytes,
-        walletMethod: args.walletMethod,
-        messageKind: args.messageKind,
-        ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
-        ...(args.declaredIntent === undefined ? {} : { declaredIntent: args.declaredIntent }),
-      })
-      return {
-        ...decision,
-        debug: {
-          ...decision.debug,
-          enrolled: true,
-        } as CoverDebugInfo,
-      }
-    } catch {
-      return unavailable({
-        stage: 'provider_error',
-        apiAttempted: false,
-        proxyBaseUrl: COVER_CONFIG.proxyBaseUrl,
-      })
-    }
+    return await this.review({
+      kind: 'message',
+      messageBytes: args.messageBytes,
+      walletMethod: args.walletMethod,
+      ...(args.dappUrl === undefined ? {} : { dappUrl: args.dappUrl }),
+    })
   }
 
   async postSign(args: PostSignArgs): Promise<void> {
-    try {
-      await this.#client.postSign(args)
-    } catch {
-      // best-effort
-    }
+    await evidenceOutbox.put(args.requestId, {
+      kind: 'transaction',
+      signedBytes: args.signedBytes,
+    })
+    const client = await this.activeClient()
+    if (client) void evidenceOutbox.drain(client)
   }
 
   async postSignMessage(args: MessagePostSignArgs): Promise<void> {
-    try {
-      await this.#client.messagePostSign(args)
-    } catch {
-      // best-effort
+    await evidenceOutbox.put(args.requestId, {
+      kind: 'message',
+      signedMessage: args.signedMessage,
+      signature: args.signature,
+    })
+    const client = await this.activeClient()
+    if (client) void evidenceOutbox.drain(client)
+  }
+
+  async status(): Promise<CoverStatusSnapshot | null> {
+    const snapshot = await this.lifecycle()
+    if (!snapshot || snapshot.authority !== 'server' || !snapshot.coverage) return null
+    const coverage = snapshot.coverage
+    const latestDecision = snapshot.decisions.at(-1)?.cachedDecision
+    const remaining =
+      latestDecision?.coverageInstanceId === coverage.coverageInstanceId
+        ? latestDecision.remainingUnderwritingEvaluations
+        : coverage.coveredTransactionLimit
+    const used = Math.max(0, coverage.coveredTransactionLimit - remaining)
+    return {
+      subscriptionActive:
+        coverage.status === 'active' && Date.now() < Date.parse(coverage.coverageEndsAt),
+      subscriptionStatus: coverage.status,
+      walletRegistered: true,
+      tier: coverage.offerId,
+      month: new Date().toISOString().slice(0, 7),
+      currentPeriodEnd: coverage.coverageEndsAt,
+      coveredTxPerMonth: coverage.coveredTransactionLimit,
+      usedCoveredTxThisMonth: used,
+      remainingCoveredTxThisMonth: remaining,
+      monthlyLossCapUsd: microsToUsd(coverage.aggregateLimitMicros),
+      usedLossCapUsd: Math.max(
+        0,
+        microsToUsd(coverage.aggregateLimitMicros) -
+          microsToUsd(latestDecision?.remainingAggregateLimitMicros ?? coverage.aggregateLimitMicros),
+      ),
+      remainingLossCapUsd: microsToUsd(
+        latestDecision?.remainingAggregateLimitMicros ?? coverage.aggregateLimitMicros,
+      ),
     }
+  }
+
+  async claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse> {
+    const client = await this.requireActiveClient()
+    return await client.claimEligibility(decisionId)
+  }
+
+  async createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse> {
+    const client = await this.requireActiveClient()
+    return await client.createClaim(request)
+  }
+
+  private async review(
+    request:
+      | {
+          kind: 'transaction'
+          transactionBytes: string
+          dappUrl?: string
+        }
+      | {
+          kind: 'message'
+          messageBytes: string
+          walletMethod: 'signMessage'
+          dappUrl?: string
+        },
+  ): Promise<CoverDecision> {
+    if (this.config.problems.length > 0) {
+      return unavailable('configuration', {
+        stage: 'provider_error',
+        apiAttempted: false,
+        error: this.config.problems.join('; '),
+      })
+    }
+    const walletAddress = await this.signer.getAddress()
+    if (!walletAddress) {
+      return unavailable('no_wallet', {
+        stage: 'no_wallet',
+        apiAttempted: false,
+      })
+    }
+    const client = await this.activeClient()
+    if (!client) {
+      return notCovered('not_enrolled', {
+        stage: 'not_enrolled',
+        apiAttempted: false,
+        walletAddress,
+        enrolled: false,
+      })
+    }
+    const lifecycle = await emberLifecycleStore.refresh(walletAddress, client)
+    const coverage = lifecycle.authority === 'server' ? lifecycle.coverage : null
+    if (
+      !coverage ||
+      coverage.status !== 'active' ||
+      Date.now() >= Date.parse(coverage.coverageEndsAt)
+    ) {
+      return notCovered('no_active_coverage', {
+        stage: 'not_enrolled',
+        apiAttempted: true,
+        walletAddress,
+        enrolled: true,
+        error:
+          lifecycle.authority === 'server'
+            ? 'No active server-confirmed coverage'
+            : lifecycle.error ?? 'Coverage could not be verified',
+      })
+    }
+    const review = await client.reviewForSigning({
+      ...request,
+      coverageInstanceId: coverage.coverageInstanceId,
+    })
+    if (review.status === 'reviewed') {
+      await emberLifecycleStore.recordDecision({
+        walletAddress,
+        decision: review.decision,
+        ...(request.dappUrl ? { dappOrigin: request.dappUrl } : {}),
+      })
+    }
+    return decisionView(review)
+  }
+
+  private async requireActiveClient(): Promise<EmberWalletClient> {
+    const client = await this.activeClient()
+    if (!client) throw new Error('Connect or renew the Ember session first')
+    return client
   }
 }
 
-/** The narrow cover surface a UI context may call over the proxy. */
+/** The narrow Ember lifecycle surface exposed to extension UI contexts. */
 export interface CoverUI {
   enroll(): Promise<boolean>
+  revoke(): Promise<void>
   isEnrolled(): Promise<boolean>
+  sessionStatus(): Promise<EmberSessionStatus>
+  lifecycle(): Promise<WalletLifecycleSnapshot | null>
   status(): Promise<CoverStatusSnapshot | null>
+  claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse>
+  createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse>
 }
 
 const COVER_SERVICE_KEY = 'ember.CoverService' as ProxyServiceKey<CoverUI>
 
-/** SW only. Registers a narrow enroll/isEnrolled facade backed by the real provider. */
-export function registerCoverService(provider: CoverProvider): void {
+export function registerCoverService(provider: EmberLifecycleProvider): void {
   const facade: CoverUI = {
     enroll: () => provider.enroll(),
+    revoke: () => provider.revoke(),
     isEnrolled: () => provider.isEnrolled(),
+    sessionStatus: () => provider.sessionStatus(),
+    lifecycle: () => provider.lifecycle(),
     status: () => provider.status(),
+    claimEligibility: (decisionId) => provider.claimEligibility(decisionId),
+    createClaim: (request) => provider.createClaim(request),
   }
   registerService(COVER_SERVICE_KEY, facade)
 }
 
-/** Any UI context: a proxy to enroll/isEnrolled. */
 export function getCoverService(): ProxyService<CoverUI> {
   return createProxyService<CoverUI>(COVER_SERVICE_KEY)
 }

@@ -16,7 +16,10 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit'
 
-import { startCoverProxy } from './fixtures/cover-proxy-server.ts'
+import {
+  startEmberApiFixture,
+} from './fixtures/ember-api-server.ts'
+import type { EmberApiFixture } from './fixtures/ember-api-server.ts'
 
 declare global {
   interface Window {
@@ -49,7 +52,7 @@ const PASSWORD = 'Str0ng-pass-correct-horse'
 // wallet-standard provider to register. Serve the fixture from an ephemeral localhost server.
 let server: Server
 let dappUrl: string
-let coverServer: Server | undefined
+let emberApi: EmberApiFixture | undefined
 
 test.beforeAll(async () => {
   const html = await readFile(DAPP_FILE, 'utf8')
@@ -62,16 +65,16 @@ test.beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('no server port')
   dappUrl = `http://127.0.0.1:${address.port}/dapp.html`
 
-  coverServer = await startCoverProxy(18787)
+  emberApi = await startEmberApiFixture(18787)
 })
 
 test.afterAll(async () => {
   // Drop any lingering keep-alive sockets so close() resolves promptly.
   server.closeAllConnections()
   await new Promise<void>((resolve) => server.close(() => resolve()))
-  if (coverServer) {
-    coverServer.closeAllConnections()
-    await new Promise<void>((resolve) => coverServer?.close(() => resolve()))
+  if (emberApi) {
+    emberApi.server.closeAllConnections()
+    await new Promise<void>((resolve) => emberApi?.server.close(() => resolve()))
   }
 })
 
@@ -118,6 +121,33 @@ async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
   }
   await expect(page.getByTestId('approve')).toBeEnabled({ timeout: 7000 })
 }
+
+test('opens a direct secretless SDK session from the exact Chrome extension origin', async () => {
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+  const popup = await context.newPage()
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`)
+  await popup.getByTestId('activate-cover').click()
+  await popup.getByTestId('connect-ember-session').click()
+
+  await expect(popup.getByTestId('coverage-offer-select')).toHaveValue(
+    'offer_sandbox_core',
+    { timeout: 15_000 },
+  )
+  const expectedOrigin = `chrome-extension://${extensionId}`
+  const businessRequests =
+    emberApi?.requests.filter((request) => !request.startsWith('OPTIONS ')) ?? []
+  expect(businessRequests).toEqual(
+    expect.arrayContaining([
+      `POST /v1/wallet-sessions/challenges origin=${expectedOrigin}`,
+      `POST /v1/wallet-sessions origin=${expectedOrigin}`,
+      'GET /v1/wallet/offers origin=none',
+    ]),
+  )
+  expect(emberApi?.origins.has(expectedOrigin)).toBe(true)
+
+  await context.close()
+})
 
 test('dapp connects and gets a signature verifiable against the pubkey over the exact bytes', async () => {
   test.setTimeout(90_000)

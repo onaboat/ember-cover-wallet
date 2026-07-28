@@ -72,7 +72,11 @@
       })
       document.getElementById('signtx').addEventListener('click', async () => {
         try {
-          const [res] = await ember.features['solana:signTransaction'].signTransaction({ account, transaction: txBytes })
+          const [res] = await ember.features['solana:signTransaction'].signTransaction({
+            account,
+            chain: 'solana:devnet',
+            transaction: txBytes,
+          })
           out.dataset.signedtx = JSON.stringify(Array.from(res.signedTransaction))
           out.textContent = 'signedtx:' + res.signedTransaction.length
         } catch (e) {
@@ -83,8 +87,8 @@
       document.getElementById('signtxbatch').addEventListener('click', async () => {
         try {
           await ember.features['solana:signTransaction'].signTransaction(
-            { account, transaction: txBytes },
-            { account, transaction: txBytes },
+            { account, chain: 'solana:devnet', transaction: txBytes },
+            { account, chain: 'solana:devnet', transaction: txBytes },
           )
           out.textContent = 'signedtxbatch'
         } catch (e) {

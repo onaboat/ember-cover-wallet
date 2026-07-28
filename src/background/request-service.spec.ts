@@ -8,6 +8,8 @@ import {
   setTransactionMessageFeePayer,
   setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit'
+import { SOLANA_DEVNET_CHAIN } from '@solana/wallet-standard-chains'
+import type { SolanaSignTransactionInput } from '@solana/wallet-standard-features'
 import { fakeBrowser } from 'wxt/testing'
 import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -30,6 +32,14 @@ function dummyTxBytes(): Uint8Array {
       ),
   )
   return new Uint8Array(getTransactionEncoder().encode(compileTransaction(message)))
+}
+
+function transactionInput(): SolanaSignTransactionInput {
+  return {
+    account: ACCOUNT,
+    chain: SOLANA_DEVNET_CHAIN,
+    transaction: dummyTxBytes(),
+  }
 }
 
 const signer = {
@@ -59,8 +69,6 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
     }),
     postSignMessage: async () => {},
     enroll: async () => true,
-    authorizeSession: async () => true,
-    registerWithApi: async () => true,
     isEnrolled: async () => true,
     ...overrides,
   }
@@ -77,6 +85,18 @@ test('rejects a second concurrent request', async () => {
   void svc.create('connect', undefined)
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await expect(svc.create('connect', undefined)).rejects.toThrow('already exists')
+})
+
+test('rejects a chainless transaction before opening an approval window', async () => {
+  const svc = new RequestService(signer)
+  const createWindow = vi.spyOn(fakeBrowser.windows, 'create')
+
+  await expect(
+    svc.create('signTransaction', [
+      { account: ACCOUNT, transaction: dummyTxBytes() } as never,
+    ]),
+  ).rejects.toThrow('chain identifier is required')
+  expect(createWindow).not.toHaveBeenCalled()
 })
 
 test('approveSignMessage settles with a 64-byte signature output', async () => {
@@ -148,7 +168,6 @@ test('approveSignMessage posts signed-message evidence for a backend decision', 
       requestId: 'msg-r',
       signedMessage: 'AQID',
       signingWalletPublicKey: FEE_PAYER,
-      highRiskAckAt: expect.any(String),
     }),
   )
 })
@@ -179,7 +198,7 @@ test('approveSignMessage rejects an expired covered decision before signing', as
 test('approveSignTransaction settles with a signed transaction', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   const [out] = await pending
@@ -190,8 +209,8 @@ test('approveSignTransaction rejects multiple transactions so the UI cannot sign
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
   const pending = svc.create('signTransaction', [
-    { account: ACCOUNT, transaction: dummyTxBytes() },
-    { account: ACCOUNT, transaction: dummyTxBytes() },
+    transactionInput(),
+    transactionInput(),
   ])
   pending.catch(() => {})
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
@@ -203,7 +222,7 @@ test('approve closes the one-purpose approval window', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
   const remove = vi.spyOn(fakeBrowser.windows, 'remove').mockResolvedValue(undefined as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   await pending
@@ -213,7 +232,7 @@ test('approve closes the one-purpose approval window', async () => {
 test('the pending slot is cleared before the approval window closes', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   await pending
@@ -223,7 +242,7 @@ test('the pending slot is cleared before the approval window closes', async () =
 test('the approval-window removal event after approve does not settle the promise a second time', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 7 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   await svc.approveSignTransaction()
   const [out] = await pending
@@ -246,7 +265,7 @@ test('reject removes the window', async () => {
 test('a stale id cannot approve a request it never displayed', async () => {
   const svc = new RequestService(signer)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   const currentId = svc.get()?.id
   await expect(svc.approveSignTransaction('stale-id')).rejects.toThrow('Stale request')
@@ -278,7 +297,7 @@ test('closing the window mid-sign cancels: no signature to the dapp, no post-sig
   })
   const svc = new RequestService({ getAddress: signer.getAddress, sign }, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 7 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   pending.catch(() => {})
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
 
@@ -329,7 +348,7 @@ test('attaches an opaque cover decision to a signTransaction request', async () 
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  void svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
   expect(svc.get()?.cover?.decisionExpiresAt).toBeDefined()
   expect(svc.get()?.cover?.capContext).toEqual({ monthlyLossCapUsd: 10000, remainingCoveredTxThisMonth: 99 })
@@ -352,7 +371,7 @@ test('refreshCover replaces an expired or stale cover decision', async () => {
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  void svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover?.decisionExpiresAt).toBeDefined())
   const firstExpiry = svc.get()?.cover?.decisionExpiresAt
 
@@ -375,13 +394,43 @@ test('approveSignTransaction rejects an expired covered decision before signing'
   })
   const svc = new RequestService({ getAddress: signer.getAddress, sign }, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   pending.catch(() => {})
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
 
   await expect(svc.approveSignTransaction()).rejects.toThrow('Cover decision expired')
 
   expect(sign).not.toHaveBeenCalled()
+  svc.reject()
+})
+
+test('rejects transaction bytes changed after the Ember decision', async () => {
+  const sign = vi.fn(async () => new Uint8Array(64).fill(7))
+  const postSign = vi.fn(async () => {})
+  const cover = coverProvider({
+    preSign: async () => ({
+      requestId: 'decision_exact_bytes',
+      coverStatus: 'covered',
+      riskBand: 'low',
+      reasonCodes: [],
+      decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+    postSign,
+  })
+  const input = transactionInput()
+  const svc = new RequestService({ getAddress: signer.getAddress, sign }, cover)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [input])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
+
+  input.transaction[0] = (input.transaction[0] ?? 0) ^ 1
+
+  await expect(svc.approveSignTransaction()).rejects.toThrow(
+    'Signing bytes changed after Ember review',
+  )
+  expect(sign).not.toHaveBeenCalled()
+  expect(postSign).not.toHaveBeenCalled()
   svc.reject()
 })
 
@@ -393,7 +442,9 @@ test('a malformed signTransaction does not crash the cover fetch (fail-open)', a
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: null } as never])
+  void svc.create('signTransaction', [
+    { account: ACCOUNT, chain: SOLANA_DEVNET_CHAIN, transaction: null } as never,
+  ])
   await vi.waitFor(() => expect(svc.get()).not.toBeNull())
   // give the fire-and-forget cover fetch a tick; it must NOT throw or set a cover decision
   await new Promise((r) => setTimeout(r, 50))
@@ -412,7 +463,7 @@ test('never leaks reasonCodes into the view', async () => {
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  void svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  void svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover).toBeDefined())
   const view = svc.get()
   expect(JSON.stringify(view)).not.toContain('SECRET_INTERNAL_CODE')
@@ -434,7 +485,7 @@ test('zero remaining cap on a covered decision stays covered and posts evidence'
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
 
   await svc.approveSignTransaction()
@@ -446,6 +497,43 @@ test('zero remaining cap on a covered decision stays covered and posts evidence'
   const records = await storage.getItem<Array<{ coverStatus: string; signature: string }>>('local:ember-cover-records')
   expect(records?.[0]?.coverStatus).toBe('covered')
   expect(records?.[0]?.signature).toBeTruthy()
+})
+
+test('does not release signed transaction bytes until evidence persistence completes', async () => {
+  let releaseEvidence = () => {}
+  const evidenceGate = new Promise<void>((resolve) => {
+    releaseEvidence = resolve
+  })
+  const postSign = vi.fn(async () => {
+    await evidenceGate
+  })
+  const cover = coverProvider({
+    preSign: async () => ({
+      requestId: 'decision_durable_first',
+      coverStatus: 'covered',
+      riskBand: 'low',
+      reasonCodes: [],
+      decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+    postSign,
+  })
+  const svc = new RequestService(signer, cover)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  let dappResolved = false
+  const pending = svc.create('signTransaction', [transactionInput()]).then((value) => {
+    dappResolved = true
+    return value
+  })
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
+
+  const approval = svc.approveSignTransaction()
+  await vi.waitFor(() => expect(postSign).toHaveBeenCalledOnce())
+  expect(dappResolved).toBe(false)
+
+  releaseEvidence()
+  await approval
+  await pending
+  expect(dappResolved).toBe(true)
 })
 
 
@@ -465,7 +553,7 @@ test('exhausted cap is not covered and skips post sign evidence', async () => {
   })
   const svc = new RequestService(signer, cover)
   vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
-  const pending = svc.create('signTransaction', [{ account: ACCOUNT, transaction: dummyTxBytes() }])
+  const pending = svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('not_covered'))
 
   await svc.approveSignTransaction()

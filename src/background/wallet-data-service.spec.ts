@@ -18,14 +18,13 @@ beforeEach(() => {
   fakeBrowser.reset()
 })
 
-test('defaults to devnet and stores the selected cluster', async () => {
+test('defaults to the build-bound cluster and rejects a cross-cluster switch', async () => {
   const provider = new WalletDataProvider()
 
   expect(await provider.getCluster()).toBe('devnet')
 
-  await provider.setCluster('mainnet-beta')
-
-  expect(await provider.getCluster()).toBe('mainnet-beta')
+  await expect(provider.setCluster('mainnet-beta')).rejects.toThrow('Unsupported wallet cluster')
+  expect(await provider.getCluster()).toBe('devnet')
 })
 
 test('formats lamports as SOL without losing fractional lamports', () => {
@@ -233,12 +232,11 @@ test('builds a snapshot from the selected cluster RPC', async () => {
     },
   })
 
-  await provider.setCluster('mainnet-beta')
   const snapshot = await provider.getSnapshot(ADDRESS, 1)
 
-  expect(requestedCluster).toBe('mainnet-beta')
+  expect(requestedCluster).toBe('devnet')
   expect(snapshot).toMatchObject({
-    cluster: 'mainnet-beta',
+    cluster: 'devnet',
     address: ADDRESS,
     solBalance: '5',
     lamports: '5000000000',
@@ -248,7 +246,7 @@ test('builds a snapshot from the selected cluster RPC', async () => {
   expect(snapshot.tokenBalancesUnavailable).toBe(false)
   expect(snapshot.emberActivity).toEqual([])
   expect(snapshot.emberActivityUnavailable).toBe(false)
-  expect(snapshot.activity[0]?.explorerUrl).toBe(explorerTransactionUrl('sig1', 'mainnet-beta'))
+  expect(snapshot.activity[0]?.explorerUrl).toBe(explorerTransactionUrl('sig1', 'devnet'))
   expect(snapshot.activityUnavailable).toBe(false)
 })
 

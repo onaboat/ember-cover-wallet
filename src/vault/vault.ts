@@ -1,6 +1,6 @@
 import { getAddressFromPublicKey } from '@solana/kit'
 
-import { base58Decode } from '../cover/ember-auth.ts'
+import { base58Decode } from '../crypto/base58.ts'
 import { decryptKey, encryptKey } from './crypto.ts'
 import { assessPassword } from './password-policy.ts'
 import type { VaultRecord, VaultStore } from './vault-store.ts'

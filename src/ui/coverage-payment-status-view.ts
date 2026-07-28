@@ -1,4 +1,4 @@
-import type { LocalPrepaidPaymentState } from '../background/prepaid-payment-service.ts'
+import type { LocalCoveragePaymentState } from '../background/coverage-payment-service.ts'
 import type { WalletCluster } from '../background/wallet-data-config.ts'
 import type { CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { coverPeriodExpired, coverStatusActive } from '../cover/ember-types.ts'
@@ -21,7 +21,7 @@ export interface PaymentStatusView {
   badgeTone: PaymentBadgeTone
   detail: string
   metrics: PaymentStatusMetric[]
-  primaryAction: 'activate' | 'manage' | 'refresh' | 'sync'
+  primaryAction: 'activate' | 'connect' | 'manage' | 'refresh' | 'sync'
   title: string
 }
 
@@ -31,7 +31,7 @@ export interface PaymentStatusInput {
   coverStatusLoading: boolean
   coverStatusSnapshot: CoverStatusSnapshot | null
   nowMs?: number
-  paymentState: LocalPrepaidPaymentState | null
+  paymentState: LocalCoveragePaymentState | null
 }
 
 function clusterLabel(cluster: WalletCluster): string {
@@ -42,15 +42,15 @@ function money(value: number): string {
   return `$${value.toLocaleString()}`
 }
 
-function stateMetrics(state: LocalPrepaidPaymentState): PaymentStatusMetric[] {
+function stateMetrics(state: LocalCoveragePaymentState): PaymentStatusMetric[] {
   return [
-    { label: 'Plan', value: state.tier },
+    { label: 'Plan', value: state.offer.displayName },
     { label: 'Network', value: clusterLabel(state.cluster) },
     { label: 'Payment', value: state.status === 'active' ? 'Confirmed' : 'Pending' },
   ]
 }
 
-export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStatusView {
+export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentStatusView {
   const {
     cluster,
     coverEnrolled,
@@ -65,7 +65,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
       badgeTone: 'checking',
       detail: 'Checking Ember Cover status.',
       metrics: paymentState ? stateMetrics(paymentState) : [],
-      primaryAction: paymentState?.paymentSignature ? 'sync' : 'activate',
+      primaryAction: paymentState?.paymentSignature ? 'sync' : coverEnrolled ? 'activate' : 'connect',
       title: 'Coverage',
     }
   }
@@ -105,13 +105,12 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
   if (paymentState) {
     if (
       paymentState.status === 'broadcast_pending' ||
-      paymentState.status === 'confirmation_pending' ||
       paymentState.status === 'activation_pending'
     ) {
       return {
         badgeLabel: 'PENDING',
         badgeTone: 'pending',
-        detail: 'Your one-off payment is recorded. Retry activation without paying again.',
+        detail: 'Your quote-bound payment is recorded. Retry without signing another payment.',
         metrics: stateMetrics(paymentState),
         primaryAction: 'sync',
         title: 'Coverage',
@@ -121,7 +120,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
       return {
         badgeLabel: 'RETRY',
         badgeTone: 'failed',
-        detail: 'The saved payment needs attention. Retry it without approving another payment.',
+        detail: 'The signed payment needs attention. Recover it without approving another payment.',
         metrics: stateMetrics(paymentState),
         primaryAction: 'sync',
         title: 'Coverage',
@@ -131,7 +130,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
       return {
         badgeLabel: 'NOT SENT',
         badgeTone: 'none',
-        detail: 'The previous payment never confirmed and can no longer land. You can review a new payment.',
+        detail: 'The prior transaction can no longer land. Review a new server-signed quote.',
         metrics: stateMetrics(paymentState),
         primaryAction: 'activate',
         title: 'Coverage',
@@ -143,7 +142,7 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
     return {
       badgeLabel: 'EXPIRED',
       badgeTone: 'none',
-      detail: 'Your 30-day Ember Cover period has ended. Make a new one-off payment to renew.',
+      detail: 'This coverage period has ended. Review a current offer and signed quote to renew.',
       metrics: paymentState ? stateMetrics(paymentState) : [],
       primaryAction: 'activate',
       title: 'Coverage',
@@ -174,21 +173,21 @@ export function prepaidPaymentStatusView(input: PaymentStatusInput): PaymentStat
 
   if (coverEnrolled) {
     return {
-      badgeLabel: 'UNAVAILABLE',
-      badgeTone: 'unavailable',
-      detail: 'Cover authorization exists, but no active payment could be verified.',
+      badgeLabel: 'NO COVER',
+      badgeTone: 'none',
+      detail: 'The Ember session is connected. Review a current server offer to activate coverage.',
       metrics: [],
-      primaryAction: 'refresh',
+      primaryAction: 'activate',
       title: 'Coverage',
     }
   }
 
   return {
-    badgeLabel: 'NO COVER',
+    badgeLabel: 'CONNECT',
     badgeTone: 'none',
-    detail: 'Make a one-off USDC payment to activate 30 days of Ember Cover.',
+    detail: 'Connect a short-lived Ember session to view authoritative offers and coverage.',
     metrics: [],
-    primaryAction: 'activate',
+    primaryAction: 'connect',
     title: 'Coverage',
   }
 }

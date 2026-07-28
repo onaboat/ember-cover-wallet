@@ -3,7 +3,7 @@ import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { getSignatureFromTransaction, getTransactionDecoder } from '@solana/kit'
 
-import { base58Encode } from '../cover/ember-auth.ts'
+import { base58Encode } from '../crypto/base58.ts'
 import {
   maxSolSendLamports,
   parseSolAmountToLamports,
@@ -138,8 +138,6 @@ function coverStub(
     })),
     postSignMessage: vi.fn(async () => {}),
     enroll: async () => true,
-    authorizeSession: async () => true,
-    registerWithApi: async () => true,
     isEnrolled: async () => true,
   }
 }
@@ -619,7 +617,7 @@ test('exhausted cap makes a send not covered and skips post sign evidence', asyn
 
   const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
   expect(preview.cover.coverStatus).toBe('not_covered')
-  expect(preview.cover.body).toBe('No Ember Cover checks left this month.')
+  expect(preview.cover.body).toBe('No Ember Cover checks left in this coverage period.')
 
   await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION, acknowledgeUncovered: true })
 

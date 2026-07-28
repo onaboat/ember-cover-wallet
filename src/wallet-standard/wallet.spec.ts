@@ -26,8 +26,8 @@ test('advertises exactly the five implemented features', () => {
   )
 })
 
-test('advertises Devnet and Mainnet but not unsupported local/test clusters', () => {
-  expect(new EmberWallet().chains).toEqual(['solana:devnet', 'solana:mainnet'])
+test('advertises only the chain bound to this build', () => {
+  expect(new EmberWallet().chains).toEqual(['solana:devnet'])
 })
 
 test('silently restores an approved account after provider injection', async () => {

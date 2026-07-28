@@ -7,13 +7,13 @@ import { expect, test } from 'vitest'
 
 import { EMBER_SOLANA_CHAINS, walletClusterForChain } from './chains.ts'
 
-test('advertises only the configured Devnet and Mainnet clusters', () => {
-  expect(EMBER_SOLANA_CHAINS).toEqual([SOLANA_DEVNET_CHAIN, SOLANA_MAINNET_CHAIN])
+test('advertises only the cluster bound to this build', () => {
+  expect(EMBER_SOLANA_CHAINS).toEqual([SOLANA_DEVNET_CHAIN])
 })
 
-test('defaults chainless requests to Devnet and rejects unsupported clusters', () => {
-  expect(walletClusterForChain(undefined)).toBe('devnet')
+test('rejects chainless, unsupported, and non-bound cluster requests', () => {
+  expect(() => walletClusterForChain(undefined)).toThrow('required')
   expect(walletClusterForChain(SOLANA_DEVNET_CHAIN)).toBe('devnet')
-  expect(walletClusterForChain(SOLANA_MAINNET_CHAIN)).toBe('mainnet-beta')
+  expect(() => walletClusterForChain(SOLANA_MAINNET_CHAIN)).toThrow('bound to')
   expect(() => walletClusterForChain(SOLANA_LOCALNET_CHAIN)).toThrow('does not support')
 })

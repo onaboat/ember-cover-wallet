@@ -1,8 +1,8 @@
 import { expect, test } from 'vitest'
 
-import type { LocalPrepaidPaymentState } from '../background/prepaid-payment-service.ts'
+import type { LocalCoveragePaymentState } from '../background/coverage-payment-service.ts'
 import type { CoverStatusSnapshot } from '../cover/ember-types.ts'
-import { prepaidPaymentStatusView } from './prepaid-payment-status-view.ts'
+import { coveragePaymentStatusView } from './coverage-payment-status-view.ts'
 
 const snapshot: CoverStatusSnapshot = {
   subscriptionActive: true,
@@ -19,18 +19,25 @@ const snapshot: CoverStatusSnapshot = {
   remainingLossCapUsd: 10000,
 }
 
-function state(overrides: Partial<LocalPrepaidPaymentState> = {}): LocalPrepaidPaymentState {
+function state(overrides: Partial<LocalCoveragePaymentState> = {}): LocalCoveragePaymentState {
   return {
-    version: 1,
-    amountBaseUnits: '1000000',
-    cluster: 'devnet',
+    version: 3,
+    blockhash: 'blockhash',
+    cluster: 'mainnet-beta',
+    coverageEndsAt: null,
+    lastError: null,
     lastUpdatedAt: '2026-07-25T00:00:00.000Z',
+    lastValidBlockHeight: '1',
+    offer: { displayName: 'Core' } as LocalCoveragePaymentState['offer'],
+    payment: null,
     paymentSignature: 'signature',
+    quote: {
+      payload: {
+        quoteId: 'quote_test',
+      },
+    } as LocalCoveragePaymentState['quote'],
     signedTransactionBase64: 'transaction',
     status: 'activation_pending',
-    tier: 'Core',
-    tokenMint: 'mint',
-    treasuryTokenAccount: 'treasury',
     walletAddress: 'wallet',
     ...overrides,
   }
@@ -38,8 +45,8 @@ function state(overrides: Partial<LocalPrepaidPaymentState> = {}): LocalPrepaidP
 
 test('uses protected only when the live API status is active and registered', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: snapshot,
@@ -54,8 +61,8 @@ test('uses protected only when the live API status is active and registered', ()
 
 test('offers a retry for a payment awaiting API activation', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: null,
@@ -70,8 +77,8 @@ test('offers a retry for a payment awaiting API activation', () => {
 
 test('warns when the saved payment belongs to another network', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'mainnet-beta',
+    coveragePaymentStatusView({
+      cluster: 'devnet',
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: null,
@@ -83,26 +90,26 @@ test('warns when the saved payment belongs to another network', () => {
   })
 })
 
-test('offers one-off activation when there is no cover or saved payment', () => {
+test('requires an Ember session before offers can be loaded', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: false,
       coverStatusLoading: false,
       coverStatusSnapshot: null,
       paymentState: null,
     }),
   ).toMatchObject({
-    badgeLabel: 'NO COVER',
+    badgeLabel: 'CONNECT',
     badgeTone: 'none',
-    primaryAction: 'activate',
+    primaryAction: 'connect',
   })
 })
 
 test('offers renewal when the live API reports an expired period', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: {
@@ -111,7 +118,7 @@ test('offers renewal when the live API reports an expired period', () => {
         subscriptionStatus: 'expired',
       },
       nowMs: Date.parse('2026-08-25T00:00:00Z'),
-      paymentState: state({ status: 'active', currentPeriodEnd: '2026-08-24T00:00:00Z' }),
+      paymentState: state({ status: 'active', coverageEndsAt: '2026-08-24T00:00:00Z' }),
     }),
   ).toMatchObject({
     badgeLabel: 'EXPIRED',
@@ -121,8 +128,8 @@ test('offers renewal when the live API reports an expired period', () => {
 
 test('allows a new review after an unconfirmed payment blockhash expires', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: false,
       coverStatusLoading: false,
       coverStatusSnapshot: null,
@@ -136,8 +143,8 @@ test('allows a new review after an unconfirmed payment blockhash expires', () =>
 
 test('requires a live status refresh instead of offering another payment when status is unavailable', () => {
   expect(
-    prepaidPaymentStatusView({
-      cluster: 'devnet',
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: null,

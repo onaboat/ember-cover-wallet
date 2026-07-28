@@ -6,7 +6,7 @@ import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { browser } from 'wxt/browser'
 
-import { base58Encode } from '../cover/ember-auth.ts'
+import { base58Encode } from '../crypto/base58.ts'
 import type { CoverCapContext, CoverDebugInfo, CoverDecision, CoverStatus, RiskBand } from '../cover/ember-types.ts'
 import { isCoverable } from '../cover/ember-types.ts'
 import { decodeTransportBytes } from '../messaging/transport-bytes.ts'
@@ -78,6 +78,7 @@ type PendingRequest =
       resolve: (data: TransportSignMessageOutput[]) => void
       reject: (reason: Error) => void
       coverDecision?: CoverDecision | null
+      reviewedBytesBase64?: string
     }
   | {
       type: 'signTransaction'
@@ -88,6 +89,7 @@ type PendingRequest =
       resolve: (data: TransportSignTransactionOutput[]) => void
       reject: (reason: Error) => void
       coverDecision?: CoverDecision | null
+      reviewedBytesBase64?: string
     }
 
 type RequestType = PendingRequest['type']
@@ -150,6 +152,11 @@ export class RequestService implements RequestApproval {
     if (this.#request) {
       throw new Error('Request already exists')
     }
+    if (type === 'signTransaction') {
+      for (const input of data as SolanaSignTransactionInput[]) {
+        walletClusterForChain(input.chain)
+      }
+    }
     const windowId = await this.#createPopupWindow(type)
     this.#seq += 1
     const id = String(this.#seq)
@@ -194,6 +201,7 @@ export class RequestService implements RequestApproval {
         })
         if (this.#request === request) {
           request.coverDecision = decision
+          request.reviewedBytesBase64 = transactionBytes
         }
       }
       if (request.type === 'signMessage') {
@@ -210,6 +218,7 @@ export class RequestService implements RequestApproval {
         })
         if (this.#request === request) {
           request.coverDecision = decision
+          request.reviewedBytesBase64 = messageBytes
         }
       }
     } catch {
@@ -296,15 +305,20 @@ export class RequestService implements RequestApproval {
     if (decision && isCoverable(decision) && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
       throw new Error('Cover decision expired')
     }
+    const currentMessageBytes = toBase64(decodeTransportBytes(request.data[0]!.message))
+    if (
+      decision?.requestId &&
+      request.reviewedBytesBase64 !== undefined &&
+      request.reviewedBytesBase64 !== currentMessageBytes
+    ) {
+      throw new Error('Signing bytes changed after Ember review')
+    }
     const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address)
     // The user may have closed the window mid-sign; if so onRemoved already rejected the dapp.
     // Bail before resolving or sending post-sign evidence so the cancelled request yields nothing.
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
-    request.resolve(outputs as unknown as TransportSignMessageOutput[])
-    this.#clear()
-    void this.#closeWindow(request.windowId)
     const first = outputs[0]
     const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
     if (
@@ -316,16 +330,17 @@ export class RequestService implements RequestApproval {
       first?.signedMessage &&
       first.signature
     ) {
-      const timestamp = new Date().toISOString()
-      void this.#cover.postSignMessage({
+      await this.#cover.postSignMessage({
         requestId: decision.requestId,
         signedMessage: toBase64(new Uint8Array(first.signedMessage)),
         signature: base58Encode(new Uint8Array(first.signature)),
         signingWalletPublicKey: address,
-        walletTimestamp: timestamp,
-        ...(decision.riskBand === 'high' || decision.riskBand === 'severe' ? { highRiskAckAt: timestamp } : {}),
+        walletTimestamp: new Date().toISOString(),
       })
     }
+    request.resolve(outputs as unknown as TransportSignMessageOutput[])
+    this.#clear()
+    void this.#closeWindow(request.windowId)
   }
 
   async approveSignTransaction(id?: string): Promise<void> {
@@ -347,15 +362,22 @@ export class RequestService implements RequestApproval {
     if (decision && isCoverable(decision) && Date.now() >= Date.parse(decision.decisionExpiresAt)) {
       throw new Error('Cover decision expired')
     }
+    const currentTransactionBytes = toBase64(
+      decodeTransportBytes(request.data[0]!.transaction),
+    )
+    if (
+      decision?.requestId &&
+      request.reviewedBytesBase64 !== undefined &&
+      request.reviewedBytesBase64 !== currentTransactionBytes
+    ) {
+      throw new Error('Signing bytes changed after Ember review')
+    }
     const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address)
     // The user may have closed the window mid-sign; if so onRemoved already rejected the dapp.
     // Bail before resolving, recording, or sending post-sign evidence for a cancelled request.
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
-    request.resolve(outputs as unknown as TransportSignTransactionOutput[])
-    this.#clear()
-    void this.#closeWindow(request.windowId)
     const signedTransaction = outputs[0]?.signedTransaction
     // The transaction's primary (fee-payer) signature is its on-chain id — the same
     // base58 value getSignaturesForAddress returns — so the Activity feed can match it.
@@ -368,9 +390,8 @@ export class RequestService implements RequestApproval {
       }
     }
     const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
-    // Record the cover verdict locally for the Activity feed — ALL verdicts. Freshness
-    // is irrelevant to the label: not_enrolled/unavailable/exhausted use an epoch expiry,
-    // and the user still wants to see "not covered" on those sends. Best-effort.
+    // Record the cover verdict locally for the Activity feed. This is a display
+    // cache only; Ember's lifecycle endpoints remain authoritative.
     if (decision && signature) {
       try {
         const unsignedTransaction = request.data[0]?.transaction
@@ -396,21 +417,29 @@ export class RequestService implements RequestApproval {
           broadcastOwner: 'dapp',
         })
       } catch {
-        // a storage failure must not block closing the approval window
+        // Activity cache failure does not change the Ember evidence invariant.
       }
     }
-    // Best-effort post-sign evidence to the engine — covered txs only.
-    if (this.#cover && decision && isCoverable(decision) && decisionIsFresh && decision.requestId && signedTransaction) {
-      const timestamp = new Date().toISOString()
-      void this.#cover.postSign({
+    // The exact signed bytes must be durable before the dapp receives them.
+    if (
+      this.#cover &&
+      decision &&
+      decision.coverStatus !== 'unavailable' &&
+      decisionIsFresh &&
+      decision.requestId &&
+      signedTransaction
+    ) {
+      await this.#cover.postSign({
         requestId: decision.requestId,
         signedBytes: toBase64(new Uint8Array(signedTransaction)),
         ...(signature ? { signature } : {}),
         signingWalletPublicKey: address,
-        walletTimestamp: timestamp,
-        ...(decision.riskBand === 'high' || decision.riskBand === 'severe' ? { highRiskAckAt: timestamp } : {}),
+        walletTimestamp: new Date().toISOString(),
       })
     }
+    request.resolve(outputs as unknown as TransportSignTransactionOutput[])
+    this.#clear()
+    void this.#closeWindow(request.windowId)
   }
 
   reject(id?: string): void {

@@ -10,9 +10,11 @@ beforeEach(() => {
 
 test('clears identity-bound state and restores the default cluster', async () => {
   await Promise.all([
-    storage.setItem('local:ember-cover-enrollment', { walletAddress: 'old' }),
     storage.setItem('local:ember-session-key', { publicKey: 'old' }),
-    storage.setItem('local:ember-cover-prepaid-payment:v1', { walletAddress: 'old' }),
+    storage.setItem('local:ember-wallet-session:v1', { walletAddress: 'old' }),
+    storage.setItem('local:ember-coverage-payment:v3', { walletAddress: 'old' }),
+    storage.setItem('local:ember-authoritative-lifecycle-cache:v1', { walletAddress: 'old' }),
+    storage.setItem('local:ember-evidence-outbox:v1', [{ decisionId: 'old' }]),
     storage.setItem('local:ember-cover-records', [{ walletAddress: 'old' }]),
     storage.setItem('local:ember-dapp-connections', [{ address: 'old' }]),
     storage.setItem('local:ember-wallet-data-cluster', 'mainnet-beta'),
@@ -20,8 +22,10 @@ test('clears identity-bound state and restores the default cluster', async () =>
 
   await clearWalletScopedState()
 
-  expect(await storage.getItem('local:ember-cover-enrollment')).toBeNull()
-  expect(await storage.getItem('local:ember-cover-prepaid-payment:v1')).toBeNull()
+  expect(await storage.getItem('local:ember-wallet-session:v1')).toBeNull()
+  expect(await storage.getItem('local:ember-coverage-payment:v3')).toBeNull()
+  expect(await storage.getItem('local:ember-authoritative-lifecycle-cache:v1')).toBeNull()
+  expect(await storage.getItem('local:ember-evidence-outbox:v1')).toBeNull()
   expect(await storage.getItem('local:ember-cover-records')).toBeNull()
   expect(await storage.getItem('local:ember-dapp-connections')).toBeNull()
   expect(await storage.getItem('local:ember-wallet-data-cluster')).toBeNull()

@@ -1,7 +1,7 @@
 import { SolanaSignMessage, SolanaSignTransaction } from '@solana/wallet-standard-features'
 import type { WalletAccount } from '@wallet-standard/core'
 
-import { base58Decode } from '../cover/ember-auth.ts'
+import { base58Decode } from '../crypto/base58.ts'
 import { EMBER_SOLANA_CHAINS } from '../wallet-standard/chains.ts'
 
 /**

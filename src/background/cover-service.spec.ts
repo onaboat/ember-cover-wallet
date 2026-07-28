@@ -1,228 +1,326 @@
+import type {
+  CoverageDecisionResponse,
+  CoverageInstanceResponse,
+  PaymentResponse,
+} from '@embercover/wallet-sdk'
 import { fakeBrowser } from 'wxt/testing'
-import { beforeEach, expect, test } from 'vitest'
+import { storage } from 'wxt/utils/storage'
+import { beforeEach, expect, test, vi } from 'vitest'
 
-import { base58Encode } from '../cover/ember-auth.ts'
+import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
+
+import type { EmberClientCoordinator } from './ember-client-coordinator.ts'
 import { EmberCoverProvider } from './cover-service.ts'
+import { emberLifecycleStore } from './ember-lifecycle-store.ts'
 
-const ADDR = 'So11111111111111111111111111111111111111112'
-const OTHER_ADDR = base58Encode(new Uint8Array(32).fill(2))
+const WALLET = 'So11111111111111111111111111111111111111112'
+const CONFIG: EmberRuntimeConfig = {
+  apiBaseUrl: 'http://127.0.0.1:18787',
+  environment: 'sandbox',
+  expectedCluster: 'devnet',
+  expectedGenesisHash: null,
+  extensionId: null,
+  integrationId: 'integration_reference-wallet',
+  problems: [],
+}
+const PAYMENT = {
+  paymentId: 'payment_test',
+  quoteId: 'quote_test',
+  paymentSignature: 'signature_test',
+  status: 'activated',
+  outcomeCode: 'activated',
+  providerAgreement: 'agreed',
+  coverageInstanceId: 'coverage_test',
+  submittedAt: '2026-07-28T00:00:00.000Z',
+  updatedAt: '2026-07-28T00:00:00.000Z',
+} satisfies PaymentResponse
+const COVERAGE = {
+  activatedAt: '2026-07-28T00:00:00.000Z',
+  aggregateLimitMicros: '10000000000',
+  appealWindowDays: 30,
+  coverageEndsAt: '2027-07-28T00:00:00.000Z',
+  coverageInstanceId: 'coverage_test',
+  coverageStartsAt: '2026-07-28T00:00:00.000Z',
+  coveredTransactionLimit: 100,
+  deductibleMicros: '0',
+  delegateLossTailDays: 7,
+  immediateLossClaimWindowDays: 7,
+  offerId: 'offer_core',
+  offerVersion: 1,
+  paymentId: 'payment_test',
+  paymentSignature: 'signature_test',
+  perLossLimitMicros: '1000000000',
+  policyVersion: 'policy-v1',
+  protectedWallet: WALLET,
+  quoteId: 'quote_test',
+  status: 'active',
+  termsVersion: 'terms-v1',
+  waitingPeriodDays: 0,
+  walletSubjectId: 'wallet_subject_test',
+} satisfies CoverageInstanceResponse
+const DECISION = {
+  confidence: 'high',
+  coverStatus: 'covered',
+  coverageInstanceId: COVERAGE.coverageInstanceId,
+  decisionExpiresAt: '2027-07-28T00:01:00.000Z',
+  decisionId: 'decision_test',
+  evaluationCountImpact: 1,
+  evidenceState: 'pre_sign',
+  exposureReservationMicros: '1000',
+  exposureSnapshot: { scopes: [] },
+  kind: 'transaction',
+  maximumPayoutMicros: '1000',
+  offerId: COVERAGE.offerId,
+  offerVersion: 1,
+  policyVersion: COVERAGE.policyVersion,
+  protectedWallet: WALLET,
+  quoteId: COVERAGE.quoteId,
+  reasonCodes: ['simple_system_transfer'],
+  remainingAggregateLimitMicros: '9999000000',
+  remainingUnderwritingEvaluations: 99,
+  riskBand: 'low',
+  termsVersion: COVERAGE.termsVersion,
+} satisfies CoverageDecisionResponse
+
 const signer = {
-  getAddress: async () => ADDR,
-  sign: async (_m: Uint8Array) => new Uint8Array(64).fill(1),
+  getAddress: async () => WALLET,
+  sign: async () => new Uint8Array(64).fill(1),
+}
+
+function fakeClient(overrides: Record<string, unknown> = {}) {
+  return {
+    getPayment: vi.fn(async () => PAYMENT),
+    getCoverageInstance: vi.fn(async () => COVERAGE),
+    getDecision: vi.fn(async () => DECISION),
+    getDecisionLineage: vi.fn(async () => ({
+      artifacts: [],
+      coverageInstanceId: COVERAGE.coverageInstanceId,
+      decisionId: DECISION.decisionId,
+      events: [],
+      evidenceState: 'pre_sign',
+      paymentId: PAYMENT.paymentId,
+      quoteId: PAYMENT.quoteId,
+    })),
+    listClaims: vi.fn(async () => ({ claims: [] })),
+    reviewForSigning: vi.fn(async () => ({ status: 'reviewed', decision: DECISION })),
+    submitDecisionEvidence: vi.fn(async () => ({
+      accepted: true,
+      decisionId: DECISION.decisionId,
+      evidenceState: 'post_sign',
+    })),
+    ...overrides,
+  }
+}
+
+function fakeCoordinator(
+  client: ReturnType<typeof fakeClient> | null,
+  overrides: Record<string, unknown> = {},
+): EmberClientCoordinator {
+  return {
+    activeClient: vi.fn(async () => client),
+    enroll: vi.fn(async () => ({ sessionId: 'session_test' })),
+    revoke: vi.fn(async () => {}),
+    status: vi.fn(async () => ({
+      environment: 'sandbox',
+      expiresAt: '2027-07-28T00:00:00.000Z',
+      phase: client ? 'active' : 'disconnected',
+      refreshExpiresAt: '2027-07-29T00:00:00.000Z',
+      walletAddress: WALLET,
+      walletSubjectId: client ? 'wallet_subject_test' : null,
+      problems: [],
+    })),
+    ...overrides,
+  } as unknown as EmberClientCoordinator
+}
+
+async function providerWithCoverage(client = fakeClient()) {
+  await emberLifecycleStore.recordPayment(WALLET, PAYMENT, COVERAGE)
+  return {
+    client,
+    provider: new EmberCoverProvider(signer, {
+      config: CONFIG,
+      coordinator: fakeCoordinator(client),
+    }),
+  }
 }
 
 beforeEach(() => {
   fakeBrowser.reset()
+  vi.restoreAllMocks()
 })
 
-test('enroll then preSign sends the vault address with a session-authorization header', async () => {
-  let presignHeaders: Headers | undefined
-  const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"registered":true}', { status: 200 })
-    }
-    if (u.endsWith('/cover/pre-sign')) {
-      presignHeaders = new Headers(init?.headers)
-      return new Response(
-        JSON.stringify({
-          requestId: 'r',
-          coverStatus: 'covered',
-          riskBand: 'low',
-          reasonCodes: [],
-          decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
-        }),
-        { status: 200 },
-      )
-    }
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(true)
-  const decision = await provider.preSign({ transactionBytes: 'AA==', dappUrl: 'https://x' })
-  expect(decision.coverStatus).toBe('covered')
-  expect(presignHeaders?.get('x-ember-session')).toBeTruthy()
+test('reviews the exact transaction through the packaged SDK and maps its decision for the UI', async () => {
+  const { client, provider } = await providerWithCoverage()
+  const decision = await provider.preSign({
+    cluster: 'devnet',
+    dappUrl: 'https://dapp.example',
+    transactionBytes: 'AQID',
+  })
+  expect(client.reviewForSigning).toHaveBeenCalledWith({
+    coverageInstanceId: COVERAGE.coverageInstanceId,
+    dappUrl: 'https://dapp.example',
+    kind: 'transaction',
+    transactionBytes: 'AQID',
+  })
+  expect(decision).toMatchObject({
+    coverStatus: 'covered',
+    requestId: DECISION.decisionId,
+    coveredTxCountImpact: 1,
+  })
 })
 
-test('status uses the enrolled wallet session and returns the cap snapshot', async () => {
-  let statusHeaders: Headers | undefined
-  const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"registered":true}', { status: 200 })
-    }
-    if (u.endsWith('/cover/status')) {
-      statusHeaders = new Headers(init?.headers)
-      return new Response(
-        JSON.stringify({
-          subscriptionActive: true,
-          subscriptionStatus: 'active',
-          walletRegistered: true,
-          tier: 'demo',
-          month: '2026-06',
-          currentPeriodEnd: '2026-07-01T00:00:00Z',
-          coveredTxPerMonth: 100,
-          usedCoveredTxThisMonth: 1,
-          remainingCoveredTxThisMonth: 99,
-          monthlyLossCapUsd: 10000,
-          usedLossCapUsd: 0,
-          remainingLossCapUsd: 10000,
-        }),
-        { status: 200 },
-      )
-    }
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(true)
-  const snapshot = await provider.status()
-  expect(snapshot?.remainingCoveredTxThisMonth).toBe(99)
-  expect(statusHeaders?.get('x-ember-session')).toBeTruthy()
-})
-
-test('message pre-sign uses the message cover route', async () => {
-  let messageHeaders: Headers | undefined
-  const fetchStub = (async (url: string | URL | Request, init?: RequestInit) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"registered":true}', { status: 200 })
-    }
-    if (u.endsWith('/cover/message/pre-sign')) {
-      messageHeaders = new Headers(init?.headers)
-      return new Response(
-        JSON.stringify({
-          requestId: 'msg-r',
-          coverStatus: 'unsupported',
-          riskBand: 'high',
-          reasonCodes: ['unknown_message_schema'],
-          decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
-        }),
-        { status: 200 },
-      )
-    }
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(true)
-  const decision = await provider.preSignMessage({
+test('reviews messages with the SDK message contract', async () => {
+  const client = fakeClient({
+    reviewForSigning: vi.fn(async () => ({
+      status: 'reviewed',
+      decision: { ...DECISION, kind: 'message' },
+    })),
+  })
+  const { provider } = await providerWithCoverage(client)
+  await provider.preSignMessage({
+    dappUrl: 'https://dapp.example',
+    messageBytes: 'AQID',
+    messageKind: 'wallet_standard_sign_message',
+    walletMethod: 'signMessage',
+  })
+  expect(client.reviewForSigning).toHaveBeenCalledWith({
+    coverageInstanceId: COVERAGE.coverageInstanceId,
+    dappUrl: 'https://dapp.example',
+    kind: 'message',
     messageBytes: 'AQID',
     walletMethod: 'signMessage',
-    messageKind: 'wallet_standard_sign_message',
-    dappUrl: 'https://x',
   })
-  expect(decision.coverStatus).toBe('unsupported')
-  expect(messageHeaders?.get('x-ember-session')).toBeTruthy()
 })
 
-test('fails open to unavailable when the proxy errors', async () => {
-  const fetchStub = (async (url: string | URL | Request) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"registered":true}', { status: 200 })
-    }
-    throw new Error('network')
-  }) as unknown as typeof fetch
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(true)
-  expect((await provider.preSign({ transactionBytes: 'AA==', dappUrl: 'https://x' })).coverStatus).toBe('unavailable')
-})
-
-test('not enrolled preSign returns not_covered without calling the proxy', async () => {
-  let called = false
-  const fetchStub = (async () => {
-    called = true
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect((await provider.preSign({ transactionBytes: 'AA==', dappUrl: 'https://x' })).coverStatus).toBe('not_covered')
-  expect(called).toBe(false)
-})
-
-test('does not call a Devnet cover API for a Mainnet transaction', async () => {
-  let called = false
+test('does not call Ember when no live scoped session exists', async () => {
   const provider = new EmberCoverProvider(signer, {
-    fetch: (async () => {
-      called = true
-      return new Response('{}', { status: 200 })
-    }) as unknown as typeof fetch,
+    config: CONFIG,
+    coordinator: fakeCoordinator(null),
   })
+  expect((await provider.preSign({ transactionBytes: 'AQID' })).coverStatus).toBe('not_covered')
+})
 
+test('rejects a transaction from a cluster other than the build binding before API use', async () => {
+  const { client, provider } = await providerWithCoverage()
   const decision = await provider.preSign({
-    transactionBytes: 'AA==',
     cluster: 'mainnet-beta',
+    transactionBytes: 'AQID',
+  })
+  expect(decision.coverStatus).toBe('unavailable')
+  expect(decision.reasonCodes).toContain('cluster_mismatch')
+  expect(client.reviewForSigning).not.toHaveBeenCalled()
+})
+
+test('server lifecycle records, not local assumptions, produce the status snapshot', async () => {
+  const { provider } = await providerWithCoverage()
+  const status = await provider.status()
+  expect(status).toMatchObject({
+    subscriptionActive: true,
+    tier: COVERAGE.offerId,
+    coveredTxPerMonth: 100,
+    remainingCoveredTxThisMonth: 100,
+  })
+})
+
+test('enrollment and revocation delegate to the session coordinator', async () => {
+  const coordinator = fakeCoordinator(fakeClient())
+  const provider = new EmberCoverProvider(signer, { config: CONFIG, coordinator })
+  expect(await provider.enroll()).toBe(true)
+  await provider.revoke()
+  expect(coordinator.enroll).toHaveBeenCalledOnce()
+  expect(coordinator.revoke).toHaveBeenCalledOnce()
+})
+
+test('enrollment preserves the SDK failure so the wallet can explain it', async () => {
+  const coordinator = fakeCoordinator(null, {
+    enroll: vi.fn(async () => {
+      throw new Error('exact challenge failure')
+    }),
+  })
+  const provider = new EmberCoverProvider(signer, { config: CONFIG, coordinator })
+
+  await expect(provider.enroll()).rejects.toThrow('exact challenge failure')
+})
+
+test('post-sign stores exact evidence durably even when no live client can drain it', async () => {
+  const provider = new EmberCoverProvider(signer, {
+    config: CONFIG,
+    coordinator: fakeCoordinator(null),
+  })
+  await provider.postSign({
+    requestId: DECISION.decisionId,
+    signedBytes: 'signed-transaction',
+    signingWalletPublicKey: WALLET,
+    walletTimestamp: '2026-07-28T00:00:00.000Z',
+  })
+  expect(await storage.getItem('local:ember-evidence-outbox:v1')).toMatchObject([
+    {
+      decisionId: DECISION.decisionId,
+      request: {
+        kind: 'transaction',
+        signedBytes: 'signed-transaction',
+      },
+    },
+  ])
+})
+
+test('SDK unavailable reviews remain explicitly unavailable', async () => {
+  const client = fakeClient({
+    reviewForSigning: vi.fn(async () => ({
+      status: 'unavailable',
+      coverStatus: 'unavailable',
+      reason: 'network',
+    })),
+  })
+  const { provider } = await providerWithCoverage(client)
+  expect((await provider.preSign({ transactionBytes: 'AQID' }))).toMatchObject({
+    coverStatus: 'unavailable',
+    reasonCodes: ['network'],
+  })
+})
+
+test('claim eligibility and intake use the SDK decision identifier without payout actions', async () => {
+  const claim = {
+    claimId: 'claim_test',
+    claimedAmountMicros: '1000000',
+    coverageInstanceId: COVERAGE.coverageInstanceId,
+    decisionId: DECISION.decisionId,
+    evidenceRequests: [],
+    lossEvent: 'direct_malicious_signing_loss',
+    protectedWallet: WALLET,
+    reviewDueAt: '2026-08-01T00:00:00.000Z',
+    reviewPhase: 'intake',
+    state: 'submitted',
+    submittedAt: '2026-07-28T00:00:00.000Z',
+    timeline: [],
+    verificationState: 'pending',
+    version: 1,
+  } as const
+  const createClaim = vi.fn(async () => claim)
+  const client = fakeClient({
+    claimEligibility: vi.fn(async () => ({
+      decisionId: DECISION.decisionId,
+      eligible: true,
+    })),
+    createClaim,
+  })
+  const provider = new EmberCoverProvider(signer, {
+    config: CONFIG,
+    coordinator: fakeCoordinator(client),
   })
 
-  expect(decision.coverStatus).toBe('unavailable')
-  expect(decision.debug?.stage).toBe('cluster_mismatch')
-  expect(called).toBe(false)
-})
-
-test('reports enrolled after enroll', async () => {
-  const fetchStub = (async (url: string | URL | Request) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    return new Response('{"registered":true}', { status: 200 })
-  }) as unknown as typeof fetch
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.isEnrolled()).toBe(false)
-  await provider.enroll()
-  expect(await provider.isEnrolled()).toBe(true)
-})
-
-test('rolls back enrollment when registration fails', async () => {
-  const fetchStub = (async (url: string | URL | Request) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"error":"nope"}', { status: 400 }) // registration fails
-    }
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(false)
-  expect(await provider.isEnrolled()).toBe(false) // rolled back — not stuck "enabled"
-})
-
-test('ignores stale enrollment for a different wallet address', async () => {
-  const fetchStub = (async (url: string | URL | Request) => {
-    const u = String(url)
-    if (u.endsWith('/wallets/register/nonce')) {
-      return new Response('{"nonce":"abc"}', { status: 200 })
-    }
-    if (u.endsWith('/wallets/register')) {
-      return new Response('{"registered":true}', { status: 200 })
-    }
-    return new Response('{}', { status: 200 })
-  }) as unknown as typeof fetch
-  const provider = new EmberCoverProvider(signer, { fetch: fetchStub })
-  expect(await provider.enroll()).toBe(true)
-
-  const otherProvider = new EmberCoverProvider(
-    {
-      getAddress: async () => OTHER_ADDR,
-      sign: async (_m: Uint8Array) => new Uint8Array(64).fill(2),
-    },
-    { fetch: fetchStub },
-  )
-  expect(await otherProvider.isEnrolled()).toBe(false)
-  expect((await otherProvider.preSign({ transactionBytes: 'AA==' })).coverStatus).toBe('not_covered')
+  expect(await provider.claimEligibility(DECISION.decisionId)).toEqual({
+    decisionId: DECISION.decisionId,
+    eligible: true,
+  })
+  expect(
+    await provider.createClaim({
+      claimedAmountMicros: '1000000',
+      decisionId: DECISION.decisionId,
+      lossEvent: 'direct_malicious_signing_loss',
+      statement: 'A malicious transaction caused a direct loss.',
+    }),
+  ).toEqual(claim)
+  expect(createClaim).toHaveBeenCalledOnce()
+  expect(Object.keys(client)).not.toContain('createPayout')
 })
