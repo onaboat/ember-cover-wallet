@@ -1189,8 +1189,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </p>
         {EMBER_CONFIG.environment === 'sandbox' ? (
           <p className="ec-warning" data-testid="devnet-qa-warning">
-            Devnet QA only. The 1 USDC test payment creates synthetic coverage records only—no
-            insurance, real claim, refund, or payout.
+            Devnet QA only. This exercises synthetic claims, refund accounting, and Devnet USDC
+            payouts—without creating insurance or real-world liability.
           </p>
         ) : null}
         <section className="ec-review-card" data-testid="ember-session-state">

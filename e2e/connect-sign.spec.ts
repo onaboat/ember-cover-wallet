@@ -142,7 +142,7 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
   await expect(popup.getByTestId('coverage-offer')).toContainText('$120,000.00')
   await expect(popup.getByTestId('coverage-offer')).toContainText('100')
   await expect(popup.getByTestId('devnet-qa-warning')).toContainText(
-    'no insurance, real claim, refund, or payout',
+    'without creating insurance or real-world liability',
   )
   await popup.getByTestId('accept-coverage-terms').check()
   await popup.getByTestId('review-cover-payment').click()
