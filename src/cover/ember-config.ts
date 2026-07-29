@@ -9,6 +9,8 @@ declare global {
 }
 
 export const MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
+export const DEVNET_GENESIS_HASH =
+  'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'
 
 export interface EmberRuntimeConfig {
   apiBaseUrl: string | null
@@ -90,7 +92,8 @@ export function emberRuntimeConfig(
     apiBaseUrl,
     environment,
     expectedCluster,
-    expectedGenesisHash: environment === 'production' ? MAINNET_GENESIS_HASH : null,
+    expectedGenesisHash:
+      environment === 'production' ? MAINNET_GENESIS_HASH : DEVNET_GENESIS_HASH,
     extensionId,
     integrationId,
     problems,

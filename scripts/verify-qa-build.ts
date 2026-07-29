@@ -11,10 +11,10 @@ const OUTPUT = path.join(ROOT, '.output', 'chrome-mv3')
 const SDK_TARBALL = path.join(
   ROOT,
   'vendor',
-  'embercover-wallet-sdk-1.1.1.tgz',
+  'embercover-wallet-sdk-1.3.1.tgz',
 )
 const EXPECTED_SDK_SHA256 =
-  '0348fe7456eca64c1c651b6be49b1fb8b59e21e7615430011a0adcf57e97f985'
+  'fc2f3dff25186a4306ee286ea3363715f68962429353a8c2d321ba47e38038e8'
 const RETIRED_BUNDLE_MARKERS = [
   'EMBER_PARTNER_API_KEY',
   'test-partner-key',
@@ -29,7 +29,7 @@ const RETIRED_BUNDLE_MARKERS = [
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim()
-  if (!value) throw new Error(`${name} is required for a production P14 build`)
+  if (!value) throw new Error(`${name} is required for a Devnet QA release build`)
   return value
 }
 
@@ -100,41 +100,42 @@ const manifest = JSON.parse(
   key?: string
   version?: string
 }
-if (manifest.version !== '0.14.0') {
-  throw new Error(`Expected manifest version 0.14.0, received ${manifest.version ?? 'missing'}`)
+if (manifest.version !== '0.16.0') {
+  throw new Error(`Expected manifest version 0.16.0, received ${manifest.version ?? 'missing'}`)
 }
 
-if (process.env.WXT_EMBER_ENVIRONMENT === 'production') {
-  const api = exactOrigin(
-    requiredEnvironment('WXT_EMBER_API_BASE_URL'),
-    'WXT_EMBER_API_BASE_URL',
+if (requiredEnvironment('WXT_EMBER_ENVIRONMENT') !== 'sandbox') {
+  throw new Error('A Devnet QA release build must use WXT_EMBER_ENVIRONMENT=sandbox')
+}
+const api = exactOrigin(
+  requiredEnvironment('WXT_EMBER_API_BASE_URL'),
+  'WXT_EMBER_API_BASE_URL',
+)
+const rpc = exactOrigin(
+  requiredEnvironment('WXT_SOLANA_RPC_URL'),
+  'WXT_SOLANA_RPC_URL',
+)
+const integrationId = requiredEnvironment('WXT_EMBER_INTEGRATION_ID')
+if (integrationId !== 'integration_reference-wallet') {
+  throw new Error('Devnet QA must use integration_reference-wallet')
+}
+const publicKey = requiredEnvironment('WXT_EXTENSION_PUBLIC_KEY')
+const configuredId = requiredEnvironment('WXT_EMBER_EXTENSION_ID')
+const derivedId = extensionIdFromPublicKey(publicKey)
+if (configuredId !== derivedId) {
+  throw new Error(
+    `WXT_EMBER_EXTENSION_ID ${configuredId} does not match public manifest key (${derivedId})`,
   )
-  const rpc = exactOrigin(
-    requiredEnvironment('WXT_SOLANA_RPC_URL'),
-    'WXT_SOLANA_RPC_URL',
+}
+if (manifest.key !== publicKey) {
+  throw new Error('Built manifest does not contain the approved public extension key')
+}
+const expectedHosts = [`${api.origin}/*`, `${rpc.origin}/*`].sort()
+const actualHosts = [...(manifest.host_permissions ?? [])].sort()
+if (JSON.stringify(actualHosts) !== JSON.stringify(expectedHosts)) {
+  throw new Error(
+    `Manifest host permissions are not exact: ${JSON.stringify(actualHosts)}`,
   )
-  const integrationId = requiredEnvironment('WXT_EMBER_INTEGRATION_ID')
-  if (!/^integration_[a-z0-9-]+$/.test(integrationId)) {
-    throw new Error('WXT_EMBER_INTEGRATION_ID is not canonical')
-  }
-  const publicKey = requiredEnvironment('WXT_EXTENSION_PUBLIC_KEY')
-  const configuredId = requiredEnvironment('WXT_EMBER_EXTENSION_ID')
-  const derivedId = extensionIdFromPublicKey(publicKey)
-  if (configuredId !== derivedId) {
-    throw new Error(
-      `WXT_EMBER_EXTENSION_ID ${configuredId} does not match public manifest key (${derivedId})`,
-    )
-  }
-  if (manifest.key !== publicKey) {
-    throw new Error('Built manifest does not contain the approved public extension key')
-  }
-  const expectedHosts = [`${api.origin}/*`, `${rpc.origin}/*`].sort()
-  const actualHosts = [...(manifest.host_permissions ?? [])].sort()
-  if (JSON.stringify(actualHosts) !== JSON.stringify(expectedHosts)) {
-    throw new Error(
-      `Manifest host permissions are not exact: ${JSON.stringify(actualHosts)}`,
-    )
-  }
 }
 
 await scanBundle()

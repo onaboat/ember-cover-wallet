@@ -4,7 +4,24 @@ import path from 'node:path'
 
 import { type BrowserContext, chromium, expect, test } from '@playwright/test'
 
+import {
+  startEmberApiFixture,
+  type EmberApiFixture,
+} from './fixtures/ember-api-server.ts'
+
 const EXT = path.resolve('.output/chrome-mv3')
+let emberApi: EmberApiFixture | undefined
+
+test.beforeAll(async () => {
+  emberApi = await startEmberApiFixture(18787)
+})
+
+test.afterAll(async () => {
+  if (emberApi) {
+    emberApi.server.closeAllConnections()
+    await new Promise<void>((resolve) => emberApi?.server.close(() => resolve()))
+  }
+})
 
 async function launch(): Promise<{ context: BrowserContext; extensionId: string }> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'ember-cover-wallet-'))

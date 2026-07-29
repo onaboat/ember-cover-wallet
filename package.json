@@ -1,23 +1,23 @@
 {
   "name": "ember-cover-wallet",
-  "version": "0.14.0",
+  "version": "0.16.0",
   "private": true,
   "packageManager": "bun@1.3.14",
   "type": "module",
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
-    "verify:p14": "bun scripts/verify-p14-build.ts",
-    "build:p14": "wxt build && bun scripts/verify-p14-build.ts",
+    "verify:qa": "bun scripts/verify-qa-build.ts",
+    "build:qa": "wxt build && bun scripts/verify-qa-build.ts",
     "postinstall": "wxt prepare",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=http://127.0.0.1:18787 WXT_EMBER_INTEGRATION_ID=integration_reference-wallet wxt build && playwright test",
+    "e2e": "WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=http://127.0.0.1:18787 WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_SOLANA_RPC_URL=http://127.0.0.1:18787 wxt build && playwright test",
     "dev:test": "bun scripts/dev-test.ts",
     "dev:api": "bun scripts/dev-api.ts"
   },
   "dependencies": {
-    "@embercover/wallet-sdk": "file:vendor/embercover-wallet-sdk-1.2.1.tgz",
+    "@embercover/wallet-sdk": "file:vendor/embercover-wallet-sdk-1.3.1.tgz",
     "@noble/hashes": "^1.5.0",
     "@solana-program/token": "^0.14.0",
     "@solana/kit": "^6.10.0",

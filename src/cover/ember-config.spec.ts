@@ -1,6 +1,10 @@
 import { expect, test } from 'vitest'
 
-import { MAINNET_GENESIS_HASH, emberRuntimeConfig } from './ember-config.ts'
+import {
+  DEVNET_GENESIS_HASH,
+  MAINNET_GENESIS_HASH,
+  emberRuntimeConfig,
+} from './ember-config.ts'
 
 test('production configuration binds HTTPS, mainnet, and the canonical genesis hash', () => {
   const config = emberRuntimeConfig({
@@ -34,8 +38,12 @@ test('production rejects insecure transport and sandbox accepts exact loopback H
       WXT_EMBER_API_BASE_URL: 'http://127.0.0.1:18787',
       WXT_EMBER_ENVIRONMENT: 'sandbox',
       WXT_EMBER_INTEGRATION_ID: 'integration_reference-wallet',
-    }).problems,
-  ).toEqual([])
+    }),
+  ).toMatchObject({
+    expectedCluster: 'devnet',
+    expectedGenesisHash: DEVNET_GENESIS_HASH,
+    problems: [],
+  })
 })
 
 test('missing public configuration is explicit instead of silently selecting a demo backend', () => {

@@ -16,6 +16,7 @@ import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 import {
+  DEVNET_GENESIS_HASH,
   MAINNET_GENESIS_HASH,
 } from '../cover/ember-config.ts'
 import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
@@ -29,6 +30,7 @@ import type { CoveragePaymentRpc } from './coverage-payment-service.ts'
 
 const WALLET = 'So11111111111111111111111111111111111111112'
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+const DEVNET_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
 const TREASURY = 'AmXrozEs535RMiwSxkjhcyuq5reC9ntvtBXCef8wCP6s'
 const TREASURY_OWNER = 'Vote111111111111111111111111111111111111111'
 const REFERENCE = '11111111111111111111111111111111'
@@ -61,7 +63,7 @@ const OFFER = {
   environment: 'production',
   immediateLossClaimWindowDays: 7,
   lifecycle: 'active',
-  offerId: 'offer_core',
+  offerId: 'offer_core-annual',
   offerVersion: 3,
   payerMustEqualProtectedWallet: true,
   paymentAsset: 'USDC',
@@ -153,6 +155,47 @@ const QUOTE = {
   signature: 'signature_test',
   signingPublicKey: REFERENCE,
 } satisfies SignedQuoteResponse
+const QA_CONFIG: EmberRuntimeConfig = {
+  ...CONFIG,
+  environment: 'sandbox',
+  expectedCluster: 'devnet',
+  expectedGenesisHash: DEVNET_GENESIS_HASH,
+  extensionId: null,
+}
+const QA_OFFER = {
+  ...OFFER,
+  availabilityMode: 'test',
+  cluster: 'devnet',
+  displayName: 'Core Annual — Devnet QA (No real cover)',
+  environment: 'sandbox',
+  lifecycle: 'testing',
+  offerId: 'offer_devnet-qa-core-annual',
+  paymentMint: DEVNET_MINT,
+  priceBaseUnits: '1000000',
+} satisfies AvailableOfferResponse
+const QA_QUOTE = {
+  ...QUOTE,
+  payload: {
+    ...QUOTE.payload,
+    integrationId: QA_CONFIG.integrationId!,
+    mode: 'test',
+    offer: {
+      ...QUOTE.payload.offer,
+      cluster: 'devnet',
+      commission: { kind: 'test_no_accrual' },
+      environment: 'sandbox',
+      offerId: QA_OFFER.offerId,
+      price: QA_OFFER.priceBaseUnits,
+    },
+    payment: {
+      ...QUOTE.payload.payment,
+      amount: QA_OFFER.priceBaseUnits,
+      genesisHash: DEVNET_GENESIS_HASH,
+      mint: DEVNET_MINT,
+    },
+    quoteId: 'quote_devnet_qa_test',
+  },
+} satisfies SignedQuoteResponse
 const PAYMENT = {
   coverageInstanceId: 'coverage_test',
   outcomeCode: 'activated',
@@ -195,26 +238,29 @@ const COVERAGE = {
   walletSubjectId: 'wallet_subject_test',
 } satisfies CoverageInstanceResponse
 
-function clientStub() {
+function clientStub(
+  offer: AvailableOfferResponse = OFFER,
+  quote: SignedQuoteResponse = QUOTE,
+) {
   return {
     acceptTerms: vi.fn(async () => ({
       acceptanceId: 'acceptance_test',
       acceptedAt: '2026-07-28T00:00:00.000Z',
-      documentSha256: OFFER.termsSha256,
-      offerId: OFFER.offerId,
-      offerVersion: OFFER.offerVersion,
-      termsVersion: OFFER.termsVersion,
+      documentSha256: offer.termsSha256,
+      offerId: offer.offerId,
+      offerVersion: offer.offerVersion,
+      termsVersion: offer.termsVersion,
       walletSubjectId: 'wallet_subject_test',
     })),
     createPayment: vi.fn(async (request: { paymentSignature: string }) => ({
       ...PAYMENT,
       paymentSignature: request.paymentSignature,
     })),
-    createQuote: vi.fn(async () => QUOTE),
+    createQuote: vi.fn(async () => quote),
     getCoverageInstance: vi.fn(async () => COVERAGE),
-    getOffer: vi.fn(async () => OFFER),
+    getOffer: vi.fn(async () => offer),
     getPayment: vi.fn(async () => PAYMENT),
-    listOffers: vi.fn(async () => ({ offers: [OFFER] })),
+    listOffers: vi.fn(async () => ({ offers: [offer] })),
     verifyQuote: vi.fn(async () => {}),
   }
 }
@@ -284,6 +330,7 @@ const signer = {
 
 beforeEach(() => {
   fakeBrowser.reset()
+  vi.clearAllMocks()
   vi.restoreAllMocks()
 })
 
@@ -330,6 +377,59 @@ test('accepts exact terms and creates a server-verified quote before preview', a
   })
 })
 
+test('prepares the exact 1 USDC sandbox quote against Devnet without signing', async () => {
+  const client = clientStub(QA_OFFER, QA_QUOTE)
+  const provider = new CoveragePaymentProvider(signer, coverStub(client), {
+    config: QA_CONFIG,
+    now: () => NOW,
+    rpcFactory: (cluster) => {
+      expect(cluster).toBe('devnet')
+      return rpcStub({ genesisHash: DEVNET_GENESIS_HASH })
+    },
+  })
+
+  const preview = await provider.previewPayment({
+    acceptedTerms: true,
+    cluster: 'devnet',
+    offerId: QA_OFFER.offerId,
+  })
+
+  expect(preview).toMatchObject({
+    amountBaseUnits: '1000000',
+    amountDisplay: '1',
+    asset: 'USDC',
+    cluster: 'devnet',
+    durationMonths: 12,
+    benefitPeriodCount: 12,
+    benefitPeriodLimitMicros: '10000000000',
+    quoteId: QA_QUOTE.payload.quoteId,
+    simulation: { status: 'success' },
+    tokenMint: DEVNET_MINT,
+  })
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('rejects a payable Devnet test quote when its price is not exactly 1 USDC', async () => {
+  const wrongPrice = structuredClone(QA_QUOTE)
+  wrongPrice.payload.offer.price = '2000000'
+  wrongPrice.payload.payment.amount = '2000000'
+  const client = clientStub(QA_OFFER, wrongPrice)
+  const provider = new CoveragePaymentProvider(signer, coverStub(client), {
+    config: QA_CONFIG,
+    now: () => NOW,
+    rpcFactory: () => rpcStub({ genesisHash: DEVNET_GENESIS_HASH }),
+  })
+
+  await expect(
+    provider.previewPayment({
+      acceptedTerms: true,
+      cluster: 'devnet',
+      offerId: QA_OFFER.offerId,
+    }),
+  ).rejects.toThrow('non-payable test data')
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
 test('rejects an RPC whose genesis hash is not the quote-bound Mainnet hash', async () => {
   const client = clientStub()
   const provider = new CoveragePaymentProvider(signer, coverStub(client), {
@@ -344,7 +444,7 @@ test('rejects an RPC whose genesis hash is not the quote-bound Mainnet hash', as
       cluster: 'mainnet-beta',
       offerId: OFFER.offerId,
     }),
-  ).rejects.toThrow('not Solana Mainnet')
+  ).rejects.toThrow('not Solana mainnet-beta')
   expect(signer.sign).not.toHaveBeenCalled()
 })
 

@@ -131,8 +131,32 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
   await popup.getByTestId('connect-ember-session').click()
 
   await expect(popup.getByTestId('coverage-offer-select')).toHaveValue(
-    'offer_sandbox_core',
+    'offer_devnet-qa-core-annual',
     { timeout: 15_000 },
+  )
+  await expect(popup.getByTestId('coverage-offer')).toContainText('1 USDC')
+  await expect(popup.getByTestId('coverage-offer')).toContainText(
+    '12 months / 12 activation-anchored periods',
+  )
+  await expect(popup.getByTestId('coverage-offer')).toContainText('$10,000.00')
+  await expect(popup.getByTestId('coverage-offer')).toContainText('$120,000.00')
+  await expect(popup.getByTestId('coverage-offer')).toContainText('100')
+  await expect(popup.getByTestId('devnet-qa-warning')).toContainText(
+    'no insurance, real claim, refund, or payout',
+  )
+  await popup.getByTestId('accept-coverage-terms').check()
+  await popup.getByTestId('review-cover-payment').click()
+  await expect(popup.getByTestId('payment-review')).toBeVisible({ timeout: 15_000 })
+  await expect(popup.getByTestId('payment-review')).toContainText('1 USDC')
+  await expect(popup.getByTestId('payment-review')).toContainText('Devnet')
+  await expect(popup.getByTestId('payment-review')).toContainText(
+    '12 months / 12 activation-anchored periods',
+  )
+  await expect(popup.getByTestId('payment-simulation-success')).toContainText(
+    'Nothing has been signed or sent yet',
+  )
+  await expect(popup.getByTestId('pay-and-activate-cover')).toHaveText(
+    'Pay 1 USDC and activate cover',
   )
   const expectedOrigin = `chrome-extension://${extensionId}`
   const businessRequests =
@@ -142,6 +166,10 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
       `POST /v1/wallet-sessions/challenges origin=${expectedOrigin}`,
       `POST /v1/wallet-sessions origin=${expectedOrigin}`,
       'GET /v1/wallet/offers origin=none',
+      'GET /v1/wallet/offers/offer_devnet-qa-core-annual origin=none',
+      `POST /v1/wallet/terms-acceptances origin=${expectedOrigin}`,
+      `POST /v1/quotes origin=${expectedOrigin}`,
+      'GET /v1/quote-signing-keys origin=none',
     ]),
   )
   expect(emberApi?.origins.has(expectedOrigin)).toBe(true)

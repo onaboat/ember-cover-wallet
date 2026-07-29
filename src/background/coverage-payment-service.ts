@@ -50,6 +50,11 @@ import type { WalletCluster } from './wallet-data-config.ts'
 
 const STORE_KEY = 'local:ember-coverage-payment:v3' as const
 const CLASSIC_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+const MAINNET_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
+const DEVNET_QA_OFFER_ID = 'offer_devnet-qa-core-annual'
+const DEVNET_QA_PRICE_BASE_UNITS = '1000000'
+const PRODUCTION_PRICE_BASE_UNITS = '249990000'
 const DEFAULT_FEE_LAMPORTS = 5_000n
 
 type RpcSend<T> = { send(): Promise<T> }
@@ -479,13 +484,29 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
   ): Promise<PreparedPayment> {
     const payload = quote.payload
     const payment = payload.payment
-    if (
-      payload.mode !== 'live' ||
-      payload.schemaVersion !== 3 ||
-      !payload.paymentAllowed ||
-      !payload.createsCoverage ||
-      payload.offer.environment !== 'production'
-    ) {
+    const productionContract =
+      payload.mode === 'live' &&
+      payload.schemaVersion === 3 &&
+      payload.paymentAllowed &&
+      payload.createsCoverage &&
+      payload.offer.environment === 'production' &&
+      payload.offer.cluster === 'mainnet-beta' &&
+      payload.offer.offerId === 'offer_core-annual' &&
+      payload.offer.price === PRODUCTION_PRICE_BASE_UNITS &&
+      payment.amount === PRODUCTION_PRICE_BASE_UNITS &&
+      payment.mint === MAINNET_USDC_MINT
+    const devnetQaContract =
+      payload.mode === 'test' &&
+      payload.schemaVersion === 3 &&
+      payload.paymentAllowed &&
+      payload.createsCoverage &&
+      payload.offer.environment === 'sandbox' &&
+      payload.offer.cluster === 'devnet' &&
+      payload.offer.offerId === DEVNET_QA_OFFER_ID &&
+      payload.offer.price === DEVNET_QA_PRICE_BASE_UNITS &&
+      payment.amount === DEVNET_QA_PRICE_BASE_UNITS &&
+      payment.mint === DEVNET_USDC_MINT
+    if (!productionContract && !devnetQaContract) {
       throw new Error('This verified quote is non-payable test data')
     }
     const schedule = payload.benefitSchedule
@@ -507,15 +528,15 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
     }
     if (
       payload.offer.cluster !== this.config.expectedCluster ||
-      this.config.expectedCluster !== 'mainnet-beta'
+      payload.offer.environment !== this.config.environment
     ) {
-      throw new Error('Live Ember payments require the Mainnet-bound wallet build')
+      throw new Error('The payable quote does not match this wallet build environment')
     }
     if (
       !this.config.expectedGenesisHash ||
       payment.genesisHash !== this.config.expectedGenesisHash
     ) {
-      throw new Error('The quote is not bound to the expected Mainnet genesis hash')
+      throw new Error('The quote is not bound to the expected Solana genesis hash')
     }
     if (payment.tokenProgram !== CLASSIC_TOKEN_PROGRAM) {
       throw new Error('The quote does not use the supported classic SPL Token program')
@@ -527,14 +548,14 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
       throw new Error('The server-signed quote expired; request a fresh quote')
     }
 
-    const cluster: WalletCluster = 'mainnet-beta'
+    const cluster = this.config.expectedCluster
     const rpc = this.rpcFactory(cluster)
     const genesisHash = await rpc.getGenesisHash().send()
     if (
       genesisHash !== payment.genesisHash ||
       genesisHash !== this.config.expectedGenesisHash
     ) {
-      throw new Error('Connected RPC is not Solana Mainnet')
+      throw new Error(`Connected RPC is not Solana ${cluster}`)
     }
     const wallet = toAddress(walletAddress)
     const tokenProgram = toAddress(payment.tokenProgram)

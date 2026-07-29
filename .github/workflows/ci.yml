@@ -16,6 +16,13 @@ jobs:
   wallet:
     name: Typecheck, unit tests, and build
     runs-on: ubuntu-latest
+    env:
+      WXT_EMBER_ENVIRONMENT: sandbox
+      WXT_EMBER_API_BASE_URL: https://qa-api.ember.invalid
+      WXT_EMBER_INTEGRATION_ID: integration_reference-wallet
+      WXT_EMBER_EXTENSION_ID: ilieemdlgchchbipbgobihkkfobaklee
+      WXT_EXTENSION_PUBLIC_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKscLyjJiSlTNFv41WiifkaHzFbUgBpanhrd1FkUeQ9jeHUZWFpYJvEtp8BIRZ480LRJ4XoidK1uQKsAzfotJ8ufgP1TsvX67axUZekg8xrGqOy2BSMMuQeM6xYzXj5kWPHxFTHhSHMGcgeH4VkR2Yo6D9MgKnO7X+VWHIgWRduCN/b76W9yR4/y1P1sOKIZXMEX3A+ltVg/wOiAQLfftmqWHs347wAdApJPjr5Z0+x7ZtQoRotmXDCsAiefL+yABjGWW32tcH8GSjl597iq5qgl53EZkQ4Tr41NUUCOeMUrEmSoZHejggD2r/TFiEdLK4g46gb9r4frVsgUpynE+wIDAQAB
+      WXT_SOLANA_RPC_URL: https://api.devnet.solana.com
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -24,7 +31,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check-types
       - run: bun run test
-      - run: bun run build
+      - run: bun run build:qa
 
   browser-e2e:
     name: Browser extension E2E
@@ -43,6 +50,13 @@ jobs:
   artifacts:
     name: Reproducible extension artifact
     runs-on: ubuntu-latest
+    env:
+      WXT_EMBER_ENVIRONMENT: sandbox
+      WXT_EMBER_API_BASE_URL: https://qa-api.ember.invalid
+      WXT_EMBER_INTEGRATION_ID: integration_reference-wallet
+      WXT_EMBER_EXTENSION_ID: ilieemdlgchchbipbgobihkkfobaklee
+      WXT_EXTENSION_PUBLIC_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKscLyjJiSlTNFv41WiifkaHzFbUgBpanhrd1FkUeQ9jeHUZWFpYJvEtp8BIRZ480LRJ4XoidK1uQKsAzfotJ8ufgP1TsvX67axUZekg8xrGqOy2BSMMuQeM6xYzXj5kWPHxFTHhSHMGcgeH4VkR2Yo6D9MgKnO7X+VWHIgWRduCN/b76W9yR4/y1P1sOKIZXMEX3A+ltVg/wOiAQLfftmqWHs347wAdApJPjr5Z0+x7ZtQoRotmXDCsAiefL+yABjGWW32tcH8GSjl597iq5qgl53EZkQ4Tr41NUUCOeMUrEmSoZHejggD2r/TFiEdLK4g46gb9r4frVsgUpynE+wIDAQAB
+      WXT_SOLANA_RPC_URL: https://api.devnet.solana.com
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -57,11 +71,11 @@ jobs:
           fi
       - name: Build the extension twice
         run: |
-          bun run build
+          bun run build:qa
           find .output/chrome-mv3 -type f -print0 | LC_ALL=C sort -z \
             | xargs -0 sha256sum > /tmp/ember-extension-first.sha256
           rm -rf .output
-          bun run build
+          bun run build:qa
           find .output/chrome-mv3 -type f -print0 | LC_ALL=C sort -z \
             | xargs -0 sha256sum > /tmp/ember-extension-second.sha256
           diff -u /tmp/ember-extension-first.sha256 /tmp/ember-extension-second.sha256

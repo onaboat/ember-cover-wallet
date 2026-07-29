@@ -33,6 +33,7 @@ import {
   WALLET_CLUSTER_OPTIONS,
 } from '../../background/wallet-data-config.ts'
 import { coverCapReviewText, formatCoverStatusSnapshot } from '../../cover/cover-cap-view.ts'
+import { EMBER_CONFIG } from '../../cover/ember-config.ts'
 import type { CoverStatusSnapshot } from '../../cover/ember-types.ts'
 import { coverStatusActive } from '../../cover/ember-types.ts'
 import { BrandMark } from '../../ui/BrandMark.tsx'
@@ -104,7 +105,14 @@ function formatBaseUnits(value: string, decimals: number): string {
 }
 
 function formatUsdMicros(value: string): string {
-  return `$${formatBaseUnits(value, 6)}`
+  const amount = BigInt(value)
+  const whole = (amount / 1_000_000n).toLocaleString('en-US')
+  const fraction = (amount % 1_000_000n)
+    .toString()
+    .padStart(6, '0')
+    .replace(/0+$/, '')
+    .padEnd(2, '0')
+  return `$${whole}.${fraction}`
 }
 
 function usdToMicros(value: string): string {
@@ -1176,9 +1184,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         </div>
         <p className="ec-help" data-testid="payment-copy">
           Ember supplies the offer, terms, price, treasury, and expiry. The wallet verifies a
-          signed quote and the Solana Mainnet identity before it can prepare a one-off token
+          signed quote and the {EMBER_CONFIG.expectedCluster === 'devnet' ? 'Solana Devnet' : 'Solana Mainnet'} identity before it can prepare a one-off token
           transfer. This is not a subscription or token spending approval.
         </p>
+        {EMBER_CONFIG.environment === 'sandbox' ? (
+          <p className="ec-warning" data-testid="devnet-qa-warning">
+            Devnet QA only. The 1 USDC test payment creates synthetic coverage records only—no
+            insurance, real claim, refund, or payout.
+          </p>
+        ) : null}
         <section className="ec-review-card" data-testid="ember-session-state">
           <h3>Ember session</h3>
           <p>
