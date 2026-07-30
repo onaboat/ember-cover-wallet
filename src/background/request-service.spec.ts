@@ -381,6 +381,46 @@ test('refreshCover replaces an expired or stale cover decision', async () => {
   expect(refreshed?.cover?.decisionExpiresAt).not.toBe(firstExpiry)
 })
 
+test('keeps one delayed cover check in flight, blocks signing, and surfaces its late result', async () => {
+  let releaseCover = () => {}
+  const coverGate = new Promise<void>((resolve) => {
+    releaseCover = resolve
+  })
+  const sign = vi.fn(async (_m: Uint8Array) => new Uint8Array(64).fill(7))
+  const preSign = vi.fn(async () => {
+    await coverGate
+    return {
+      requestId: 'late-covered',
+      coverStatus: 'covered' as const,
+      riskBand: 'low' as const,
+      reasonCodes: [],
+      decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }
+  })
+  const svc = new RequestService(
+    { getAddress: signer.getAddress, sign },
+    coverProvider({ preSign }),
+  )
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  pending.catch(() => {})
+
+  await vi.waitFor(() => expect(svc.get()?.coverChecking).toBe(true))
+  const refresh = svc.refreshCover()
+
+  await expect(svc.approveSignTransaction()).rejects.toThrow('Cover check is still in progress')
+  expect(sign).not.toHaveBeenCalled()
+  expect(preSign).toHaveBeenCalledOnce()
+
+  releaseCover()
+  const refreshed = await refresh
+
+  expect(refreshed?.coverChecking).toBe(false)
+  expect(refreshed?.cover?.coverStatus).toBe('covered')
+  expect(preSign).toHaveBeenCalledOnce()
+  svc.reject()
+})
+
 test('approveSignTransaction rejects an expired covered decision before signing', async () => {
   const sign = vi.fn(async (_m: Uint8Array) => new Uint8Array(64))
   const cover = coverProvider({
@@ -434,7 +474,7 @@ test('rejects transaction bytes changed after the Ember decision', async () => {
   svc.reject()
 })
 
-test('a malformed signTransaction does not crash the cover fetch (fail-open)', async () => {
+test('a malformed signTransaction resolves to an explicit unavailable terminal state', async () => {
   const cover = coverProvider({
     preSign: async () => {
       throw new Error('should not be called with malformed input')
@@ -445,10 +485,12 @@ test('a malformed signTransaction does not crash the cover fetch (fail-open)', a
   void svc.create('signTransaction', [
     { account: ACCOUNT, chain: SOLANA_DEVNET_CHAIN, transaction: null } as never,
   ])
-  await vi.waitFor(() => expect(svc.get()).not.toBeNull())
-  // give the fire-and-forget cover fetch a tick; it must NOT throw or set a cover decision
-  await new Promise((r) => setTimeout(r, 50))
-  expect(svc.get()?.cover).toBeUndefined()
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('unavailable'))
+  expect(svc.get()?.coverChecking).toBe(false)
+  expect(svc.get()?.cover?.debug).toMatchObject({
+    stage: 'provider_error',
+    apiAttempted: false,
+  })
 })
 
 test('never leaks reasonCodes into the view', async () => {

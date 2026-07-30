@@ -566,6 +566,9 @@ pre {
 .ec-approval-screen .ec-cover-decision[data-tone='setup'] {
   background: var(--ec-warning-soft);
 }
+.ec-approval-screen .ec-cover-decision[data-tone='checking'] {
+  background: var(--ec-info-soft);
+}
 .ec-approval-screen .ec-cover-decision[data-tone='none'],
 .ec-approval-screen .ec-cover-decision[data-tone='unavailable'],
 .ec-approval-screen .ec-cover-decision[data-tone='blocked'] {
@@ -595,6 +598,9 @@ pre {
 .ec-cover-decision[data-tone='setup'] .ec-cover-callout-title {
   color: var(--ec-warning);
 }
+.ec-cover-decision[data-tone='checking'] .ec-cover-callout-title {
+  color: var(--ec-info);
+}
 .ec-cover-decision[data-tone='none'] .ec-cover-callout-title,
 .ec-cover-decision[data-tone='unavailable'] .ec-cover-callout-title,
 .ec-cover-decision[data-tone='blocked'] .ec-cover-callout-title {
@@ -604,6 +610,40 @@ pre {
 /* Icon reads as a clean white tile on the wash. */
 .ec-approval-screen .ec-cover-decision .ec-section-icon {
   background: var(--ec-paper-raised);
+}
+
+.ec-cover-spinner,
+.ec-button-spinner {
+  display: inline-block;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: ec-cover-spin 0.75s linear infinite;
+}
+
+.ec-cover-spinner {
+  width: 18px;
+  height: 18px;
+  color: var(--ec-info);
+}
+
+.ec-button-spinner {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes ec-cover-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ec-cover-spinner,
+  .ec-button-spinner {
+    animation-duration: 1.5s;
+  }
 }
 
 /* =================================================================

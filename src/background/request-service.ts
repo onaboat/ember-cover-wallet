@@ -78,6 +78,8 @@ type PendingRequest =
       resolve: (data: TransportSignMessageOutput[]) => void
       reject: (reason: Error) => void
       coverDecision?: CoverDecision | null
+      coverCheck?: Promise<void>
+      coverChecking?: boolean
       reviewedBytesBase64?: string
     }
   | {
@@ -89,10 +91,13 @@ type PendingRequest =
       resolve: (data: TransportSignTransactionOutput[]) => void
       reject: (reason: Error) => void
       coverDecision?: CoverDecision | null
+      coverCheck?: Promise<void>
+      coverChecking?: boolean
       reviewedBytesBase64?: string
     }
 
 type RequestType = PendingRequest['type']
+type PendingSignRequest = Extract<PendingRequest, { type: 'signMessage' | 'signTransaction' }>
 type DataType<T extends RequestType> = Extract<PendingRequest, { type: T }>['data']
 type ResolveType<T extends RequestType> =
   Extract<PendingRequest, { type: T }> extends { resolve: (data: infer R) => void } ? R : never
@@ -106,6 +111,8 @@ export interface PendingRequestView {
   data: PendingRequest['data']
   origin?: string
   cover?: CoverSummary
+  /** True only while the single background underwriting request is unresolved. */
+  coverChecking?: boolean
 }
 
 /** The NARROW surface the approval popup may call. `create` is absent on purpose.
@@ -177,52 +184,88 @@ export class RequestService implements RequestApproval {
       (request?.type === 'signTransaction' || request?.type === 'signMessage') &&
       request.data.length === 1
     ) {
-      void this.#fetchCover(request)
+      void this.#startCoverCheck(request)
     }
     return await pending
   }
 
-  /** Fire pre-sign in parallel and attach the OPAQUE decision. Fail-open: never throws. */
-  async #fetchCover(request: PendingRequest): Promise<void> {
-    try {
-      if (!this.#cover) {
-        return
-      }
-      if (request.type === 'signTransaction') {
-        const first = request.data[0]
-        if (!first || first.transaction == null) {
+  /**
+   * Start (or reuse) the one underwriting check for this exact approval.
+   * Keeping the promise on the request prevents UI polling or Retry from
+   * creating duplicate evaluations while the original result is still late.
+   */
+  #startCoverCheck(request: PendingSignRequest): Promise<void> {
+    if (request.coverCheck) {
+      return request.coverCheck
+    }
+    request.coverChecking = true
+    let check!: Promise<void>
+    check = this.#fetchCover(request)
+      .catch((error: unknown) => {
+        if (this.#request !== request) {
           return
         }
-        const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
-        const decision = await this.#cover.preSign({
-          transactionBytes,
-          cluster: walletClusterForChain(first.chain),
-          ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
-        })
-        if (this.#request === request) {
-          request.coverDecision = decision
-          request.reviewedBytesBase64 = transactionBytes
+        const message = error instanceof Error ? error.message : 'Unexpected cover provider failure'
+        request.coverDecision = {
+          requestId: '',
+          coverStatus: 'unavailable',
+          riskBand: 'severe',
+          reasonCodes: ['provider_error'],
+          decisionExpiresAt: new Date(0).toISOString(),
+          debug: {
+            stage: 'provider_error',
+            apiAttempted: false,
+            error: message,
+          },
         }
+      })
+      .finally(() => {
+        if (request.coverCheck === check) {
+          delete request.coverCheck
+          request.coverChecking = false
+        }
+      })
+    request.coverCheck = check
+    return check
+  }
+
+  /** Perform pre-sign review and attach only the opaque public decision. */
+  async #fetchCover(request: PendingSignRequest): Promise<void> {
+    if (!this.#cover) {
+      throw new Error('Cover provider is unavailable')
+    }
+    if (request.type === 'signTransaction') {
+      const first = request.data[0]
+      if (!first || first.transaction == null) {
+        throw new Error('Transaction bytes are unavailable for cover review')
       }
-      if (request.type === 'signMessage') {
-        const first = request.data[0]
-        if (!first || first.message == null) {
-          return
-        }
-        const messageBytes = toBase64(decodeTransportBytes(first.message))
-        const decision = await this.#cover.preSignMessage({
-          messageBytes,
-          walletMethod: 'signMessage',
-          messageKind: 'wallet_standard_sign_message',
-          ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
-        })
-        if (this.#request === request) {
-          request.coverDecision = decision
-          request.reviewedBytesBase64 = messageBytes
-        }
+      const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
+      const decision = await this.#cover.preSign({
+        transactionBytes,
+        cluster: walletClusterForChain(first.chain),
+        ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
+      })
+      if (this.#request === request) {
+        request.coverDecision = decision
+        request.reviewedBytesBase64 = transactionBytes
       }
-    } catch {
-      // fail-open: leave coverDecision unset
+    }
+    if (request.type === 'signMessage') {
+      const first = request.data[0]
+      if (!first || first.message == null) {
+        throw new Error('Message bytes are unavailable for cover review')
+      }
+      const messageBytes = toBase64(decodeTransportBytes(first.message))
+      const decision = await this.#cover.preSignMessage({
+        messageBytes,
+        walletMethod: 'signMessage',
+        messageKind: 'wallet_standard_sign_message',
+        ...(request.origin === undefined ? {} : { dappUrl: request.origin }),
+      })
+      if (this.#request === request) {
+        request.coverDecision = decision
+        request.reviewedBytesBase64 = messageBytes
+      }
     }
   }
 
@@ -235,12 +278,17 @@ export class RequestService implements RequestApproval {
       (this.#request.type === 'signTransaction' || this.#request.type === 'signMessage') && this.#request.coverDecision
         ? coverSummary(this.#request.coverDecision)
         : undefined
+    const coverChecking =
+      this.#request.type === 'signTransaction' || this.#request.type === 'signMessage'
+        ? this.#request.coverChecking === true
+        : undefined
     return {
       id,
       type,
       data,
       ...(origin === undefined ? {} : { origin }),
       ...(cover === undefined ? {} : { cover }),
+      ...(coverChecking === undefined ? {} : { coverChecking }),
     }
   }
 
@@ -256,8 +304,13 @@ export class RequestService implements RequestApproval {
     if (request.data.length !== 1) {
       return this.get()
     }
+    if (request.coverCheck) {
+      await request.coverCheck
+      return this.get()
+    }
     delete request.coverDecision
-    await this.#fetchCover(request)
+    delete request.reviewedBytesBase64
+    await this.#startCoverCheck(request)
     return this.get()
   }
 
@@ -296,6 +349,9 @@ export class RequestService implements RequestApproval {
     }
     if (request.data.length !== 1) {
       throw new Error('Multiple message signing is not supported')
+    }
+    if (this.#cover && (request.coverChecking || !request.coverDecision)) {
+      throw new Error('Cover check is still in progress')
     }
     const address = await this.#signer.getAddress()
     if (!address) {
@@ -353,6 +409,9 @@ export class RequestService implements RequestApproval {
     }
     if (request.data.length !== 1) {
       throw new Error('Multiple transaction signing is not supported')
+    }
+    if (this.#cover && (request.coverChecking || !request.coverDecision)) {
+      throw new Error('Cover check is still in progress')
     }
     const address = await this.#signer.getAddress()
     if (!address) {

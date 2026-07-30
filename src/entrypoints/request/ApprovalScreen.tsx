@@ -236,8 +236,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const [password, setPassword] = useState('')
   const [passwordVisible, setPasswordVisible] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [refreshingCover, setRefreshingCover] = useState(false)
   const [error, setError] = useState('')
-  const [coverGaveUp, setCoverGaveUp] = useState(false)
   const [nowMs, setNowMs] = useState(Date.now())
   const [txTab, setTxTab] = useState<TxTab>('details')
   const [messageTab, setMessageTab] = useState<MessageTab>('message')
@@ -252,27 +252,38 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
       setAddress(await vault.getAddress())
       setNeedsUnlock(!(await vault.isUnlocked()))
     })()
-    let polls = 0
+    let pollTimer: ReturnType<typeof setTimeout> | undefined
     const poll = async (): Promise<void> => {
       if (!active) {
         return
       }
-      const view = await request.get()
-      if (!active) {
-        return
-      }
-      setPending(view)
-      polls += 1
-      // Keep polling until the cover decision resolves (fail-open ~1.5s) or we give up.
-      if ((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover && polls < 5) {
-        setTimeout(() => void poll(), 400)
-      } else {
-        setCoverGaveUp((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover)
+      try {
+        const view = await request.get()
+        if (!active) {
+          return
+        }
+        setPending(view)
+        if (
+          view &&
+          (view.type === 'signTransaction' || view.type === 'signMessage') &&
+          view.coverChecking
+        ) {
+          pollTimer = setTimeout(() => void poll(), 400)
+        }
+      } catch {
+        // The extension service worker can be waking up. Keep this display in
+        // its safe pending state and retry the read; never invent a verdict.
+        if (active) {
+          pollTimer = setTimeout(() => void poll(), 400)
+        }
       }
     }
     void poll()
     return () => {
       active = false
+      if (pollTimer !== undefined) {
+        clearTimeout(pollTimer)
+      }
     }
   }, [])
 
@@ -289,29 +300,22 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const signingAddress = requestAccountAddress(pending) ?? address
   const transactionImpact =
     pending?.type === 'signTransaction' ? estimateWalletImpact(transactionSummary, signingAddress) : null
-  const fallbackCover: NonNullable<PendingRequestView['cover']> | null =
-    (pending?.type === 'signTransaction' || pending?.type === 'signMessage') && coverGaveUp
-      ? ({
-          coverStatus: 'unavailable',
-          riskBand: 'severe',
-          decisionExpiresAt: new Date(0).toISOString(),
-          debug: {
-            stage: 'approval_poll_timeout',
-            apiAttempted: false,
-          },
-        } as NonNullable<PendingRequestView['cover']>)
-      : null
   const cover =
-    pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? pending.cover ?? fallbackCover : null
-  const coverExpired =
-    cover?.coverStatus === 'covered' &&
-    cover.decisionExpiresAt !== undefined &&
-    nowMs >= Date.parse(cover.decisionExpiresAt)
+    pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? pending.cover ?? null : null
   const checkingCover =
-    (pending?.type === 'signTransaction' || pending?.type === 'signMessage') && !cover && !batchUnsupported
+    (pending?.type === 'signTransaction' || pending?.type === 'signMessage') &&
+    !batchUnsupported &&
+    (refreshingCover || pending.coverChecking === true)
+  const displayedCover = checkingCover ? null : cover
+  const coverExpired =
+    displayedCover?.coverStatus === 'covered' &&
+    displayedCover.decisionExpiresAt !== undefined &&
+    nowMs >= Date.parse(displayedCover.decisionExpiresAt)
   const coverBanner =
-    pending?.type === 'signTransaction' || pending?.type === 'signMessage' ? bannerView(cover, checkingCover) : null
-  const coverDisplayView = coverDisplay(cover, coverBanner, coverExpired)
+    pending?.type === 'signTransaction' || pending?.type === 'signMessage'
+      ? bannerView(displayedCover, checkingCover)
+      : null
+  const coverDisplayView = coverDisplay(displayedCover, coverBanner, coverExpired)
   const decodedMessage =
     pending?.type === 'signMessage'
       ? decodeMessages(pending.data as { message: Uint8Array | Record<string, number> }[])
@@ -406,21 +410,16 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   }, [pending?.type, cover?.decisionExpiresAt])
 
   async function refreshCoverDecision(): Promise<void> {
-    setBusy(true)
+    setRefreshingCover(true)
     setError('')
-    setCoverGaveUp(false)
     try {
       const view = await request.refreshCover()
       setPending(view)
-      if ((view?.type === 'signTransaction' || view?.type === 'signMessage') && !view.cover) {
-        setCoverGaveUp(true)
-      }
     } catch (e) {
-      setCoverGaveUp(true)
       setError(e instanceof Error ? e.message : 'Could not recheck cover')
     } finally {
       setNowMs(Date.now())
-      setBusy(false)
+      setRefreshingCover(false)
     }
   }
 
@@ -518,10 +517,16 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
       return null
     }
     return (
-      <section className="ec-review-card ec-cover-decision" data-testid="cover-section" data-tone={coverDisplayView.tone}>
+      <section
+        aria-busy={checkingCover}
+        aria-live="polite"
+        className="ec-review-card ec-cover-decision"
+        data-testid="cover-section"
+        data-tone={checkingCover ? 'checking' : coverDisplayView.tone}
+      >
         <div className="ec-cover-callout-head">
           <span className="ec-section-icon" aria-hidden="true">
-            <BrandMark title="Ember Cover" />
+            {checkingCover ? <span className="ec-cover-spinner" /> : <BrandMark title="Ember Cover" />}
           </span>
           <span className="ec-cover-callout-text">
             <span className="ec-cover-callout-title" data-testid="cover" data-tone={coverDisplayView.tone}>
@@ -539,12 +544,18 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
         ) : null}
         {coverDisplayView.nextAction === 'retry' ? (
           <div className="ec-actions">
-            <button className="ec-secondary" data-testid="cover-retry" disabled={busy} onClick={() => void refreshCoverDecision()} type="button">
+            <button
+              className="ec-secondary"
+              data-testid="cover-retry"
+              disabled={busy || checkingCover}
+              onClick={() => void refreshCoverDecision()}
+              type="button"
+            >
               Retry cover check
             </button>
           </div>
         ) : null}
-        {cover?.debug ? <CoverDebugPanel debug={cover.debug} /> : null}
+        {displayedCover?.debug ? <CoverDebugPanel debug={displayedCover.debug} /> : null}
       </section>
     )
   }
@@ -610,6 +621,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
         ) : null}
         <div className="ec-actions">
           <button className="ec-primary" data-testid="approve" disabled={approveDisabled} onClick={() => void onApprove()}>
+            {checkingCover ? <span className="ec-button-spinner" aria-hidden="true" /> : null}
             {approveText}
           </button>
           <button className="ec-secondary" data-testid="reject" disabled={busy} onClick={() => void onReject()}>

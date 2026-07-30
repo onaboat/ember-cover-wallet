@@ -24,7 +24,7 @@ export function bannerView(
     return isLoading
       ? {
           label: 'Checking cover...',
-          body: 'Waiting for Ember.',
+          body: 'Ember is evaluating this exact approval. Nothing has been signed.',
           tone: 'none',
           showAck: false,
           ackLabel: null,

@@ -57,7 +57,7 @@ test('unavailable reads as cover unavailable', () => {
 test('loading before a decision reads as checking', () => {
   expect(bannerView(null, true)).toMatchObject({
     label: 'Checking cover...',
-    body: 'Waiting for Ember.',
+    body: 'Ember is evaluating this exact approval. Nothing has been signed.',
     approveLabel: 'Checking cover...',
   })
 })
