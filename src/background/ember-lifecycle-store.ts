@@ -1,15 +1,16 @@
 import type {
-  ClaimListResponse,
   CoverageDecisionResponse,
   CoverageInstanceResponse,
   DecisionLineageResponse,
   EmberWalletClient,
   PaymentResponse,
-  ProductionClaimResponse,
+  WalletClaimListResponse,
+  WalletClaimResponse,
 } from '@embercover/wallet-sdk'
 import { storage } from 'wxt/utils/storage'
 
-const STORE_KEY = 'local:ember-authoritative-lifecycle-cache:v1' as const
+const LEGACY_STORE_KEY = 'local:ember-authoritative-lifecycle-cache:v1' as const
+const STORE_KEY = 'local:ember-authoritative-lifecycle-cache:v2' as const
 const MAX_DECISION_REFERENCES = 50
 
 export interface DecisionReference {
@@ -22,12 +23,12 @@ export interface DecisionReference {
 }
 
 export interface WalletLifecycleCache {
-  version: 1
+  version: 2
   walletAddress: string
   payment: PaymentResponse | null
   coverage: CoverageInstanceResponse | null
   decisions: DecisionReference[]
-  claims: ProductionClaimResponse[]
+  claims: WalletClaimResponse[]
   updatedAt: string
 }
 
@@ -38,7 +39,7 @@ export interface WalletLifecycleSnapshot extends WalletLifecycleCache {
 
 function emptyCache(walletAddress: string, now = new Date()): WalletLifecycleCache {
   return {
-    version: 1,
+    version: 2,
     walletAddress,
     payment: null,
     coverage: null,
@@ -52,7 +53,7 @@ function normalizeCache(value: unknown, walletAddress: string): WalletLifecycleC
   if (
     !value ||
     typeof value !== 'object' ||
-    (value as Partial<WalletLifecycleCache>).version !== 1 ||
+    (value as Partial<WalletLifecycleCache>).version !== 2 ||
     (value as Partial<WalletLifecycleCache>).walletAddress !== walletAddress
   ) {
     return emptyCache(walletAddress)
@@ -74,7 +75,9 @@ export class EmberLifecycleStore {
   }
 
   async load(walletAddress: string): Promise<WalletLifecycleCache> {
-    return normalizeCache(await storage.getItem<unknown>(STORE_KEY), walletAddress)
+    const value = await storage.getItem<unknown>(STORE_KEY)
+    await storage.removeItem(LEGACY_STORE_KEY)
+    return normalizeCache(value, walletAddress)
   }
 
   async recordPayment(
@@ -140,7 +143,7 @@ export class EmberLifecycleStore {
           cachedLineage: await client.getDecisionLineage(reference.decisionId),
         })),
       )
-      const claimList: ClaimListResponse = await client.listClaims()
+      const claimList: WalletClaimListResponse = await client.listClaims()
       const next: WalletLifecycleCache = {
         ...cached,
         payment,

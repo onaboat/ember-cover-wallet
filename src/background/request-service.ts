@@ -30,7 +30,7 @@ export interface VaultSigner {
   sign(message: Uint8Array): Promise<Uint8Array>
 }
 
-/** OPAQUE cover summary for the UI — status + band only, never reasonCodes. */
+/** OPAQUE cover summary for the UI — status + band only, never decisionReason. */
 export interface CoverSummary {
   coverStatus: CoverStatus
   riskBand: RiskBand
@@ -210,7 +210,7 @@ export class RequestService implements RequestApproval {
           requestId: '',
           coverStatus: 'unavailable',
           riskBand: 'severe',
-          reasonCodes: ['provider_error'],
+          decisionReason: 'temporarily_unavailable',
           decisionExpiresAt: new Date(0).toISOString(),
           debug: {
             stage: 'provider_error',

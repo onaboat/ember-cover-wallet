@@ -13,8 +13,8 @@ export interface BannerView {
 
 /**
  * Maps a decision to user-facing banner copy. Deliberately uses ONLY
- * `coverStatus` + `riskBand` — never `reasonCodes` — so the public wallet never
- * reveals what the underwriting engine inspected.
+ * `coverStatus` + `riskBand` — never `decisionReason` — so the approval action
+ * is driven by protection state and risk, not backend policy detail.
  */
 export function bannerView(
   decision: Pick<CoverDecision, 'coverStatus' | 'riskBand'> | null,

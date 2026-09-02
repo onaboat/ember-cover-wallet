@@ -92,7 +92,17 @@ test('cover is active only when the API flag, status, registration, and period a
   expect(coverStatusActive({ ...snapshot!, subscriptionStatus: 'revoked' })).toBe(false)
 })
 
-test('exhausted cap is identified from backend status and reason code', () => {
-  expect(coverCapExhausted({ coverStatus: 'not_covered', reasonCodes: ['transaction_count_exhausted'] })).toBe(true)
-  expect(coverCapExhausted({ coverStatus: 'covered', reasonCodes: ['transaction_count_exhausted'] })).toBe(false)
+test('exhausted cap is identified from the public decision reason', () => {
+  expect(
+    coverCapExhausted({
+      coverStatus: 'not_covered',
+      decisionReason: 'coverage_limit_reached',
+    }),
+  ).toBe(true)
+  expect(
+    coverCapExhausted({
+      coverStatus: 'covered',
+      decisionReason: 'coverage_limit_reached',
+    }),
+  ).toBe(false)
 })

@@ -1,3 +1,4 @@
+import type { PublicDecisionReason } from '@embercover/wallet-sdk'
 import { fakeBrowser } from 'wxt/testing'
 import { storage } from 'wxt/utils/storage'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -112,8 +113,8 @@ function coverStub(
   options: {
     capContext?: { monthlyLossCapUsd?: number; remainingCoveredTxThisMonth: number }
     coveredTxCountImpact?: number
+    decisionReason?: PublicDecisionReason
     expiresAt?: string
-    reasonCodes?: string[]
     riskBand?: 'low' | 'medium' | 'high' | 'severe'
   } = {},
 ) {
@@ -122,7 +123,13 @@ function coverStub(
       requestId: status === 'covered' ? 'cover-request' : '',
       coverStatus: status,
       riskBand: options.riskBand ?? 'low',
-      reasonCodes: options.reasonCodes ?? [],
+      decisionReason:
+        options.decisionReason ??
+        (status === 'covered'
+          ? 'eligible'
+          : status === 'not_covered'
+            ? 'not_eligible'
+            : 'temporarily_unavailable'),
       decisionExpiresAt: options.expiresAt ?? new Date(Date.now() + 60_000).toISOString(),
       ...(options.capContext === undefined ? {} : { capContext: options.capContext }),
       ...(options.coveredTxCountImpact === undefined ? {} : { coveredTxCountImpact: options.coveredTxCountImpact }),
@@ -133,7 +140,7 @@ function coverStub(
       requestId: '',
       coverStatus: 'unavailable' as const,
       riskBand: 'severe' as const,
-      reasonCodes: [],
+      decisionReason: 'temporarily_unavailable' as const,
       decisionExpiresAt: new Date(0).toISOString(),
     })),
     postSignMessage: vi.fn(async () => {}),
@@ -610,7 +617,7 @@ test('exhausted cap makes a send not covered and skips post sign evidence', asyn
   const cover = coverStub('not_covered', {
     capContext: { remainingCoveredTxThisMonth: 0 },
     coveredTxCountImpact: 0,
-    reasonCodes: ['transaction_count_exhausted'],
+    decisionReason: 'coverage_limit_reached',
     riskBand: 'severe',
   })
   const provider = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })

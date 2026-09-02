@@ -787,7 +787,7 @@ export class WalletTransferProvider implements WalletTransferUI {
             requestId: '',
             coverStatus: 'unavailable' as const,
             riskBand: 'severe' as const,
-            reasonCodes: [],
+            decisionReason: 'temporarily_unavailable' as const,
             decisionExpiresAt: new Date(0).toISOString(),
           }),
       rpc

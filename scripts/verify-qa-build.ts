@@ -8,13 +8,10 @@ import path from 'node:path'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUTPUT = path.join(ROOT, '.output', 'chrome-mv3')
-const SDK_TARBALL = path.join(
-  ROOT,
-  'vendor',
-  'embercover-wallet-sdk-1.3.1.tgz',
-)
-const EXPECTED_SDK_SHA256 =
-  'fc2f3dff25186a4306ee286ea3363715f68962429353a8c2d321ba47e38038e8'
+const SDK_PACKAGE = '@embercover/wallet-sdk'
+const EXPECTED_SDK_VERSION = '1.3.2-beta.0'
+const EXPECTED_SDK_INTEGRITY =
+  'sha512-7W0nUgjnzcGdPoVbpdKn4Wy93skutNnVIivUeenNHOe3Zxi3QFOIacKiObbfOUXmr585KlX2s2SaeyaVESrfgg=='
 const RETIRED_BUNDLE_MARKERS = [
   'EMBER_PARTNER_API_KEY',
   'test-partner-key',
@@ -60,10 +57,6 @@ function extensionIdFromPublicKey(publicKeyBase64: string): string {
     .join('')
 }
 
-async function sha256(file: string): Promise<string> {
-  return createHash('sha256').update(await readFile(file)).digest('hex')
-}
-
 async function filesUnder(directory: string): Promise<string[]> {
   const entries = await readdir(directory)
   const files: string[] = []
@@ -88,9 +81,37 @@ async function scanBundle(): Promise<void> {
   }
 }
 
-const sdkDigest = await sha256(SDK_TARBALL)
-if (sdkDigest !== EXPECTED_SDK_SHA256) {
-  throw new Error(`Vendored SDK digest mismatch: ${sdkDigest}`)
+const projectPackage = JSON.parse(
+  await readFile(path.join(ROOT, 'package.json'), 'utf8'),
+) as { dependencies?: Record<string, string> }
+if (projectPackage.dependencies?.[SDK_PACKAGE] !== EXPECTED_SDK_VERSION) {
+  throw new Error(
+    `Expected exact ${SDK_PACKAGE}@${EXPECTED_SDK_VERSION} dependency`,
+  )
+}
+const installedSdk = JSON.parse(
+  await readFile(
+    path.join(ROOT, 'node_modules', '@embercover', 'wallet-sdk', 'package.json'),
+    'utf8',
+  ),
+) as { name?: string; version?: string }
+if (
+  installedSdk.name !== SDK_PACKAGE ||
+  installedSdk.version !== EXPECTED_SDK_VERSION
+) {
+  throw new Error(
+    `Installed SDK mismatch: ${installedSdk.name ?? 'missing'}@${installedSdk.version ?? 'missing'}`,
+  )
+}
+const bunLock = await readFile(path.join(ROOT, 'bun.lock'), 'utf8')
+const sdkLockEntry = bunLock
+  .split('\n')
+  .find((line) => line.trimStart().startsWith(`"${SDK_PACKAGE}": [`))
+if (
+  !sdkLockEntry?.includes(`${SDK_PACKAGE}@${EXPECTED_SDK_VERSION}`) ||
+  !sdkLockEntry.includes(EXPECTED_SDK_INTEGRITY)
+) {
+  throw new Error(`Locked ${SDK_PACKAGE} version or npm integrity mismatch`)
 }
 
 const manifest = JSON.parse(
@@ -142,7 +163,8 @@ await scanBundle()
 console.log(
   JSON.stringify({
     bundle: 'verified',
-    sdkSha256: sdkDigest,
+    sdkIntegrity: EXPECTED_SDK_INTEGRITY,
+    sdkVersion: EXPECTED_SDK_VERSION,
     version: manifest.version,
   }),
 )

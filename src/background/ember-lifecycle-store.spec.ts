@@ -5,6 +5,7 @@ import type {
 } from '@embercover/wallet-sdk'
 import { beforeEach, expect, test } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
+import { storage } from 'wxt/utils/storage'
 
 import { EmberLifecycleStore } from './ember-lifecycle-store.ts'
 
@@ -13,8 +14,6 @@ const PAYMENT = {
   quoteId: 'quote_test',
   paymentSignature: 'signature_test',
   status: 'pending',
-  outcomeCode: 'awaiting_finality',
-  providerAgreement: 'awaiting_finality',
   submittedAt: '2026-07-28T00:00:00.000Z',
   updatedAt: '2026-07-28T00:00:00.000Z',
 } satisfies PaymentResponse
@@ -47,15 +46,13 @@ const COVERAGE = {
 } satisfies CoverageInstanceResponse
 
 const DECISION = {
-  confidence: 'high',
   coverStatus: 'covered',
   coverageInstanceId: 'coverage_test',
   decisionExpiresAt: '2026-07-28T00:01:00.000Z',
   decisionId: 'decision_test',
+  decisionReason: 'eligible',
   evaluationCountImpact: 1,
   evidenceState: 'pre_sign',
-  exposureReservationMicros: '1000',
-  exposureSnapshot: { scopes: [] },
   kind: 'transaction',
   maximumPayoutMicros: '1000',
   offerId: 'offer_test',
@@ -63,7 +60,6 @@ const DECISION = {
   policyVersion: 'policy-v1',
   protectedWallet: '11111111111111111111111111111111',
   quoteId: 'quote_test',
-  reasonCodes: ['simple_system_transfer'],
   remainingAggregateLimitMicros: '999000',
   remainingUnderwritingEvaluations: 9,
   riskBand: 'low',
@@ -71,6 +67,24 @@ const DECISION = {
 } satisfies CoverageDecisionResponse
 
 beforeEach(() => fakeBrowser.reset())
+
+test('scrubs the legacy provider-shaped lifecycle cache on first load', async () => {
+  await storage.setItem('local:ember-authoritative-lifecycle-cache:v1', {
+    version: 1,
+    walletAddress: COVERAGE.protectedWallet,
+    decisions: [{ cachedDecision: { reasonCodes: ['internal_policy_detail'] } }],
+  })
+  const store = new EmberLifecycleStore()
+
+  expect(await store.load(COVERAGE.protectedWallet)).toMatchObject({
+    version: 2,
+    decisions: [],
+    claims: [],
+  })
+  expect(
+    await storage.getItem('local:ember-authoritative-lifecycle-cache:v1'),
+  ).toBeNull()
+})
 
 test('local state stores identifiers and cached display data but refresh uses server authority', async () => {
   const store = new EmberLifecycleStore(() => new Date('2026-07-28T00:00:00.000Z'))
@@ -85,11 +99,10 @@ test('local state stores identifiers and cached display data but refresh uses se
     getCoverageInstance: async () => COVERAGE,
     getDecision: async () => ({ ...DECISION, evidenceState: 'sealed' }),
     getDecisionLineage: async () => ({
-      artifacts: [],
       coverageInstanceId: COVERAGE.coverageInstanceId,
       decisionId: DECISION.decisionId,
-      events: [],
       evidenceState: 'sealed',
+      lifecycle: [],
       paymentId: PAYMENT.paymentId,
       quoteId: PAYMENT.quoteId,
     }),

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { address as toAddress } from '@solana/kit'
 import type {
   ClaimEligibilityResponse,
-  ProductionClaimResponse,
+  WalletClaimResponse,
 } from '@embercover/wallet-sdk'
 
 import { getCoverService } from '../../background/cover-service.ts'
@@ -261,7 +261,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [nowMs, setNowMs] = useState(Date.now())
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null)
   const [claimEligibility, setClaimEligibility] = useState<ClaimEligibilityResponse | null>(null)
-  const [claimResult, setClaimResult] = useState<ProductionClaimResponse | null>(null)
+  const [claimResult, setClaimResult] = useState<WalletClaimResponse | null>(null)
   const [claimAmountUsd, setClaimAmountUsd] = useState('')
   const [claimStatement, setClaimStatement] = useState('')
   const [claimBusy, setClaimBusy] = useState(false)
@@ -1238,7 +1238,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               <ul>
                 {coverLifecycle.claims.map((claim) => (
                   <li key={claim.claimId}>
-                    Claim {shortAddress(claim.claimId)} · {claim.state} · {claim.reviewPhase}
+                    Claim {shortAddress(claim.claimId)} · {claim.state}
                   </li>
                 ))}
               </ul>
@@ -2340,10 +2340,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                   <dt>Status</dt>
                   <dd>{existingClaim.state}</dd>
                 </div>
-                <div>
-                  <dt>Review phase</dt>
-                  <dd>{existingClaim.reviewPhase}</dd>
-                </div>
+                {existingClaim.timeline.at(-1) ? (
+                  <div>
+                    <dt>Latest update</dt>
+                    <dd>{existingClaim.timeline.at(-1)?.status}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>Last server version</dt>
                   <dd>{existingClaim.version}</dd>

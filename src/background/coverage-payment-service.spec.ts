@@ -198,10 +198,8 @@ const QA_QUOTE = {
 } satisfies SignedQuoteResponse
 const PAYMENT = {
   coverageInstanceId: 'coverage_test',
-  outcomeCode: 'activated',
   paymentId: 'payment_test',
   paymentSignature: 'payment_signature',
-  providerAgreement: 'agreed',
   quoteId: QUOTE.payload.quoteId,
   status: 'activated',
   submittedAt: '2026-07-28T00:01:00.000Z',

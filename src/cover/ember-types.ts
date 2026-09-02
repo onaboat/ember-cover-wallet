@@ -1,3 +1,5 @@
+import type { PublicDecisionReason } from '@embercover/wallet-sdk'
+
 export type CoverStatus = 'covered' | 'not_covered' | 'unsupported' | 'unavailable'
 export type RiskBand = 'low' | 'medium' | 'high' | 'severe'
 
@@ -41,7 +43,7 @@ export interface CoverDebugInfo {
   coverStatus?: CoverStatus
   riskBand?: RiskBand
   decisionExpiresAt?: string
-  reasonCodeCount?: number
+  decisionReason?: PublicDecisionReason
   error?: string
 }
 
@@ -50,7 +52,7 @@ export interface CoverDecision {
   requestId: string
   coverStatus: CoverStatus
   riskBand: RiskBand
-  reasonCodes: string[]
+  decisionReason: PublicDecisionReason
   /** RFC 3339; the decision is void after this instant (60s window). */
   decisionExpiresAt: string
   capContext?: CoverCapContext
@@ -145,8 +147,13 @@ export function coverStatusActive(snapshot: CoverStatusSnapshot, nowMs = Date.no
   )
 }
 
-export function coverCapExhausted(decision: Pick<CoverDecision, 'reasonCodes' | 'coverStatus'>): boolean {
-  return decision.coverStatus === 'not_covered' && decision.reasonCodes.includes('transaction_count_exhausted')
+export function coverCapExhausted(
+  decision: Pick<CoverDecision, 'coverStatus' | 'decisionReason'>,
+): boolean {
+  return (
+    decision.coverStatus === 'not_covered' &&
+    decision.decisionReason === 'coverage_limit_reached'
+  )
 }
 
 /** Only a `covered` decision is coverable; everything else is not. */

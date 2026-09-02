@@ -2,6 +2,7 @@ import type {
   CoverageDecisionResponse,
   CoverageInstanceResponse,
   PaymentResponse,
+  WalletClaimResponse,
 } from '@embercover/wallet-sdk'
 import { fakeBrowser } from 'wxt/testing'
 import { storage } from 'wxt/utils/storage'
@@ -28,8 +29,6 @@ const PAYMENT = {
   quoteId: 'quote_test',
   paymentSignature: 'signature_test',
   status: 'activated',
-  outcomeCode: 'activated',
-  providerAgreement: 'agreed',
   coverageInstanceId: 'coverage_test',
   submittedAt: '2026-07-28T00:00:00.000Z',
   updatedAt: '2026-07-28T00:00:00.000Z',
@@ -65,15 +64,13 @@ const COVERAGE = {
   walletSubjectId: 'wallet_subject_test',
 } satisfies CoverageInstanceResponse
 const DECISION = {
-  confidence: 'high',
   coverStatus: 'covered',
   coverageInstanceId: COVERAGE.coverageInstanceId,
   decisionExpiresAt: '2027-07-28T00:01:00.000Z',
   decisionId: 'decision_test',
+  decisionReason: 'eligible',
   evaluationCountImpact: 1,
   evidenceState: 'pre_sign',
-  exposureReservationMicros: '1000',
-  exposureSnapshot: { scopes: [] },
   kind: 'transaction',
   maximumPayoutMicros: '1000',
   offerId: COVERAGE.offerId,
@@ -81,7 +78,6 @@ const DECISION = {
   policyVersion: COVERAGE.policyVersion,
   protectedWallet: WALLET,
   quoteId: COVERAGE.quoteId,
-  reasonCodes: ['simple_system_transfer'],
   remainingAggregateLimitMicros: '9999000000',
   remainingUnderwritingEvaluations: 99,
   riskBand: 'low',
@@ -99,11 +95,10 @@ function fakeClient(overrides: Record<string, unknown> = {}) {
     getCoverageInstance: vi.fn(async () => COVERAGE),
     getDecision: vi.fn(async () => DECISION),
     getDecisionLineage: vi.fn(async () => ({
-      artifacts: [],
       coverageInstanceId: COVERAGE.coverageInstanceId,
       decisionId: DECISION.decisionId,
-      events: [],
       evidenceState: 'pre_sign',
+      lifecycle: [],
       paymentId: PAYMENT.paymentId,
       quoteId: PAYMENT.quoteId,
     })),
@@ -213,7 +208,8 @@ test('rejects a transaction from a cluster other than the build binding before A
     transactionBytes: 'AQID',
   })
   expect(decision.coverStatus).toBe('unavailable')
-  expect(decision.reasonCodes).toContain('cluster_mismatch')
+  expect(decision.decisionReason).toBe('temporarily_unavailable')
+  expect(decision.debug?.stage).toBe('cluster_mismatch')
   expect(client.reviewForSigning).not.toHaveBeenCalled()
 })
 
@@ -281,12 +277,13 @@ test('SDK unavailable reviews remain explicitly unavailable', async () => {
   const { provider } = await providerWithCoverage(client)
   expect((await provider.preSign({ transactionBytes: 'AQID' }))).toMatchObject({
     coverStatus: 'unavailable',
-    reasonCodes: ['network'],
+    decisionReason: 'temporarily_unavailable',
+    debug: { error: 'network' },
   })
 })
 
 test('claim eligibility and intake use the SDK decision identifier without payout actions', async () => {
-  const claim = {
+  const claim: WalletClaimResponse = {
     claimId: 'claim_test',
     claimedAmountMicros: '1000000',
     coverageInstanceId: COVERAGE.coverageInstanceId,
@@ -295,13 +292,11 @@ test('claim eligibility and intake use the SDK decision identifier without payou
     lossEvent: 'direct_malicious_signing_loss',
     protectedWallet: WALLET,
     reviewDueAt: '2026-08-01T00:00:00.000Z',
-    reviewPhase: 'intake',
     state: 'submitted',
     submittedAt: '2026-07-28T00:00:00.000Z',
     timeline: [],
-    verificationState: 'pending',
     version: 1,
-  } as const
+  }
   const createClaim = vi.fn(async () => claim)
   const client = fakeClient({
     claimEligibility: vi.fn(async () => ({

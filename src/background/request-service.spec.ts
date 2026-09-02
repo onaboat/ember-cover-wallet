@@ -55,7 +55,7 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
       requestId: '',
       coverStatus: 'unavailable',
       riskBand: 'severe',
-      reasonCodes: [],
+      decisionReason: 'temporarily_unavailable',
       decisionExpiresAt: new Date(0).toISOString(),
     }),
     postSign: async () => {},
@@ -64,7 +64,7 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
       requestId: '',
       coverStatus: 'unavailable',
       riskBand: 'severe',
-      reasonCodes: [],
+      decisionReason: 'temporarily_unavailable',
       decisionExpiresAt: new Date(0).toISOString(),
     }),
     postSignMessage: async () => {},
@@ -128,7 +128,7 @@ test('attaches an opaque cover decision to a signMessage request', async () => {
       requestId: 'msg-r',
       coverStatus: 'unsupported' as const,
       riskBand: 'high' as const,
-      reasonCodes: ['SECRET_INTERNAL_CODE'],
+      decisionReason: 'unsupported' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
       capContext: { monthlyLossCapUsd: 10000, remainingCoveredTxThisMonth: 99 },
       coveredTxCountImpact: 1,
@@ -150,7 +150,7 @@ test('approveSignMessage posts signed-message evidence for a backend decision', 
       requestId: 'msg-r',
       coverStatus: 'unsupported' as const,
       riskBand: 'high' as const,
-      reasonCodes: ['unknown_message_schema'],
+      decisionReason: 'unsupported' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
     }),
     postSignMessage,
@@ -179,7 +179,7 @@ test('approveSignMessage rejects an expired covered decision before signing', as
       requestId: 'expired-msg',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: [],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() - 1000).toISOString(),
     }),
   })
@@ -290,7 +290,7 @@ test('closing the window mid-sign cancels: no signature to the dapp, no post-sig
       requestId: 'r',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: [],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
     }),
     postSign,
@@ -340,7 +340,7 @@ test('attaches an opaque cover decision to a signTransaction request', async () 
       requestId: 'r',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: ['SECRET_INTERNAL_CODE'],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
       capContext: { monthlyLossCapUsd: 10000, remainingCoveredTxThisMonth: 99 },
       coveredTxCountImpact: 1,
@@ -364,7 +364,7 @@ test('refreshCover replaces an expired or stale cover decision', async () => {
         requestId: `r-${calls}`,
         coverStatus: 'covered' as const,
         riskBand: 'low' as const,
-        reasonCodes: [],
+        decisionReason: 'eligible' as const,
         decisionExpiresAt: new Date(Date.now() + calls * 60000).toISOString(),
       }
     },
@@ -393,7 +393,7 @@ test('keeps one delayed cover check in flight, blocks signing, and surfaces its 
       requestId: 'late-covered',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: [],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     }
   })
@@ -428,7 +428,7 @@ test('approveSignTransaction rejects an expired covered decision before signing'
       requestId: 'expired',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: [],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() - 1000).toISOString(),
     }),
   })
@@ -452,7 +452,7 @@ test('rejects transaction bytes changed after the Ember decision', async () => {
       requestId: 'decision_exact_bytes',
       coverStatus: 'covered',
       riskBand: 'low',
-      reasonCodes: [],
+      decisionReason: 'eligible',
       decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     }),
     postSign,
@@ -493,13 +493,13 @@ test('a malformed signTransaction resolves to an explicit unavailable terminal s
   })
 })
 
-test('never leaks reasonCodes into the view', async () => {
+test('never leaks the decision reason into the approval view', async () => {
   const cover = coverProvider({
     preSign: async () => ({
       requestId: 'r',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: ['SECRET_INTERNAL_CODE'],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
     }),
   })
@@ -508,7 +508,7 @@ test('never leaks reasonCodes into the view', async () => {
   void svc.create('signTransaction', [transactionInput()])
   await vi.waitFor(() => expect(svc.get()?.cover).toBeDefined())
   const view = svc.get()
-  expect(JSON.stringify(view)).not.toContain('SECRET_INTERNAL_CODE')
+  expect(view?.cover).not.toHaveProperty('decisionReason')
 })
 
 test('zero remaining cap on a covered decision stays covered and posts evidence', async () => {
@@ -518,7 +518,7 @@ test('zero remaining cap on a covered decision stays covered and posts evidence'
       requestId: 'r',
       coverStatus: 'covered' as const,
       riskBand: 'low' as const,
-      reasonCodes: [],
+      decisionReason: 'eligible' as const,
       decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
       capContext: { remainingCoveredTxThisMonth: 0 },
       coveredTxCountImpact: 1,
@@ -554,7 +554,7 @@ test('does not release signed transaction bytes until evidence persistence compl
       requestId: 'decision_durable_first',
       coverStatus: 'covered',
       riskBand: 'low',
-      reasonCodes: [],
+      decisionReason: 'eligible',
       decisionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     }),
     postSign,
@@ -586,7 +586,7 @@ test('exhausted cap is not covered and skips post sign evidence', async () => {
       requestId: '',
       coverStatus: 'not_covered' as const,
       riskBand: 'severe' as const,
-      reasonCodes: ['transaction_count_exhausted'],
+      decisionReason: 'coverage_limit_reached' as const,
       decisionExpiresAt: new Date(0).toISOString(),
       capContext: { remainingCoveredTxThisMonth: 0 },
       coveredTxCountImpact: 0,

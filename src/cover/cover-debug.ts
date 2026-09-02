@@ -1,7 +1,7 @@
 /**
- * DEBUG ONLY. When true, the raw underwriting-engine response (incl. reasonCodes and the failure
- * reason for a fail-open) is logged to the service-worker console and surfaced in the approval
- * popup. MUST be false for any production build — it exposes engine internals.
+ * DEBUG ONLY. When true, public decision metadata and the operational failure reason are logged
+ * to the service-worker console and surfaced in the approval popup. MUST be false for any
+ * production build.
  */
 export const COVER_DEBUG = false
 

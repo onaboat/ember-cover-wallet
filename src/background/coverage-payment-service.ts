@@ -727,7 +727,7 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
       lastError:
         payment.status === 'activated'
           ? null
-          : `Ember payment status: ${payment.status} (${payment.outcomeCode})`,
+          : `Ember payment status: ${payment.status}`,
       payment,
       status:
         payment.status === 'activated'

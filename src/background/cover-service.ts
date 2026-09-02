@@ -3,8 +3,9 @@ import type {
   CreateClaimRequest,
   EmberFetch,
   EmberWalletClient,
-  ProductionClaimResponse,
+  PublicDecisionReason,
   SigningReview,
+  WalletClaimResponse,
 } from '@embercover/wallet-sdk'
 import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
@@ -86,7 +87,7 @@ export interface EmberLifecycleProvider extends CoverProvider {
   lifecycle(): Promise<WalletLifecycleSnapshot | null>
   activeClient(): Promise<EmberWalletClient | null>
   claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse>
-  createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse>
+  createClaim(request: CreateClaimRequest): Promise<WalletClaimResponse>
 }
 
 export type CoverWalletSigner = EmberVaultSigner
@@ -97,29 +98,26 @@ interface ProviderDependencies {
   coordinator?: EmberClientCoordinator
 }
 
-function unavailable(
-  reason: string,
-  debug?: CoverDebugInfo,
-): CoverDecision {
+function unavailable(debug?: CoverDebugInfo): CoverDecision {
   return {
     requestId: '',
     coverStatus: 'unavailable',
     riskBand: 'severe',
-    reasonCodes: [reason],
+    decisionReason: 'temporarily_unavailable',
     decisionExpiresAt: new Date(0).toISOString(),
     ...(debug === undefined ? {} : { debug }),
   }
 }
 
 function notCovered(
-  reason: string,
+  decisionReason: PublicDecisionReason,
   debug?: CoverDebugInfo,
 ): CoverDecision {
   return {
     requestId: '',
     coverStatus: 'not_covered',
     riskBand: 'low',
-    reasonCodes: [reason],
+    decisionReason,
     decisionExpiresAt: new Date(0).toISOString(),
     ...(debug === undefined ? {} : { debug }),
   }
@@ -141,14 +139,14 @@ function decisionView(review: SigningReview): CoverDecision {
     }
     return review.status === 'not_covered'
       ? notCovered(review.reason, debug)
-      : unavailable(review.reason, debug)
+      : unavailable(debug)
   }
   const decision = review.decision
   return {
     requestId: decision.decisionId,
     coverStatus: decision.coverStatus,
     riskBand: decision.riskBand,
-    reasonCodes: [...decision.reasonCodes],
+    decisionReason: decision.decisionReason,
     decisionExpiresAt: decision.decisionExpiresAt,
     coveredTxCountImpact: decision.evaluationCountImpact,
     capContext: {
@@ -162,7 +160,7 @@ function decisionView(review: SigningReview): CoverDecision {
       coverStatus: decision.coverStatus,
       riskBand: decision.riskBand,
       decisionExpiresAt: decision.decisionExpiresAt,
-      reasonCodeCount: decision.reasonCodes.length,
+      decisionReason: decision.decisionReason,
       enrolled: true,
       walletAddress: decision.protectedWallet,
     },
@@ -233,7 +231,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
 
   async preSign(args: PreSignArgs): Promise<CoverDecision> {
     if (args.cluster !== undefined && args.cluster !== this.config.expectedCluster) {
-      return unavailable('cluster_mismatch', {
+      return unavailable({
         stage: 'cluster_mismatch',
         apiAttempted: false,
         error: `Wallet transaction is ${args.cluster}; Ember is configured for ${this.config.expectedCluster}.`,
@@ -320,7 +318,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
     return await client.claimEligibility(decisionId)
   }
 
-  async createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse> {
+  async createClaim(request: CreateClaimRequest): Promise<WalletClaimResponse> {
     const client = await this.requireActiveClient()
     return await client.createClaim(request)
   }
@@ -340,7 +338,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
         },
   ): Promise<CoverDecision> {
     if (this.config.problems.length > 0) {
-      return unavailable('configuration', {
+      return unavailable({
         stage: 'provider_error',
         apiAttempted: false,
         error: this.config.problems.join('; '),
@@ -348,14 +346,14 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
     }
     const walletAddress = await this.signer.getAddress()
     if (!walletAddress) {
-      return unavailable('no_wallet', {
+      return unavailable({
         stage: 'no_wallet',
         apiAttempted: false,
       })
     }
     const client = await this.activeClient()
     if (!client) {
-      return notCovered('not_enrolled', {
+      return notCovered('not_eligible', {
         stage: 'not_enrolled',
         apiAttempted: false,
         walletAddress,
@@ -369,7 +367,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
       coverage.status !== 'active' ||
       Date.now() >= Date.parse(coverage.coverageEndsAt)
     ) {
-      return notCovered('no_active_coverage', {
+      return notCovered('not_eligible', {
         stage: 'not_enrolled',
         apiAttempted: true,
         walletAddress,
@@ -410,7 +408,7 @@ export interface CoverUI {
   lifecycle(): Promise<WalletLifecycleSnapshot | null>
   status(): Promise<CoverStatusSnapshot | null>
   claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse>
-  createClaim(request: CreateClaimRequest): Promise<ProductionClaimResponse>
+  createClaim(request: CreateClaimRequest): Promise<WalletClaimResponse>
 }
 
 const COVER_SERVICE_KEY = 'ember.CoverService' as ProxyServiceKey<CoverUI>

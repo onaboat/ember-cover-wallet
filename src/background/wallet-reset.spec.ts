@@ -14,6 +14,7 @@ test('clears identity-bound state and restores the default cluster', async () =>
     storage.setItem('local:ember-wallet-session:v1', { walletAddress: 'old' }),
     storage.setItem('local:ember-coverage-payment:v3', { walletAddress: 'old' }),
     storage.setItem('local:ember-authoritative-lifecycle-cache:v1', { walletAddress: 'old' }),
+    storage.setItem('local:ember-authoritative-lifecycle-cache:v2', { walletAddress: 'old' }),
     storage.setItem('local:ember-evidence-outbox:v1', [{ decisionId: 'old' }]),
     storage.setItem('local:ember-cover-records', [{ walletAddress: 'old' }]),
     storage.setItem('local:ember-dapp-connections', [{ address: 'old' }]),
@@ -25,6 +26,7 @@ test('clears identity-bound state and restores the default cluster', async () =>
   expect(await storage.getItem('local:ember-wallet-session:v1')).toBeNull()
   expect(await storage.getItem('local:ember-coverage-payment:v3')).toBeNull()
   expect(await storage.getItem('local:ember-authoritative-lifecycle-cache:v1')).toBeNull()
+  expect(await storage.getItem('local:ember-authoritative-lifecycle-cache:v2')).toBeNull()
   expect(await storage.getItem('local:ember-evidence-outbox:v1')).toBeNull()
   expect(await storage.getItem('local:ember-cover-records')).toBeNull()
   expect(await storage.getItem('local:ember-dapp-connections')).toBeNull()

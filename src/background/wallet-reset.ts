@@ -7,6 +7,7 @@ const WALLET_SCOPED_KEYS = [
   'local:ember-wallet-session:v1',
   'local:ember-coverage-payment:v3',
   'local:ember-authoritative-lifecycle-cache:v1',
+  'local:ember-authoritative-lifecycle-cache:v2',
   'local:ember-evidence-outbox:v1',
   'local:ember-cover-records',
   'local:ember-dapp-connections',
