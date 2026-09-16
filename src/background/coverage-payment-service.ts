@@ -73,6 +73,9 @@ type TokenBalanceValue = Readonly<{
   decimals: number
   uiAmountString?: string
 }>
+type AccountInfoValue = Readonly<{
+  owner: string
+}>
 type SignatureStatus = Readonly<{
   confirmationStatus?: string | null
   err?: unknown | null
@@ -87,6 +90,10 @@ export interface CoveragePaymentRpc {
   getLatestBlockhash(
     config?: Readonly<{ commitment: 'confirmed' }>,
   ): RpcSend<RpcValue<LatestBlockhashValue>>
+  getAccountInfo(
+    address: Address,
+    config?: Readonly<{ commitment: 'confirmed'; encoding: 'base64' }>,
+  ): RpcSend<RpcValue<AccountInfoValue | null>>
   getTokenAccountBalance(
     address: Address,
     config?: Readonly<{ commitment: 'confirmed' }>,
@@ -175,6 +182,7 @@ export interface CoveragePaymentPreview {
   termsSha256: string
   termsVersion: string
   tokenBalanceBaseUnits: string
+  tokenBalanceDisplay: string
   tokenMint: string
   tokenProgram: string
   treasuryOwner: string
@@ -568,17 +576,38 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
       owner: wallet,
       tokenProgram,
     })
-    const [balance, tokenBalance, latestBlockhash] = await Promise.all([
+    const [balance, sourceAccount, latestBlockhash] = await Promise.all([
       rpc.getBalance(wallet, { commitment: 'confirmed' }).send(),
-      rpc.getTokenAccountBalance(sourceTokenAccount, { commitment: 'confirmed' }).send(),
+      rpc.getAccountInfo(sourceTokenAccount, {
+        commitment: 'confirmed',
+        encoding: 'base64',
+      }).send(),
       rpc.getLatestBlockhash({ commitment: 'confirmed' }).send(),
     ])
     const errors: string[] = []
-    if (tokenBalance.value.decimals !== payment.decimals) {
-      errors.push('Source token account decimals do not match the signed quote')
+    let tokenBalance: TokenBalanceValue = {
+      amount: '0',
+      decimals: payment.decimals,
+      uiAmountString: '0',
     }
-    if (BigInt(tokenBalance.value.amount) < BigInt(payment.amount)) {
-      errors.push(`Not enough ${payload.offer.paymentAsset} for the quoted payment`)
+    if (!sourceAccount.value) {
+      errors.push(
+        `Not enough ${payload.offer.paymentAsset}. You need ${displayBaseUnits(payment.amount, payment.decimals)} ${payload.offer.paymentAsset}, but this wallet has 0 ${payload.offer.paymentAsset}.`,
+      )
+    } else if (sourceAccount.value.owner !== payment.tokenProgram) {
+      errors.push('The payment token account is not owned by the expected token program')
+    } else {
+      tokenBalance = (
+        await rpc.getTokenAccountBalance(sourceTokenAccount, { commitment: 'confirmed' }).send()
+      ).value
+      if (tokenBalance.decimals !== payment.decimals) {
+        errors.push('Source token account decimals do not match the signed quote')
+      }
+      if (BigInt(tokenBalance.amount) < BigInt(payment.amount)) {
+        errors.push(
+          `Not enough ${payload.offer.paymentAsset}. You need ${displayBaseUnits(payment.amount, payment.decimals)} ${payload.offer.paymentAsset}, but this wallet has ${displayBaseUnits(tokenBalance.amount, tokenBalance.decimals)} ${payload.offer.paymentAsset}.`,
+        )
+      }
     }
     const transfer = getTransferCheckedInstruction(
       {
@@ -670,7 +699,8 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
         sourceTokenAccount: String(sourceTokenAccount),
         termsSha256: payload.offer.termsHash,
         termsVersion: payload.offer.termsVersion,
-        tokenBalanceBaseUnits: tokenBalance.value.amount,
+        tokenBalanceBaseUnits: tokenBalance.amount,
+        tokenBalanceDisplay: displayBaseUnits(tokenBalance.amount, tokenBalance.decimals),
         tokenMint: payment.mint,
         tokenProgram: payment.tokenProgram,
         treasuryOwner: payment.treasuryOwner,

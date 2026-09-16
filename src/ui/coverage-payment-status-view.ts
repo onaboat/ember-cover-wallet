@@ -21,7 +21,7 @@ export interface PaymentStatusView {
   badgeTone: PaymentBadgeTone
   detail: string
   metrics: PaymentStatusMetric[]
-  primaryAction: 'activate' | 'connect' | 'manage' | 'refresh' | 'sync'
+  primaryAction: 'activate' | 'connect' | 'manage' | 'refresh' | 'review' | 'sync'
   title: string
 }
 
@@ -42,11 +42,29 @@ function money(value: number): string {
   return `$${value.toLocaleString()}`
 }
 
+function paymentLabel(status: LocalCoveragePaymentState['status']): string {
+  switch (status) {
+    case 'quote_ready':
+      return 'Not submitted'
+    case 'broadcast_pending':
+    case 'activation_pending':
+      return 'Pending'
+    case 'active':
+      return 'Confirmed'
+    case 'rejected':
+      return 'Failed'
+    case 'failed_recoverable':
+      return 'Needs attention'
+    case 'expired_unconfirmed':
+      return 'Not sent'
+  }
+}
+
 function stateMetrics(state: LocalCoveragePaymentState): PaymentStatusMetric[] {
   return [
     { label: 'Plan', value: state.offer.displayName },
     { label: 'Network', value: clusterLabel(state.cluster) },
-    { label: 'Payment', value: state.status === 'active' ? 'Confirmed' : 'Pending' },
+    { label: 'Payment', value: paymentLabel(state.status) },
   ]
 }
 
@@ -59,23 +77,24 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
     nowMs = Date.now(),
     paymentState,
   } = input
+  const submittedPaymentState = paymentState?.paymentSignature ? paymentState : null
   if (coverStatusLoading) {
     return {
       badgeLabel: 'CHECKING',
       badgeTone: 'checking',
       detail: 'Checking Ember Cover status.',
-      metrics: paymentState ? stateMetrics(paymentState) : [],
-      primaryAction: paymentState?.paymentSignature ? 'sync' : coverEnrolled ? 'activate' : 'connect',
+      metrics: submittedPaymentState ? stateMetrics(submittedPaymentState) : [],
+      primaryAction: submittedPaymentState ? 'sync' : coverEnrolled ? 'activate' : 'connect',
       title: 'Coverage',
     }
   }
 
-  if (paymentState && paymentState.cluster !== cluster) {
+  if (submittedPaymentState && submittedPaymentState.cluster !== cluster) {
     return {
       badgeLabel: 'NETWORK',
       badgeTone: 'pending',
-      detail: `This payment is for ${clusterLabel(paymentState.cluster)}. Current wallet network is ${clusterLabel(cluster)}.`,
-      metrics: stateMetrics(paymentState),
+      detail: `This payment is for ${clusterLabel(submittedPaymentState.cluster)}. Current wallet network is ${clusterLabel(cluster)}.`,
+      metrics: stateMetrics(submittedPaymentState),
       primaryAction: 'manage',
       title: 'Coverage',
     }
@@ -102,36 +121,46 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
     }
   }
 
-  if (paymentState) {
+  if (submittedPaymentState) {
     if (
-      paymentState.status === 'broadcast_pending' ||
-      paymentState.status === 'activation_pending'
+      submittedPaymentState.status === 'broadcast_pending' ||
+      submittedPaymentState.status === 'activation_pending'
     ) {
       return {
         badgeLabel: 'PENDING',
         badgeTone: 'pending',
         detail: 'Your quote-bound payment is recorded. Retry without signing another payment.',
-        metrics: stateMetrics(paymentState),
+        metrics: stateMetrics(submittedPaymentState),
         primaryAction: 'sync',
         title: 'Coverage',
       }
     }
-    if (paymentState.status === 'failed_recoverable') {
+    if (submittedPaymentState.status === 'failed_recoverable') {
       return {
         badgeLabel: 'RETRY',
         badgeTone: 'failed',
         detail: 'The signed payment needs attention. Recover it without approving another payment.',
-        metrics: stateMetrics(paymentState),
+        metrics: stateMetrics(submittedPaymentState),
         primaryAction: 'sync',
         title: 'Coverage',
       }
     }
-    if (paymentState.status === 'expired_unconfirmed') {
+    if (submittedPaymentState.status === 'expired_unconfirmed') {
       return {
         badgeLabel: 'NOT SENT',
         badgeTone: 'none',
         detail: 'The prior transaction can no longer land. Review a new server-signed quote.',
-        metrics: stateMetrics(paymentState),
+        metrics: stateMetrics(submittedPaymentState),
+        primaryAction: 'activate',
+        title: 'Coverage',
+      }
+    }
+    if (submittedPaymentState.status === 'rejected') {
+      return {
+        badgeLabel: 'FAILED',
+        badgeTone: 'failed',
+        detail: 'The payment failed on-chain. No cover was activated.',
+        metrics: stateMetrics(submittedPaymentState),
         primaryAction: 'activate',
         title: 'Coverage',
       }
@@ -143,7 +172,7 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
       badgeLabel: 'EXPIRED',
       badgeTone: 'none',
       detail: 'This coverage period has ended. Review a current offer and signed quote to renew.',
-      metrics: paymentState ? stateMetrics(paymentState) : [],
+      metrics: submittedPaymentState ? stateMetrics(submittedPaymentState) : [],
       primaryAction: 'activate',
       title: 'Coverage',
     }
@@ -154,18 +183,18 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
       badgeLabel: 'NO COVER',
       badgeTone: 'none',
       detail: 'Ember Cover is not active for this wallet.',
-      metrics: paymentState ? stateMetrics(paymentState) : [],
+      metrics: submittedPaymentState ? stateMetrics(submittedPaymentState) : [],
       primaryAction: 'activate',
       title: 'Coverage',
     }
   }
 
-  if (paymentState) {
+  if (submittedPaymentState) {
     return {
       badgeLabel: 'UNAVAILABLE',
       badgeTone: 'unavailable',
       detail: 'Payment history is saved, but live cover status could not be verified.',
-      metrics: stateMetrics(paymentState),
+      metrics: stateMetrics(submittedPaymentState),
       primaryAction: 'refresh',
       title: 'Coverage',
     }
@@ -175,7 +204,7 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
     return {
       badgeLabel: 'NO COVER',
       badgeTone: 'none',
-      detail: 'The Ember session is connected. Review a current server offer to activate coverage.',
+      detail: 'Review your Ember Cover offer.',
       metrics: [],
       primaryAction: 'activate',
       title: 'Coverage',
@@ -183,9 +212,9 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
   }
 
   return {
-    badgeLabel: 'CONNECT',
+    badgeLabel: 'NO COVER',
     badgeTone: 'none',
-    detail: 'Connect a short-lived Ember session to view authoritative offers and coverage.',
+    detail: 'View your Ember Cover offer.',
     metrics: [],
     primaryAction: 'connect',
     title: 'Coverage',

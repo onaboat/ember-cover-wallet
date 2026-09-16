@@ -1313,6 +1313,17 @@ label {
   margin-top: var(--ec-space-2);
 }
 
+.ec-payment-progress {
+  align-items: center;
+  min-height: 190px;
+  justify-content: center;
+  text-align: center;
+}
+
+.ec-payment-progress .ec-help {
+  max-width: 34ch;
+}
+
 .ec-actions {
   display: flex;
   flex-direction: column;
@@ -1353,6 +1364,22 @@ label {
   font-weight: 600;
   text-align: right;
   word-break: break-all;
+}
+
+.ec-technical-details {
+  border-top: 1px solid var(--ec-rule);
+  padding-top: var(--ec-space-3);
+}
+
+.ec-technical-details summary {
+  cursor: pointer;
+  color: var(--ec-ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ec-technical-details[open] summary {
+  margin-bottom: var(--ec-space-3);
 }
 
 /* =================================================================

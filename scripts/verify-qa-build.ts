@@ -6,6 +6,11 @@ import {
 } from 'node:fs/promises'
 import path from 'node:path'
 
+import {
+  EMBER_CHROME_EXTENSION_ID,
+  EMBER_CHROME_EXTENSION_PUBLIC_KEY,
+} from '../src/config/chrome-identity.ts'
+
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUTPUT = path.join(ROOT, '.output', 'chrome-mv3')
 const SDK_PACKAGE = '@embercover/wallet-sdk'
@@ -48,7 +53,7 @@ function exactOrigin(value: string, name: string): URL {
 function extensionIdFromPublicKey(publicKeyBase64: string): string {
   const der = Buffer.from(publicKeyBase64, 'base64')
   if (der.length === 0 || der.toString('base64').replace(/=+$/, '') !== publicKeyBase64.replace(/=+$/, '')) {
-    throw new Error('WXT_EXTENSION_PUBLIC_KEY must be canonical base64 DER public-key bytes')
+    throw new Error('The Chrome manifest public key must be canonical base64 DER bytes')
   }
   const first128Bits = createHash('sha256').update(der).digest().subarray(0, 16)
   return [...first128Bits]
@@ -117,12 +122,16 @@ if (
 const manifest = JSON.parse(
   await readFile(path.join(OUTPUT, 'manifest.json'), 'utf8'),
 ) as {
+  description?: string
   host_permissions?: string[]
   key?: string
   version?: string
 }
 if (manifest.version !== '0.16.0') {
   throw new Error(`Expected manifest version 0.16.0, received ${manifest.version ?? 'missing'}`)
+}
+if (manifest.description !== 'A self-custody Solana wallet with optional Ember Cover integration.') {
+  throw new Error('Built manifest does not contain the reviewed Web Store description')
 }
 
 if (requiredEnvironment('WXT_EMBER_ENVIRONMENT') !== 'sandbox') {
@@ -140,15 +149,17 @@ const integrationId = requiredEnvironment('WXT_EMBER_INTEGRATION_ID')
 if (integrationId !== 'integration_reference-wallet') {
   throw new Error('Devnet QA must use integration_reference-wallet')
 }
-const publicKey = requiredEnvironment('WXT_EXTENSION_PUBLIC_KEY')
-const configuredId = requiredEnvironment('WXT_EMBER_EXTENSION_ID')
-const derivedId = extensionIdFromPublicKey(publicKey)
-if (configuredId !== derivedId) {
+const integrationVersion = requiredEnvironment('WXT_EMBER_INTEGRATION_VERSION')
+if (integrationVersion !== '1') {
+  throw new Error('Devnet QA must use integration version 1')
+}
+const derivedId = extensionIdFromPublicKey(EMBER_CHROME_EXTENSION_PUBLIC_KEY)
+if (EMBER_CHROME_EXTENSION_ID !== derivedId) {
   throw new Error(
-    `WXT_EMBER_EXTENSION_ID ${configuredId} does not match public manifest key (${derivedId})`,
+    `Configured Chrome extension ID ${EMBER_CHROME_EXTENSION_ID} does not match public manifest key (${derivedId})`,
   )
 }
-if (manifest.key !== publicKey) {
+if (manifest.key !== EMBER_CHROME_EXTENSION_PUBLIC_KEY) {
   throw new Error('Built manifest does not contain the approved public extension key')
 }
 const expectedHosts = [`${api.origin}/*`, `${rpc.origin}/*`].sort()
@@ -163,6 +174,7 @@ await scanBundle()
 console.log(
   JSON.stringify({
     bundle: 'verified',
+    extensionId: EMBER_CHROME_EXTENSION_ID,
     sdkIntegrity: EXPECTED_SDK_INTEGRITY,
     sdkVersion: EXPECTED_SDK_VERSION,
     version: manifest.version,

@@ -22,6 +22,7 @@ const CONFIG: EmberRuntimeConfig = {
   expectedGenesisHash: null,
   extensionId: null,
   integrationId: 'integration_reference-wallet',
+  integrationVersion: 1,
   problems: [],
 }
 const PAYMENT = {

@@ -8,6 +8,7 @@ import {
   startEmberApiFixture,
   type EmberApiFixture,
 } from './fixtures/ember-api-server.ts'
+import { EMBER_CHROME_EXTENSION_ID } from '../src/config/chrome-identity.ts'
 
 const EXT = path.resolve('.output/chrome-mv3')
 let emberApi: EmberApiFixture | undefined
@@ -31,7 +32,9 @@ async function launch(): Promise<{ context: BrowserContext; extensionId: string 
   })
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker')
-  return { context, extensionId: new URL(sw.url()).host }
+  const extensionId = new URL(sw.url()).host
+  expect(extensionId).toBe(EMBER_CHROME_EXTENSION_ID)
+  return { context, extensionId }
 }
 
 test('create a vault, lock, and unlock', async () => {

@@ -20,8 +20,7 @@ jobs:
       WXT_EMBER_ENVIRONMENT: sandbox
       WXT_EMBER_API_BASE_URL: https://qa-api.ember.invalid
       WXT_EMBER_INTEGRATION_ID: integration_reference-wallet
-      WXT_EMBER_EXTENSION_ID: ilieemdlgchchbipbgobihkkfobaklee
-      WXT_EXTENSION_PUBLIC_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKscLyjJiSlTNFv41WiifkaHzFbUgBpanhrd1FkUeQ9jeHUZWFpYJvEtp8BIRZ480LRJ4XoidK1uQKsAzfotJ8ufgP1TsvX67axUZekg8xrGqOy2BSMMuQeM6xYzXj5kWPHxFTHhSHMGcgeH4VkR2Yo6D9MgKnO7X+VWHIgWRduCN/b76W9yR4/y1P1sOKIZXMEX3A+ltVg/wOiAQLfftmqWHs347wAdApJPjr5Z0+x7ZtQoRotmXDCsAiefL+yABjGWW32tcH8GSjl597iq5qgl53EZkQ4Tr41NUUCOeMUrEmSoZHejggD2r/TFiEdLK4g46gb9r4frVsgUpynE+wIDAQAB
+      WXT_EMBER_INTEGRATION_VERSION: 1
       WXT_SOLANA_RPC_URL: https://api.devnet.solana.com
     steps:
       - uses: actions/checkout@v4
@@ -54,8 +53,7 @@ jobs:
       WXT_EMBER_ENVIRONMENT: sandbox
       WXT_EMBER_API_BASE_URL: https://qa-api.ember.invalid
       WXT_EMBER_INTEGRATION_ID: integration_reference-wallet
-      WXT_EMBER_EXTENSION_ID: ilieemdlgchchbipbgobihkkfobaklee
-      WXT_EXTENSION_PUBLIC_KEY: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsKscLyjJiSlTNFv41WiifkaHzFbUgBpanhrd1FkUeQ9jeHUZWFpYJvEtp8BIRZ480LRJ4XoidK1uQKsAzfotJ8ufgP1TsvX67axUZekg8xrGqOy2BSMMuQeM6xYzXj5kWPHxFTHhSHMGcgeH4VkR2Yo6D9MgKnO7X+VWHIgWRduCN/b76W9yR4/y1P1sOKIZXMEX3A+ltVg/wOiAQLfftmqWHs347wAdApJPjr5Z0+x7ZtQoRotmXDCsAiefL+yABjGWW32tcH8GSjl597iq5qgl53EZkQ4Tr41NUUCOeMUrEmSoZHejggD2r/TFiEdLK4g46gb9r4frVsgUpynE+wIDAQAB
+      WXT_EMBER_INTEGRATION_VERSION: 1
       WXT_SOLANA_RPC_URL: https://api.devnet.solana.com
     steps:
       - uses: actions/checkout@v4

@@ -50,6 +50,7 @@ test('uses protected only when the live API status is active and registered', ()
       coverEnrolled: true,
       coverStatusLoading: false,
       coverStatusSnapshot: snapshot,
+      nowMs: Date.parse('2026-07-28T00:00:00.000Z'),
       paymentState: state({ status: 'active' }),
     }),
   ).toMatchObject({
@@ -75,6 +76,65 @@ test('offers a retry for a payment awaiting API activation', () => {
   })
 })
 
+test('never presents a reviewed but unsigned quote as a pending payment', () => {
+  expect(
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
+      coverEnrolled: true,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      paymentState: state({
+        paymentSignature: null,
+        signedTransactionBase64: null,
+        status: 'quote_ready',
+      }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'NO COVER',
+    badgeTone: 'none',
+    detail: 'Review your Ember Cover offer.',
+    metrics: [],
+    primaryAction: 'activate',
+  })
+})
+
+test('keeps an unsigned quote invisible while live cover status is loading', () => {
+  expect(
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
+      coverEnrolled: true,
+      coverStatusLoading: true,
+      coverStatusSnapshot: null,
+      paymentState: state({
+        paymentSignature: null,
+        signedTransactionBase64: null,
+        status: 'quote_ready',
+      }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'CHECKING',
+    metrics: [],
+    primaryAction: 'activate',
+  })
+})
+
+test('presents a rejected on-chain payment as failed rather than unavailable', () => {
+  expect(
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
+      coverEnrolled: true,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      paymentState: state({ status: 'rejected' }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'FAILED',
+    badgeTone: 'failed',
+    metrics: expect.arrayContaining([{ label: 'Payment', value: 'Failed' }]),
+    primaryAction: 'activate',
+  })
+})
+
 test('warns when the saved payment belongs to another network', () => {
   expect(
     coveragePaymentStatusView({
@@ -90,7 +150,7 @@ test('warns when the saved payment belongs to another network', () => {
   })
 })
 
-test('requires an Ember session before offers can be loaded', () => {
+test('presents an offer-first state while connection is handled underneath', () => {
   expect(
     coveragePaymentStatusView({
       cluster: 'mainnet-beta',
@@ -100,8 +160,9 @@ test('requires an Ember session before offers can be loaded', () => {
       paymentState: null,
     }),
   ).toMatchObject({
-    badgeLabel: 'CONNECT',
+    badgeLabel: 'NO COVER',
     badgeTone: 'none',
+    detail: 'View your Ember Cover offer.',
     primaryAction: 'connect',
   })
 })

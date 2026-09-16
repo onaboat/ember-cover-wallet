@@ -59,6 +59,7 @@ type AccountScreen =
   | 'approval'
   | 'activity-detail'
 type SendStep = 'form' | 'review' | 'complete'
+type CoverPurchaseStep = 'offer' | 'preparing' | 'review' | 'submitting' | 'result'
 
 interface AppProps {
   /** 'approval' is rendered in the dapp approval window: it surfaces the pending request as a
@@ -234,6 +235,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [coverageOffers, setCoverageOffers] = useState<CoverageOfferView[]>([])
   const [selectedOfferId, setSelectedOfferId] = useState('')
   const [termsAccepted, setTermsAccepted] = useState(false)
+  const [coverPurchaseStep, setCoverPurchaseStep] = useState<CoverPurchaseStep>('offer')
   const [paymentPreview, setPaymentPreview] = useState<CoveragePaymentPreview | null>(null)
   const [paymentState, setPaymentState] = useState<LocalCoveragePaymentState | null>(null)
   const [paymentResult, setPaymentResult] = useState<CoveragePaymentResult | null>(null)
@@ -402,12 +404,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
   }, [])
 
-  async function refreshPaymentState() {
-    if (!address) return
+  async function refreshPaymentState(): Promise<LocalCoveragePaymentState | null> {
+    if (!address) return null
     try {
-      setPaymentState(await payments.localPayment(address))
+      const state = await payments.localPayment(address)
+      setPaymentState(state)
+      return state
     } catch {
       setPaymentError('Payment state unavailable')
+      return null
     }
   }
 
@@ -536,15 +541,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   function openCoverActivation() {
     setAccountScreen('cover')
     setMainTab('assets')
+    setCoverPurchaseStep('offer')
     setPaymentPreview(null)
     setPaymentResult(null)
     setPaymentError('')
     setPaymentNotice('')
     setPaymentNeedsUnlock(false)
     setTermsAccepted(false)
-    if (coverEnrolled) {
-      void loadCoverageOffers()
-    }
+    void prepareCoverageOffer()
   }
 
   function resetRecoveryForm() {
@@ -727,23 +731,25 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setAccountScreen('home')
   }
 
-  async function connectEmberSession() {
+  async function prepareCoverageOffer() {
     setPaymentBusy(true)
     setPaymentError('')
     setPaymentNotice('')
-    if (!(await ensurePaymentUnlocked())) {
-      setPaymentBusy(false)
-      return
-    }
     try {
-      if (!(await cover.enroll())) {
-        throw new Error('The Ember session challenge was not completed')
+      const currentSession = await cover.sessionStatus()
+      const hasActiveSession = currentSession.phase === 'active'
+      setCoverSession(currentSession)
+      setCoverEnrolled(hasActiveSession)
+      if (!hasActiveSession) {
+        if (!(await ensurePaymentUnlocked())) return
+        if (!(await cover.enroll())) {
+          throw new Error('The Ember session challenge was not completed')
+        }
       }
       await refreshCoverState()
       await loadCoverageOffers()
-      setPaymentNotice('Ember session connected. No wallet spending permission was granted.')
-    } catch (e) {
-      handlePaymentError(e, 'Could not connect the Ember session')
+    } catch {
+      setPaymentError('Could not load your Ember Cover offer. Try again.')
     } finally {
       setPaymentBusy(false)
     }
@@ -766,7 +772,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
   }
 
-  async function loadCoverageOffers() {
+  async function loadCoverageOffers(): Promise<boolean> {
     setPaymentError('')
     try {
       const offers = await payments.offers()
@@ -776,13 +782,16 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           ? current
           : (offers[0]?.offerId ?? ''),
       )
-    } catch (e) {
+      return true
+    } catch {
       setCoverageOffers([])
-      setPaymentError(errorMessage(e, 'Could not load authoritative Ember offers'))
+      setPaymentError('Could not load your Ember Cover offer. Try again.')
+      return false
     }
   }
 
   async function previewCoverPayment() {
+    setCoverPurchaseStep('preparing')
     setPaymentBusy(true)
     setPaymentError('')
     setPaymentNotice('')
@@ -790,15 +799,17 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setPaymentResult(null)
     try {
       if (!selectedOfferId) throw new Error('Select an Ember offer')
-      setPaymentPreview(
-        await payments.previewPayment({
-          acceptedTerms: termsAccepted,
-          cluster,
-          offerId: selectedOfferId,
-        }),
-      )
+      const preview = await payments.previewPayment({
+        acceptedTerms: termsAccepted,
+        cluster,
+        offerId: selectedOfferId,
+      })
+      setPaymentPreview(preview)
+      await refreshPaymentState()
+      setCoverPurchaseStep('review')
     } catch (e) {
       setPaymentError(errorMessage(e, 'Could not review the one-off payment'))
+      setCoverPurchaseStep('offer')
     } finally {
       setPaymentBusy(false)
     }
@@ -812,11 +823,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       setPaymentBusy(false)
       return
     }
+    setCoverPurchaseStep('submitting')
     try {
       if (!paymentPreview) throw new Error('Review a current quote before paying')
       const result = await payments.activatePayment(paymentPreview.quoteId)
       setPaymentResult(result)
       setPaymentState(result.state)
+      setCoverPurchaseStep('result')
       if (result.coverActive) {
         setPaymentNotice('Payment confirmed and Ember Cover is active.')
       } else {
@@ -827,7 +840,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       await refreshWalletData()
     } catch (e) {
       handlePaymentError(e, 'Could not complete the cover payment')
-      await refreshPaymentState()
+      const currentPayment = await refreshPaymentState()
+      setCoverPurchaseStep(currentPayment?.paymentSignature ? 'result' : 'review')
     } finally {
       setPaymentBusy(false)
     }
@@ -1014,7 +1028,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           onClick={openSettings}
           type="button"
         >
-          Backup
+          Settings
         </button>
       </section>
     )
@@ -1052,12 +1066,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       paymentStatusView.primaryAction === 'manage'
         ? 'Manage Cover'
         : paymentStatusView.primaryAction === 'connect'
-          ? 'Connect Ember'
-        : paymentStatusView.primaryAction === 'sync'
+          ? 'View offer'
+          : paymentStatusView.primaryAction === 'review'
+            ? 'Continue review'
+          : paymentStatusView.primaryAction === 'sync'
           ? 'Retry activation'
           : paymentStatusView.primaryAction === 'refresh'
             ? 'Check cover'
-          : 'Activate cover'
+          : 'View offer'
     const actionTestId =
       paymentStatusView.primaryAction === 'manage'
         ? 'manage-cover'
@@ -1080,7 +1096,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             {paymentStatusView.badgeLabel}
           </span>
           <button
-            className={paymentStatusView.primaryAction === 'activate' ? 'ec-primary' : 'ec-secondary'}
+            className={
+              paymentStatusView.primaryAction === 'activate' ||
+              paymentStatusView.primaryAction === 'review'
+                ? 'ec-primary'
+                : 'ec-secondary'
+            }
             data-testid={actionTestId}
             onClick={
               paymentStatusView.primaryAction === 'refresh'
@@ -1162,98 +1183,275 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   function renderCoverActivation() {
     const selectedOffer = coverageOffers.find((offer) => offer.offerId === selectedOfferId)
     const canStartPayment =
-      coverEnrolled === true && paymentStatusView.primaryAction === 'activate'
+      coverEnrolled === true &&
+      (paymentStatusView.primaryAction === 'activate' ||
+        paymentStatusView.primaryAction === 'review')
     const canPay =
       canStartPayment &&
       !!paymentPreview &&
       paymentPreview.errors.length === 0 &&
       paymentPreview.simulation.status === 'success' &&
       !paymentBusy
-    const canRetry =
+    const hasRecoverablePayment =
       paymentStatusView.primaryAction === 'sync' &&
-      !!paymentState?.paymentSignature &&
-      !paymentBusy
+      !!paymentState?.paymentSignature
+
+    if (hasRecoverablePayment) {
+      return (
+        <section className="ec-task-screen" data-testid="cover-activation">
+          <div className="ec-screen-head">
+            {renderBackButton(() => setAccountScreen(approvalPending ? 'approval' : 'home'))}
+            <div>
+              <span className="ec-control-label">Payment recovery</span>
+              <h2>Finish activating cover</h2>
+            </div>
+          </div>
+          <section className="ec-review-card" data-testid="payment-recovery">
+            <h3>Your payment is saved</h3>
+            <p>
+              Do not approve another payment. Ember will retry the saved transaction or finish
+              verifying it with the server.
+            </p>
+            {paymentState?.lastError ? <p>{paymentState.lastError}</p> : null}
+          </section>
+          {paymentError ? <p data-testid="payment-error">{paymentError}</p> : null}
+          <div className="ec-flow-actions">
+            <button
+              className="ec-primary"
+              data-testid="retry-payment-activation"
+              disabled={paymentBusy}
+              onClick={() => void syncCoverPayment()}
+            >
+              {paymentBusy ? 'Retrying...' : 'Retry activation'}
+            </button>
+          </div>
+        </section>
+      )
+    }
+
+    if (coverPurchaseStep === 'preparing' || coverPurchaseStep === 'submitting') {
+      const preparingPayment = coverPurchaseStep === 'preparing'
+      return (
+        <section className="ec-task-screen" data-testid="cover-activation">
+          <div className="ec-screen-head">
+            <span className="ec-screen-head__spacer" aria-hidden="true" />
+            <div>
+              <span className="ec-control-label">
+                {preparingPayment ? 'Step 2 of 2' : 'Secure payment'}
+              </span>
+              <h2>{preparingPayment ? 'Preparing your payment' : 'Submitting your payment'}</h2>
+            </div>
+          </div>
+          <section
+            aria-live="polite"
+            className="ec-review-card ec-payment-progress"
+            data-testid={preparingPayment ? 'cover-payment-preparing' : 'cover-payment-submitting'}
+          >
+            <span className="ec-cover-spinner" aria-hidden="true" />
+            <h3>{preparingPayment ? 'Checking everything first' : 'Keep this window open'}</h3>
+            <p className="ec-help">
+              {preparingPayment
+                ? 'Ember is confirming the accepted terms, verifying the protected quote, and simulating the Devnet transaction. Nothing will be signed or sent.'
+                : 'The wallet is signing the payment you approved, sending it to Devnet, and confirming activation.'}
+            </p>
+          </section>
+        </section>
+      )
+    }
+
+    if (coverPurchaseStep === 'result') {
+      const active = paymentResult?.coverActive === true || paymentState?.status === 'active'
+      return (
+        <section className="ec-task-screen" data-testid="cover-activation">
+          <div className="ec-screen-head">
+            <span className="ec-screen-head__spacer" aria-hidden="true" />
+            <div>
+              <span className="ec-control-label">Payment result</span>
+              <h2>{active ? 'Cover active' : 'Payment needs attention'}</h2>
+            </div>
+          </div>
+          <section className="ec-review-card" data-testid="payment-result">
+            <h3>{active ? 'Ember Cover is active' : 'Your signed payment is saved'}</h3>
+            {paymentResult?.explorerUrl && paymentResult.state.paymentSignature ? (
+              <p>
+                <a href={paymentResult.explorerUrl} rel="noreferrer" target="_blank">
+                  View Devnet transaction {shortAddress(paymentResult.state.paymentSignature)}
+                </a>
+              </p>
+            ) : null}
+            {!active ? (
+              <p>Do not approve another payment. Return home and use Retry activation.</p>
+            ) : null}
+          </section>
+          {paymentNotice ? <p data-testid="payment-notice">{paymentNotice}</p> : null}
+          {paymentError ? <p data-testid="payment-error">{paymentError}</p> : null}
+          <div className="ec-flow-actions">
+            <button
+              className="ec-primary"
+              onClick={() => setAccountScreen(approvalPending ? 'approval' : 'home')}
+            >
+              Done
+            </button>
+          </div>
+        </section>
+      )
+    }
+
+    if (coverPurchaseStep === 'review' && paymentPreview) {
+      return (
+        <section className="ec-task-screen" data-testid="cover-activation">
+          <div className="ec-screen-head">
+            {renderBackButton(() => {
+              setCoverPurchaseStep('offer')
+              setPaymentPreview(null)
+              setPaymentError('')
+              setPaymentNotice('')
+              setPaymentNeedsUnlock(false)
+            })}
+            <div>
+              <span className="ec-control-label">Step 2 of 2</span>
+              <h2>Review payment</h2>
+            </div>
+          </div>
+          {EMBER_CONFIG.environment === 'sandbox' ? (
+            <p className="ec-warning" data-testid="devnet-qa-warning">
+              Devnet test payment. This does not create real insurance or liability.
+            </p>
+          ) : null}
+          <section className="ec-review-card" data-testid="payment-review">
+            <h3>One-time payment</h3>
+            <p className="ec-help">Ember cannot make future withdrawals.</p>
+            <dl className="ec-data-list" data-testid="payment-summary">
+              <div>
+                <dt>Amount</dt>
+                <dd>{paymentPreview.amountDisplay} {paymentPreview.asset}</dd>
+              </div>
+              <div>
+                <dt>Network</dt>
+                <dd>{clusterLabel(paymentPreview.cluster)}</dd>
+              </div>
+              <div>
+                <dt>From / fee payer</dt>
+                <dd title={paymentPreview.walletAddress}>{shortAddress(paymentPreview.walletAddress)}</dd>
+              </div>
+              <div>
+                <dt>Recipient</dt>
+                <dd title={paymentPreview.treasuryTokenAccount}>
+                  Ember treasury · {shortAddress(paymentPreview.treasuryTokenAccount)}
+                </dd>
+              </div>
+              <div>
+                <dt>Network fee</dt>
+                <dd>{formatLamportsAsSol(BigInt(paymentPreview.feeLamports))} SOL</dd>
+              </div>
+            </dl>
+            {paymentPreview.errors.length > 0 ? (
+              <ul data-testid="payment-errors">
+                {paymentPreview.errors.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            ) : null}
+            {paymentPreview.simulation.status === 'success' ? (
+              <p data-testid="payment-simulation-success">Simulation passed. Nothing has been signed or sent yet.</p>
+            ) : null}
+            {paymentPreview.simulation.status === 'failure' && paymentPreview.errors.length === 0 ? (
+              <p data-testid="payment-simulation-error">Simulation failed: {paymentPreview.simulation.error}</p>
+            ) : null}
+            <details className="ec-technical-details" data-testid="payment-technical-details">
+              <summary>Technical transaction details</summary>
+              <dl className="ec-data-list">
+                <div>
+                  <dt>Offer</dt>
+                  <dd>{paymentPreview.offerId} v{paymentPreview.offerVersion}</dd>
+                </div>
+                <div>
+                  <dt>Full fee payer</dt>
+                  <dd>{paymentPreview.walletAddress}</dd>
+                </div>
+                <div>
+                  <dt>Treasury token account</dt>
+                  <dd>{paymentPreview.treasuryTokenAccount}</dd>
+                </div>
+                <div>
+                  <dt>Payment mint</dt>
+                  <dd>{paymentPreview.tokenMint}</dd>
+                </div>
+                <div>
+                  <dt>Quote reference</dt>
+                  <dd>{paymentPreview.quoteReference}</dd>
+                </div>
+                <div>
+                  <dt>Quote expires</dt>
+                  <dd>{paymentPreview.quoteExpiresAt}</dd>
+                </div>
+                <div>
+                  <dt>Available balances</dt>
+                  <dd>
+                    {paymentPreview.tokenBalanceDisplay} {paymentPreview.asset} ·{' '}
+                    {formatLamportsAsSol(BigInt(paymentPreview.solBalanceLamports))} SOL
+                  </dd>
+                </div>
+              </dl>
+            </details>
+          </section>
+          {paymentError ? <p data-testid="payment-error">{paymentError}</p> : null}
+          {paymentNeedsUnlock ? (
+            <input
+              data-testid="payment-unlock-password"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Wallet password"
+              type="password"
+              value={password}
+            />
+          ) : null}
+          <div className="ec-flow-actions">
+            <button
+              className="ec-primary"
+              data-testid="pay-and-activate-cover"
+              disabled={!canPay}
+              onClick={() => void activateCoverPayment()}
+            >
+              Confirm and pay {paymentPreview.amountDisplay} {paymentPreview.asset}
+            </button>
+          </div>
+        </section>
+      )
+    }
+
     return (
       <section className="ec-task-screen" data-testid="cover-activation">
         <div className="ec-screen-head">
           {renderBackButton(() => setAccountScreen(approvalPending ? 'approval' : 'home'))}
           <div>
-            <span className="ec-control-label">Server-authoritative coverage</span>
-            <h2>Activate Ember Cover</h2>
+            <span className="ec-control-label">Step 1 of 2</span>
+            <h2>Review offer</h2>
           </div>
         </div>
-        <p className="ec-help" data-testid="payment-copy">
-          Ember supplies the offer, terms, price, treasury, and expiry. The wallet verifies a
-          signed quote and the {EMBER_CONFIG.expectedCluster === 'devnet' ? 'Solana Devnet' : 'Solana Mainnet'} identity before it can prepare a one-off token
-          transfer. This is not a subscription or token spending approval.
-        </p>
         {EMBER_CONFIG.environment === 'sandbox' ? (
           <p className="ec-warning" data-testid="devnet-qa-warning">
-            Devnet QA only. This exercises synthetic claims, refund accounting, and Devnet USDC
-            payouts—without creating insurance or real-world liability.
+            Devnet testing only. This does not create real insurance or liability.
           </p>
         ) : null}
-        <section className="ec-review-card" data-testid="ember-session-state">
-          <h3>Ember session</h3>
-          <p>
-            {coverSession?.phase === 'active'
-              ? `Connected until ${coverSession.expiresAt ?? 'unknown'}`
-              : coverSession?.phase === 'configuration_required'
-                ? coverSession.problems.join('; ')
-                : 'Not connected'}
-          </p>
-          <p className="ec-help">
-            The wallet signs one ownership challenge. A short-lived API-only key handles later
-            requests and cannot move funds.
-          </p>
-          {coverEnrolled ? (
-            <button
-              className="ec-secondary"
-              disabled={paymentBusy}
-              onClick={() => void disconnectEmberSession()}
-              type="button"
-            >
-              Revoke session
-            </button>
-          ) : (
-            <button
-              className="ec-primary"
-              data-testid="connect-ember-session"
-              disabled={paymentBusy || coverSession?.phase === 'configuration_required'}
-              onClick={() => void connectEmberSession()}
-              type="button"
-            >
-              {paymentBusy ? 'Connecting...' : 'Connect Ember'}
-            </button>
-          )}
-        </section>
-        {coverLifecycle ? (
+        {coverLifecycle && coverLifecycle.claims.length > 0 ? (
           <section className="ec-review-card" data-testid="ember-lifecycle-authority">
-            <h3>Ember records</h3>
-            <p>
-              Authority: {coverLifecycle.authority}
-              {coverLifecycle.error ? ` · ${coverLifecycle.error}` : ''}
-            </p>
-            {coverLifecycle.claims.length > 0 ? (
-              <ul>
-                {coverLifecycle.claims.map((claim) => (
-                  <li key={claim.claimId}>
-                    Claim {shortAddress(claim.claimId)} · {claim.state}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="ec-help">No claims are recorded for this Ember wallet subject.</p>
-            )}
+            <h3>Claims</h3>
+            <ul>
+              {coverLifecycle.claims.map((claim) => (
+                <li key={claim.claimId}>
+                  Claim {shortAddress(claim.claimId)} · {claim.state}
+                </li>
+              ))}
+            </ul>
           </section>
         ) : null}
-        {coverEnrolled ? (
-          <section className="ec-review-card" data-testid="coverage-offer">
-            <h3>Current offer</h3>
-            {coverageOffers.length > 0 ? (
-              <>
+        <section className="ec-review-card" data-testid="coverage-offer">
+          <h3>{selectedOffer?.displayName ?? 'Your offer'}</h3>
+          {coverageOffers.length > 0 ? (
+            <>
+              {coverageOffers.length > 1 ? (
                 <label>
-                  Offer
+                  Choose offer
                   <select
                     data-testid="coverage-offer-select"
                     onChange={(event) => {
@@ -1270,193 +1468,76 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                     ))}
                   </select>
                 </label>
-                {selectedOffer ? (
-                  <dl className="ec-data-list">
-                    <div>
-                      <dt>Price</dt>
-                      <dd>
-                        {formatBaseUnits(
-                          selectedOffer.priceBaseUnits,
-                          selectedOffer.paymentAssetDecimals,
-                        )}{' '}
-                        {selectedOffer.paymentAsset}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Duration</dt>
-                      <dd>
-                        {selectedOffer.coverageDurationMonths} months /{' '}
-                        {selectedOffer.benefitPeriodCount} activation-anchored periods
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Benefit per period</dt>
-                      <dd>{formatUsdMicros(selectedOffer.benefitPeriodLimitMicros)}</dd>
-                    </div>
-                    <div>
-                      <dt>Annual maximum</dt>
-                      <dd>{formatUsdMicros(selectedOffer.aggregateLimitMicros)}</dd>
-                    </div>
-                    <div>
-                      <dt>Transaction checks</dt>
-                      <dd>{selectedOffer.coveredTransactionLimit}</dd>
-                    </div>
-                    <div>
-                      <dt>Waiting period</dt>
-                      <dd>{selectedOffer.waitingPeriodDays} days</dd>
-                    </div>
-                    <div>
-                      <dt>Terms version</dt>
-                      <dd>{selectedOffer.termsVersion}</dd>
-                    </div>
-                    <div>
-                      <dt>Terms SHA-256</dt>
-                      <dd title={selectedOffer.termsSha256}>
-                        {shortAddress(selectedOffer.termsSha256)}
-                      </dd>
-                    </div>
-                  </dl>
-                ) : null}
-                <label>
-                  <input
-                    checked={termsAccepted}
-                    data-testid="accept-coverage-terms"
-                    onChange={(event) => {
-                      setTermsAccepted(event.currentTarget.checked)
-                      setPaymentPreview(null)
-                    }}
-                    type="checkbox"
-                  />{' '}
-                  I accept this exact offer version and terms hash.
-                </label>
-              </>
-            ) : (
-              <button
-                className="ec-secondary"
-                disabled={paymentBusy}
-                onClick={() => void loadCoverageOffers()}
-                type="button"
-              >
-                Load current offers
-              </button>
-            )}
-          </section>
-        ) : null}
-        {paymentState ? (
-          <section className="ec-review-card" data-testid="local-payment-state">
-            <h3>Local recovery record</h3>
-            <dl className="ec-data-list">
-              <div>
-                <dt>Status</dt>
-                <dd>{paymentState.status}</dd>
-              </div>
-              <div>
-                <dt>Wallet</dt>
-                <dd>{shortAddress(paymentState.walletAddress)}</dd>
-              </div>
-              <div>
-                <dt>Quote</dt>
-                <dd>{shortAddress(paymentState.quote.payload.quoteId)}</dd>
-              </div>
-              <div>
-                <dt>Cover ends</dt>
-                <dd>{paymentState.coverageEndsAt ?? 'Not server-confirmed'}</dd>
-              </div>
-            </dl>
-            {paymentState.lastError ? <p>{paymentState.lastError}</p> : null}
-          </section>
-        ) : null}
-        {paymentPreview ? (
-          <section className="ec-review-card" data-testid="payment-review">
-            <h3>Verified quote and simulated payment</h3>
-            <dl className="ec-data-list">
-              <div>
-                <dt>Offer</dt>
-                <dd>{paymentPreview.offerId} v{paymentPreview.offerVersion}</dd>
-              </div>
-              <div>
-                <dt>Amount</dt>
-                <dd>{paymentPreview.amountDisplay} {paymentPreview.asset}</dd>
-              </div>
-              <div>
-                <dt>Duration</dt>
-                <dd>
-                  {paymentPreview.durationMonths} months /{' '}
-                  {paymentPreview.benefitPeriodCount} activation-anchored periods
-                </dd>
-              </div>
-              <div>
-                <dt>Benefit per period</dt>
-                <dd>{formatUsdMicros(paymentPreview.benefitPeriodLimitMicros)}</dd>
-              </div>
-              <div>
-                <dt>Network</dt>
-                <dd>{clusterLabel(paymentPreview.cluster)}</dd>
-              </div>
-              <div>
-                <dt>Protected and payer wallet</dt>
-                <dd title={paymentPreview.walletAddress}>{shortAddress(paymentPreview.walletAddress)}</dd>
-              </div>
-              <div>
-                <dt>Treasury token account</dt>
-                <dd title={paymentPreview.treasuryTokenAccount}>
-                  {shortAddress(paymentPreview.treasuryTokenAccount)}
-                </dd>
-              </div>
-              <div>
-                <dt>Payment mint</dt>
-                <dd title={paymentPreview.tokenMint}>{shortAddress(paymentPreview.tokenMint)}</dd>
-              </div>
-              <div>
-                <dt>Quote reference</dt>
-                <dd title={paymentPreview.quoteReference}>
-                  {shortAddress(paymentPreview.quoteReference)}
-                </dd>
-              </div>
-              <div>
-                <dt>Quote expires</dt>
-                <dd>{paymentPreview.quoteExpiresAt}</dd>
-              </div>
-              <div>
-                <dt>Estimated network fee</dt>
-                <dd>{paymentPreview.feeLamports} lamports</dd>
-              </div>
-            </dl>
-            <p data-testid="payment-balances">
-              Token base units {paymentPreview.tokenBalanceBaseUnits} · SOL{' '}
-              {formatLamportsAsSol(BigInt(paymentPreview.solBalanceLamports))}
+              ) : (
+                <input
+                  data-testid="coverage-offer-select"
+                  readOnly
+                  type="hidden"
+                  value={selectedOfferId}
+                />
+              )}
+              {selectedOffer ? (
+                <dl className="ec-data-list">
+                  <div>
+                    <dt>Price</dt>
+                    <dd>
+                      {formatBaseUnits(
+                        selectedOffer.priceBaseUnits,
+                        selectedOffer.paymentAssetDecimals,
+                      )}{' '}
+                      {selectedOffer.paymentAsset}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>{selectedOffer.coverageDurationMonths} months</dd>
+                  </div>
+                  <div>
+                    <dt>Cover per period</dt>
+                    <dd>{formatUsdMicros(selectedOffer.benefitPeriodLimitMicros)}</dd>
+                  </div>
+                  <div>
+                    <dt>Annual maximum</dt>
+                    <dd>{formatUsdMicros(selectedOffer.aggregateLimitMicros)}</dd>
+                  </div>
+                  <div>
+                    <dt>Transaction checks</dt>
+                    <dd>{selectedOffer.coveredTransactionLimit}</dd>
+                  </div>
+                  <div>
+                    <dt>Waiting period</dt>
+                    <dd>{selectedOffer.waitingPeriodDays} days</dd>
+                  </div>
+                </dl>
+              ) : null}
+              {selectedOffer ? (
+                <details>
+                  <summary>View terms details</summary>
+                  <p className="ec-help">Version {selectedOffer.termsVersion}</p>
+                  <p className="ec-help" title={selectedOffer.termsSha256}>
+                    Document ID {shortAddress(selectedOffer.termsSha256)}
+                  </p>
+                </details>
+              ) : null}
+              <label>
+                <input
+                  checked={termsAccepted}
+                  data-testid="accept-coverage-terms"
+                  onChange={(event) => {
+                    setTermsAccepted(event.currentTarget.checked)
+                    setPaymentPreview(null)
+                  }}
+                  type="checkbox"
+                />{' '}
+                I accept the Ember Cover terms.
+              </label>
+            </>
+          ) : (
+            <p className="ec-help">
+              {paymentBusy ? 'Loading your offer...' : 'Your offer is unavailable.'}
             </p>
-            {paymentPreview.errors.length > 0 ? (
-              <ul data-testid="payment-errors">
-                {paymentPreview.errors.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            ) : null}
-            {paymentPreview.simulation.status === 'success' ? (
-              <p data-testid="payment-simulation-success">Simulation passed. Nothing has been signed or sent yet.</p>
-            ) : null}
-            {paymentPreview.simulation.status === 'failure' ? (
-              <p data-testid="payment-simulation-error">Simulation failed: {paymentPreview.simulation.error}</p>
-            ) : null}
-          </section>
-        ) : null}
-        {paymentResult ? (
-          <section className="ec-review-card" data-testid="payment-result">
-            <h3>{paymentResult.coverActive ? 'Cover active' : 'Activation pending'}</h3>
-            {paymentResult.explorerUrl && paymentResult.state.paymentSignature ? (
-              <p>
-                <a href={paymentResult.explorerUrl} rel="noreferrer" target="_blank">
-                  {shortAddress(paymentResult.state.paymentSignature)}
-                </a>
-              </p>
-            ) : null}
-            {!paymentResult.coverActive ? (
-              <p>Your signed payment is saved. Recover it; do not sign another payment.</p>
-            ) : null}
-          </section>
-        ) : null}
-        {paymentNotice ? <p data-testid="payment-notice">{paymentNotice}</p> : null}
+          )}
+        </section>
         {paymentError ? <p data-testid="payment-error">{paymentError}</p> : null}
         {paymentNeedsUnlock ? (
           <input
@@ -1468,14 +1549,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           />
         ) : null}
         <div className="ec-flow-actions">
-          {!coverEnrolled ? null : canRetry ? (
+          {!coverEnrolled || (!selectedOffer && !paymentBusy) ? (
             <button
               className="ec-primary"
-              data-testid="retry-payment-activation"
-              disabled={paymentBusy}
-              onClick={() => void syncCoverPayment()}
+              data-testid="retry-cover-offer"
+              disabled={paymentBusy || coverSession?.phase === 'configuration_required'}
+              onClick={() => void prepareCoverageOffer()}
             >
-              {paymentBusy ? 'Retrying...' : 'Retry activation'}
+              {paymentBusy ? 'Loading offer...' : 'Try again'}
             </button>
           ) : paymentStatusView.primaryAction === 'refresh' ? (
             <button
@@ -1493,25 +1574,14 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             >
               Done
             </button>
-          ) : !paymentPreview ? (
+          ) : (
             <button
               className="ec-primary"
               data-testid="review-cover-payment"
               disabled={paymentBusy || !selectedOfferId || !termsAccepted}
               onClick={() => void previewCoverPayment()}
             >
-              {paymentBusy ? 'Checking...' : 'Accept terms and verify quote'}
-            </button>
-          ) : (
-            <button
-              className="ec-primary"
-              data-testid="pay-and-activate-cover"
-              disabled={!canPay}
-              onClick={() => void activateCoverPayment()}
-            >
-              {paymentBusy
-                ? 'Submitting...'
-                : `Pay ${paymentPreview.amountDisplay} ${paymentPreview.asset} and activate cover`}
+              Continue to payment
             </button>
           )}
         </div>
@@ -1654,9 +1724,27 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           {renderBackButton(() => setAccountScreen('home'))}
           <div>
             <span className="ec-control-label">Wallet safety</span>
-            <h2>Backup and recovery</h2>
+            <h2>Wallet settings</h2>
           </div>
         </div>
+        <section className="ec-review-card" data-testid="ember-connection-settings">
+          <h3>Ember Cover connection</h3>
+          <p className="ec-help">
+            {coverEnrolled
+              ? 'Connected securely. This connection cannot move funds.'
+              : 'Not connected.'}
+          </p>
+          {coverEnrolled ? (
+            <button
+              className="ec-secondary"
+              disabled={paymentBusy}
+              onClick={() => void disconnectEmberSession()}
+              type="button"
+            >
+              {paymentBusy ? 'Disconnecting...' : 'Disconnect Ember Cover'}
+            </button>
+          ) : null}
+        </section>
         {renderRecoveryTools(true)}
       </section>
     )
@@ -1722,7 +1810,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           onClick={needsRefresh ? () => void refreshCoverState() : openCoverActivation}
           type="button"
         >
-          {needsRefresh ? 'Check cover' : needsSync ? 'Retry activation' : 'Activate cover'}
+          {needsRefresh
+            ? 'Check cover'
+            : needsSync
+              ? 'Retry activation'
+              : paymentStatusView.primaryAction === 'review'
+                ? 'Continue review'
+                : 'Activate cover'}
         </button>
       </section>
     )

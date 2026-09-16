@@ -43,6 +43,7 @@ const CONFIG: EmberRuntimeConfig = {
   expectedGenesisHash: MAINNET_GENESIS_HASH,
   extensionId: 'abcdefghijklmnopabcdefghijklmnop',
   integrationId: 'integration_reference-wallet',
+  integrationVersion: 1,
   problems: [],
 }
 const OFFER = {
@@ -271,6 +272,8 @@ function coverStub(client: ReturnType<typeof clientStub>): EmberLifecycleProvide
 
 function rpcStub(options: {
   genesisHash?: string
+  sourceTokenAccountExists?: boolean
+  tokenBalanceAmount?: string
   onBroadcast?: (transaction: string) => Promise<void>
 } = {}): CoveragePaymentRpc {
   return {
@@ -286,10 +289,15 @@ function rpcStub(options: {
         },
       }),
     }),
+    getAccountInfo: () => ({
+      send: async () => ({
+        value: options.sourceTokenAccountExists === false ? null : { owner: TOKEN_PROGRAM },
+      }),
+    }),
     getTokenAccountBalance: () => ({
       send: async () => ({
         value: {
-          amount: '500000000',
+          amount: options.tokenBalanceAmount ?? '500000000',
           decimals: 6,
           uiAmountString: '500',
         },
@@ -404,6 +412,60 @@ test('prepares the exact 1 USDC sandbox quote against Devnet without signing', a
     simulation: { status: 'success' },
     tokenMint: DEVNET_MINT,
   })
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('treats a missing USDC token account as a zero balance without signing', async () => {
+  const client = clientStub(QA_OFFER, QA_QUOTE)
+  const provider = new CoveragePaymentProvider(signer, coverStub(client), {
+    config: QA_CONFIG,
+    now: () => NOW,
+    rpcFactory: () =>
+      rpcStub({
+        genesisHash: DEVNET_GENESIS_HASH,
+        sourceTokenAccountExists: false,
+      }),
+  })
+
+  const preview = await provider.previewPayment({
+    acceptedTerms: true,
+    cluster: 'devnet',
+    offerId: QA_OFFER.offerId,
+  })
+
+  expect(preview).toMatchObject({
+    tokenBalanceBaseUnits: '0',
+    tokenBalanceDisplay: '0',
+    simulation: { status: 'failure' },
+  })
+  expect(preview.errors).toContain(
+    'Not enough USDC. You need 1 USDC, but this wallet has 0 USDC.',
+  )
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('reports the available USDC amount when the balance is insufficient', async () => {
+  const client = clientStub(QA_OFFER, QA_QUOTE)
+  const provider = new CoveragePaymentProvider(signer, coverStub(client), {
+    config: QA_CONFIG,
+    now: () => NOW,
+    rpcFactory: () =>
+      rpcStub({
+        genesisHash: DEVNET_GENESIS_HASH,
+        tokenBalanceAmount: '250000',
+      }),
+  })
+
+  const preview = await provider.previewPayment({
+    acceptedTerms: true,
+    cluster: 'devnet',
+    offerId: QA_OFFER.offerId,
+  })
+
+  expect(preview.tokenBalanceDisplay).toBe('0.25')
+  expect(preview.errors).toContain(
+    'Not enough USDC. You need 1 USDC, but this wallet has 0.25 USDC.',
+  )
   expect(signer.sign).not.toHaveBeenCalled()
 })
 

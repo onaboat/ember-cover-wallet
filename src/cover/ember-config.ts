@@ -1,6 +1,7 @@
 import type { IntegrationEnvironment } from '@embercover/wallet-sdk'
 
 import type { WalletCluster } from '../background/wallet-data-config.ts'
+import { EMBER_CHROME_EXTENSION_ID } from '../config/chrome-identity.ts'
 
 declare global {
   interface ImportMeta {
@@ -19,14 +20,15 @@ export interface EmberRuntimeConfig {
   expectedGenesisHash: string | null
   extensionId: string | null
   integrationId: string | null
+  integrationVersion: number | null
   problems: string[]
 }
 
 type EmberConfigEnvironment = Readonly<{
   WXT_EMBER_API_BASE_URL?: string | boolean | undefined
   WXT_EMBER_ENVIRONMENT?: string | boolean | undefined
-  WXT_EMBER_EXTENSION_ID?: string | boolean | undefined
   WXT_EMBER_INTEGRATION_ID?: string | boolean | undefined
+  WXT_EMBER_INTEGRATION_VERSION?: string | boolean | undefined
 }>
 
 function configuredString(
@@ -44,7 +46,11 @@ export function emberRuntimeConfig(
     environment === 'production' ? 'mainnet-beta' : 'devnet'
   const apiBaseUrl = configuredString(env.WXT_EMBER_API_BASE_URL)?.replace(/\/$/, '') ?? null
   const integrationId = configuredString(env.WXT_EMBER_INTEGRATION_ID)
-  const extensionId = configuredString(env.WXT_EMBER_EXTENSION_ID)
+  const integrationVersionText = configuredString(env.WXT_EMBER_INTEGRATION_VERSION)
+  const integrationVersion =
+    integrationVersionText && /^\d+$/.test(integrationVersionText)
+      ? Number(integrationVersionText)
+      : null
   const problems: string[] = []
 
   if (!apiBaseUrl) {
@@ -81,21 +87,23 @@ export function emberRuntimeConfig(
   if (!integrationId || !/^integration_[a-z0-9-]+$/.test(integrationId)) {
     problems.push('WXT_EMBER_INTEGRATION_ID must be a canonical integration identifier')
   }
-  if (extensionId && !/^[a-p]{32}$/.test(extensionId)) {
-    problems.push('WXT_EMBER_EXTENSION_ID must be an exact 32-character Chrome extension ID')
+  if (
+    integrationVersion === null ||
+    !Number.isSafeInteger(integrationVersion) ||
+    integrationVersion < 1 ||
+    integrationVersion > 2_147_483_647
+  ) {
+    problems.push('WXT_EMBER_INTEGRATION_VERSION must be a positive signed 32-bit integer')
   }
-  if (environment === 'production' && !extensionId) {
-    problems.push('Production requires WXT_EMBER_EXTENSION_ID for exact origin binding')
-  }
-
   return {
     apiBaseUrl,
     environment,
     expectedCluster,
     expectedGenesisHash:
       environment === 'production' ? MAINNET_GENESIS_HASH : DEVNET_GENESIS_HASH,
-    extensionId,
+    extensionId: EMBER_CHROME_EXTENSION_ID,
     integrationId,
+    integrationVersion,
     problems,
   }
 }
@@ -103,6 +111,6 @@ export function emberRuntimeConfig(
 export const EMBER_CONFIG = emberRuntimeConfig({
   WXT_EMBER_API_BASE_URL: import.meta.env?.WXT_EMBER_API_BASE_URL,
   WXT_EMBER_ENVIRONMENT: import.meta.env?.WXT_EMBER_ENVIRONMENT,
-  WXT_EMBER_EXTENSION_ID: import.meta.env?.WXT_EMBER_EXTENSION_ID,
   WXT_EMBER_INTEGRATION_ID: import.meta.env?.WXT_EMBER_INTEGRATION_ID,
+  WXT_EMBER_INTEGRATION_VERSION: import.meta.env?.WXT_EMBER_INTEGRATION_VERSION,
 })

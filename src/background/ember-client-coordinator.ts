@@ -1,6 +1,7 @@
 import {
   EmberWalletClient,
   P11_WALLET_SCOPES,
+  parsePersistedWalletSession,
 } from '@embercover/wallet-sdk'
 import { browser } from 'wxt/browser'
 import type {
@@ -48,6 +49,7 @@ interface CoordinatorDependencies {
   config?: EmberRuntimeConfig
   fetch?: EmberFetch
   now?: () => Date
+  runtimeExtensionId?: () => string | undefined
   sessionStore?: WalletSessionStore
 }
 
@@ -61,6 +63,7 @@ export class EmberClientCoordinator {
   private readonly config: EmberRuntimeConfig
   private readonly fetchAdapter: EmberFetch | undefined
   private readonly now: () => Date
+  private readonly runtimeExtensionId: () => string | undefined
   private readonly sessionStore: WalletSessionStore
   private readonly vaultSigner: EmberVaultSigner
   private operation: Promise<unknown> = Promise.resolve()
@@ -73,6 +76,7 @@ export class EmberClientCoordinator {
     this.config = dependencies.config ?? EMBER_CONFIG
     this.fetchAdapter = dependencies.fetch
     this.now = dependencies.now ?? (() => new Date())
+    this.runtimeExtensionId = dependencies.runtimeExtensionId ?? (() => browser.runtime.id)
     this.sessionStore = dependencies.sessionStore ?? browserWalletSessionStore
   }
 
@@ -80,7 +84,7 @@ export class EmberClientCoordinator {
     return await this.serialized(async () => {
       this.assertConfigured()
       const walletAddress = await this.requireWalletAddress()
-      const existing = await this.sessionStore.load()
+      const existing = await this.loadSession()
       if (existing && existing.walletAddress !== walletAddress) {
         await this.sessionStore.clear()
       }
@@ -99,7 +103,7 @@ export class EmberClientCoordinator {
   async activeClient(): Promise<EmberWalletClient | null> {
     return await this.serialized(async () => {
       if (this.configurationProblems().length > 0) return null
-      const session = await this.sessionStore.load()
+      const session = await this.loadSession()
       const walletAddress = await this.vaultSigner.getAddress()
       if (!session || !walletAddress || session.walletAddress !== walletAddress) return null
       const now = this.now().getTime()
@@ -114,7 +118,7 @@ export class EmberClientCoordinator {
         await promoteSessionSigner(nextSigner.publicKey)
         return this.createClient(nextSigner)
       } catch {
-        const persisted = await this.sessionStore.load()
+        const persisted = await this.loadSession()
         if (persisted?.sessionPublicKey === nextSigner.publicKey) {
           // The SDK persisted the accepted server session before local key
           // promotion. Recover that exact pending key after an interrupted write.
@@ -129,7 +133,7 @@ export class EmberClientCoordinator {
 
   async revoke(): Promise<void> {
     await this.serialized(async () => {
-      const session = await this.sessionStore.load()
+      const session = await this.loadSession()
       if (!session) return
       try {
         const signer = await getSessionSigner(session.sessionPublicKey)
@@ -155,7 +159,7 @@ export class EmberClientCoordinator {
         problems,
       }
     }
-    const session = await this.sessionStore.load()
+    const session = await this.loadSession()
     if (!session) {
       return {
         environment: this.config.environment,
@@ -192,20 +196,29 @@ export class EmberClientCoordinator {
 
   private assertConfigured(): void {
     const problems = this.configurationProblems()
-    if (!this.config.apiBaseUrl || !this.config.integrationId || problems.length > 0) {
+    if (
+      !this.config.apiBaseUrl ||
+      !this.config.integrationId ||
+      !this.config.integrationVersion ||
+      problems.length > 0
+    ) {
       throw new Error(problems.join('; ') || 'Ember is not configured')
     }
   }
 
   private configurationProblems(): string[] {
     const problems = [...this.config.problems]
+    const runtimeExtensionId = this.runtimeExtensionId()
+    if (!runtimeExtensionId || !/^[a-p]{32}$/.test(runtimeExtensionId)) {
+      problems.push('The installed Chrome extension does not have a canonical extension ID')
+      return problems
+    }
     if (
       this.config.extensionId &&
-      browser.runtime.id &&
-      browser.runtime.id !== this.config.extensionId
+      runtimeExtensionId !== this.config.extensionId
     ) {
       problems.push(
-        `Installed extension ID ${browser.runtime.id} does not match the approved Ember origin`,
+        `Installed extension ID ${runtimeExtensionId} does not match the approved Ember origin`,
       )
     }
     return problems
@@ -215,16 +228,30 @@ export class EmberClientCoordinator {
     signer: Awaited<ReturnType<typeof getSessionSigner>>,
   ): EmberWalletClient {
     this.assertConfigured()
+    const extensionId = this.runtimeExtensionId()!
     return new EmberWalletClient({
       baseUrl: this.config.apiBaseUrl!,
-      client: { kind: 'browser' },
       environment: this.config.environment,
+      hostBinding: {
+        kind: 'chrome_extension',
+        origin: `chrome-extension://${extensionId}`,
+      },
       integrationId: this.config.integrationId!,
+      integrationVersion: this.config.integrationVersion!,
       now: this.now,
       sessionSigner: signer,
       sessionStore: this.sessionStore,
       ...(this.fetchAdapter ? { fetch: this.fetchAdapter } : {}),
     })
+  }
+
+  private async loadSession(): Promise<PersistedWalletSession | null> {
+    const stored = await this.sessionStore.load()
+    const session = parsePersistedWalletSession(stored)
+    if (!session && stored !== null && stored !== undefined) {
+      await this.sessionStore.clear()
+    }
+    return session
   }
 
   private async requireWalletAddress(): Promise<string> {

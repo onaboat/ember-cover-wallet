@@ -16,3 +16,6 @@ test-results
   .wrangler/
 
 docs/
+
+# Local product-management artifact; maintained outside wallet source control.
+project management/ember-wallet-product-plan.html

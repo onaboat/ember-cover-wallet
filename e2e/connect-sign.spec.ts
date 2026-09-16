@@ -20,6 +20,8 @@ import {
   startEmberApiFixture,
 } from './fixtures/ember-api-server.ts'
 import type { EmberApiFixture } from './fixtures/ember-api-server.ts'
+import { EMBER_CHROME_EXTENSION_ID } from '../src/config/chrome-identity.ts'
+import { base58Encode } from '../src/crypto/base58.ts'
 
 declare global {
   interface Window {
@@ -46,6 +48,7 @@ function buildTx(feePayer: string): Uint8Array {
 const EXT = path.resolve('.output/chrome-mv3')
 const DAPP_FILE = path.resolve('e2e/fixtures/dapp.html')
 const PASSWORD = 'Str0ng-pass-correct-horse'
+const SEND_DESTINATION = base58Encode(new Uint8Array(32).fill(51))
 
 // The wallet's content scripts (the MAIN-world provider + the ISOLATED bridge) are scoped to
 // http(s) ONLY, deliberately not file:// or chrome://. So the dapp MUST be served over http for the
@@ -86,7 +89,9 @@ async function launch(): Promise<{ context: BrowserContext; extensionId: string 
   })
   let [sw] = context.serviceWorkers()
   if (!sw) sw = await context.waitForEvent('serviceworker')
-  return { context, extensionId: new URL(sw.url()).host }
+  const extensionId = new URL(sw.url()).host
+  expect(extensionId).toBe(EMBER_CHROME_EXTENSION_ID)
+  return { context, extensionId }
 }
 
 async function createVault(context: BrowserContext, extensionId: string): Promise<void> {
@@ -128,36 +133,67 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
   const popup = await context.newPage()
   await popup.goto(`chrome-extension://${extensionId}/popup.html`)
   await popup.getByTestId('activate-cover').click()
-  await popup.getByTestId('connect-ember-session').click()
 
   await expect(popup.getByTestId('coverage-offer-select')).toHaveValue(
     'offer_devnet-qa-core-annual',
     { timeout: 15_000 },
   )
   await expect(popup.getByTestId('coverage-offer')).toContainText('1 USDC')
-  await expect(popup.getByTestId('coverage-offer')).toContainText(
-    '12 months / 12 activation-anchored periods',
-  )
+  await expect(popup.getByTestId('coverage-offer')).toContainText('12 months')
   await expect(popup.getByTestId('coverage-offer')).toContainText('$10,000.00')
   await expect(popup.getByTestId('coverage-offer')).toContainText('$120,000.00')
   await expect(popup.getByTestId('coverage-offer')).toContainText('100')
+  await expect(popup.getByTestId('ember-session-state')).toHaveCount(0)
+  await expect(popup.getByText('Server-authoritative coverage')).toHaveCount(0)
   await expect(popup.getByTestId('devnet-qa-warning')).toContainText(
-    'without creating insurance or real-world liability',
+    'does not create real insurance or liability',
+  )
+  await expect(popup.getByTestId('review-cover-payment')).toHaveText(
+    'Continue to payment',
   )
   await popup.getByTestId('accept-coverage-terms').check()
   await popup.getByTestId('review-cover-payment').click()
-  await expect(popup.getByTestId('payment-review')).toBeVisible({ timeout: 15_000 })
-  await expect(popup.getByTestId('payment-review')).toContainText('1 USDC')
-  await expect(popup.getByTestId('payment-review')).toContainText('Devnet')
-  await expect(popup.getByTestId('payment-review')).toContainText(
-    '12 months / 12 activation-anchored periods',
+  await expect(popup.getByTestId('cover-payment-preparing')).toBeVisible()
+  await expect(popup.getByTestId('cover-payment-preparing')).toContainText(
+    'Nothing will be signed or sent',
   )
+  await expect(popup.getByTestId('payment-review')).toBeVisible({ timeout: 15_000 })
+  await expect(popup.getByTestId('coverage-offer')).toHaveCount(0)
+  await expect(popup.getByTestId('local-payment-state')).toHaveCount(0)
+  await expect(popup.getByTestId('payment-review').getByRole('heading')).toHaveText(
+    'One-time payment',
+  )
+  await expect(popup.getByTestId('payment-review')).toContainText(
+    'Ember cannot make future withdrawals.',
+  )
+  await expect(popup.getByTestId('payment-summary')).toContainText('1 USDC')
+  await expect(popup.getByTestId('payment-summary')).toContainText('Devnet')
+  await expect(popup.getByTestId('payment-summary')).toContainText('From / fee payer')
+  await expect(popup.getByTestId('payment-summary')).toContainText('Ember treasury')
+  await expect(popup.getByTestId('payment-summary')).toContainText('0.000005 SOL')
   await expect(popup.getByTestId('payment-simulation-success')).toContainText(
     'Nothing has been signed or sent yet',
   )
+  const technicalDetails = popup.getByTestId('payment-technical-details')
+  await expect(technicalDetails).not.toHaveAttribute('open', '')
+  await expect(technicalDetails.locator('dl')).not.toBeVisible()
+  await technicalDetails.locator('summary').click()
+  await expect(technicalDetails.locator('dl')).toBeVisible()
+  await expect(technicalDetails).toContainText('Payment mint')
+  await expect(technicalDetails).toContainText('Quote reference')
   await expect(popup.getByTestId('pay-and-activate-cover')).toHaveText(
-    'Pay 1 USDC and activate cover',
+    'Confirm and pay 1 USDC',
   )
+  await popup.getByRole('button', { name: 'Back' }).click()
+  await expect(popup.getByTestId('coverage-offer')).toBeVisible()
+  await expect(popup.getByTestId('payment-review')).toHaveCount(0)
+  await popup.getByRole('button', { name: 'Back' }).click()
+  await expect(popup.getByTestId('cover-status')).toHaveText('NO COVER')
+  await expect(popup.getByTestId('wallet-cover-status')).toContainText(
+    'Review your Ember Cover offer.',
+  )
+  await expect(popup.getByTestId('wallet-cover-status')).not.toContainText('Pending')
+  await expect(popup.getByRole('button', { name: 'View offer' })).toBeVisible()
   const expectedOrigin = `chrome-extension://${extensionId}`
   const businessRequests =
     emberApi?.requests.filter((request) => !request.startsWith('OPTIONS ')) ?? []
@@ -173,6 +209,84 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
     ]),
   )
   expect(emberApi?.origins.has(expectedOrigin)).toBe(true)
+
+  await context.close()
+})
+
+test('active cover reviews, signs, broadcasts, and submits exact evidence for a wallet send', async () => {
+  test.setTimeout(120_000)
+  const { context, extensionId } = await launch()
+  await createVault(context, extensionId)
+
+  const popup = await context.newPage()
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`)
+  await popup.getByTestId('activate-cover').click()
+  await expect(popup.getByTestId('coverage-offer')).toBeVisible({ timeout: 15_000 })
+  await popup.getByTestId('accept-coverage-terms').check()
+  await popup.getByTestId('review-cover-payment').click()
+  await expect(popup.getByTestId('payment-review')).toBeVisible({ timeout: 15_000 })
+
+  const transactionsBeforePayment = emberApi?.rpcTransactions.length ?? 0
+  await popup.getByTestId('pay-and-activate-cover').click()
+  await expect(popup.getByTestId('payment-result')).toContainText(
+    'Ember Cover is active',
+    { timeout: 20_000 },
+  )
+  expect(emberApi?.rpcTransactions).toHaveLength(transactionsBeforePayment + 1)
+
+  await popup.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect(popup.getByTestId('cover-status')).toHaveText('PROTECTED', {
+    timeout: 15_000,
+  })
+  await popup.getByTestId('send-sol').click()
+  await expect(popup.getByTestId('send-cover-status')).toContainText('Protected')
+  await popup.getByTestId('send-recipient-input').fill(SEND_DESTINATION)
+  await popup.getByTestId('send-amount-input').fill('0.000001')
+  await popup.getByTestId('send-review-next').click()
+
+  await expect(popup.getByTestId('send-review')).toBeVisible()
+  await expect(popup.getByTestId('send-review-destination')).toHaveText(SEND_DESTINATION)
+  await expect(popup.getByTestId('send-cover').getByRole('heading')).toHaveText(
+    'Covered',
+    { timeout: 15_000 },
+  )
+  await expect(popup.getByTestId('send-simulation-error')).toHaveCount(0)
+  await expect(popup.getByTestId('send-submit')).toBeEnabled()
+
+  const transactionsBeforeSend = emberApi?.rpcTransactions.length ?? 0
+  const evidenceBeforeSend = emberApi?.decisionEvidence.length ?? 0
+  await popup.getByTestId('send-submit').click()
+  await expect(popup.getByTestId('send-complete')).toContainText('Covered', {
+    timeout: 20_000,
+  })
+  expect(emberApi?.rpcTransactions).toHaveLength(transactionsBeforeSend + 1)
+  await expect.poll(() => emberApi?.decisionEvidence.length ?? 0).toBe(
+    evidenceBeforeSend + 1,
+  )
+
+  const evidence = emberApi?.decisionEvidence.at(-1)?.request
+  expect(evidence?.kind).toBe('transaction')
+  if (evidence?.kind !== 'transaction') {
+    throw new Error('Expected transaction evidence')
+  }
+  expect(evidence.signedBytes).toBe(emberApi?.rpcTransactions.at(-1))
+
+  const expectedOrigin = `chrome-extension://${extensionId}`
+  expect(emberApi?.requests).toEqual(
+    expect.arrayContaining([
+      `POST /v1/payments origin=${expectedOrigin}`,
+      `GET /v1/coverage-instances/coverage_devnet-qa-e2e origin=none`,
+      `POST /v1/decisions origin=${expectedOrigin}`,
+    ]),
+  )
+  expect(
+    emberApi?.requests.some(
+      (request) =>
+        /^POST \/v1\/decisions\/decision_devnet-qa-e2e-\d+\/post-sign origin=/.test(
+          request,
+        ) && request.endsWith(expectedOrigin),
+    ),
+  ).toBe(true)
 
   await context.close()
 })

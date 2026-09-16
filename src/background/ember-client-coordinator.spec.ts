@@ -7,11 +7,15 @@ import { fakeBrowser } from 'wxt/testing'
 import { beforeEach, expect, test, vi } from 'vitest'
 
 import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
+import { base58Encode } from '../crypto/base58.ts'
+import { walletChallengeFixture } from '../test/wallet-challenge-fixture.ts'
 
 import { EmberClientCoordinator } from './ember-client-coordinator.ts'
 
 const WALLET = 'So11111111111111111111111111111111111111112'
 const NOW = new Date('2026-07-28T00:00:00.000Z')
+const EXTENSION_ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop'
+const CHALLENGE_NONCE = base58Encode(new Uint8Array(24).fill(7))
 const CONFIG: EmberRuntimeConfig = {
   apiBaseUrl: 'http://127.0.0.1:18787',
   environment: 'sandbox',
@@ -19,8 +23,11 @@ const CONFIG: EmberRuntimeConfig = {
   expectedGenesisHash: null,
   extensionId: null,
   integrationId: 'integration_reference-wallet',
+  integrationVersion: 1,
   problems: [],
 }
+
+const runtimeExtensionId = () => EXTENSION_ORIGIN.slice('chrome-extension://'.length)
 
 class MemorySessionStore implements WalletSessionStore {
   value: PersistedWalletSession | null = null
@@ -63,13 +70,25 @@ function sessionFetch(options: {
     const url = String(input)
     options.onRequest?.(url, init)
     if (url.endsWith('/v1/wallet-sessions/challenges')) {
-      return Response.json({
-        challengeId: 'challenge_test',
-        expiresAt: '2026-07-28T00:05:00.000Z',
-        issuedAt: NOW.toISOString(),
-        message: 'Sign exact Ember challenge',
-        nonce: 'nonce_test',
-      })
+      const body = JSON.parse(String(init?.body)) as {
+        integrationId: string
+        requestedScopes: typeof P11_WALLET_SCOPES
+        sessionPublicKey: string
+        walletAddress: string
+      }
+      return Response.json(
+        walletChallengeFixture({
+          challengeId: 'challenge_test',
+          extensionOrigin: EXTENSION_ORIGIN,
+          integrationId: body.integrationId,
+          integrationVersion: CONFIG.integrationVersion!,
+          issuedAt: NOW,
+          nonce: CHALLENGE_NONCE,
+          requestedScopes: body.requestedScopes,
+          sessionPublicKey: body.sessionPublicKey,
+          walletAddress: body.walletAddress,
+        }),
+      )
     }
     if (url.endsWith('/v1/wallet-sessions/rotate')) {
       const body = JSON.parse(String(init?.body)) as { sessionPublicKey: string }
@@ -118,6 +137,7 @@ test('opens a least-privilege SDK session with the vault challenge signer', asyn
       },
     }),
     now: () => NOW,
+    runtimeExtensionId,
     sessionStore: store,
   })
 
@@ -129,6 +149,7 @@ test('opens a least-privilege SDK session with the vault challenge signer', asyn
     requestedScopes: [...P11_WALLET_SCOPES],
     walletAddress: WALLET,
   })
+  expect(challengeBody).not.toHaveProperty('integrationVersion')
   expect(vaultSigner.sign).toHaveBeenCalledOnce()
   expect(store.value?.sessionPublicKey).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/)
 })
@@ -140,6 +161,7 @@ test('restores the scoped session after a service-worker restart', async () => {
     config: CONFIG,
     fetch: fetchAdapter,
     now: () => NOW,
+    runtimeExtensionId,
     sessionStore: store,
   })
   await first.enroll()
@@ -147,6 +169,7 @@ test('restores the scoped session after a service-worker restart', async () => {
     config: CONFIG,
     fetch: fetchAdapter,
     now: () => NOW,
+    runtimeExtensionId,
     sessionStore: store,
   })
 
@@ -161,6 +184,7 @@ test('rotates the API-only key before access expiry and promotes the accepted ke
     config: CONFIG,
     fetch: fetchAdapter,
     now: () => NOW,
+    runtimeExtensionId,
     sessionStore: store,
   })
   await coordinator.enroll()
@@ -173,13 +197,16 @@ test('rotates the API-only key before access expiry and promotes the accepted ke
 
 test('does not silently use an expired access session', async () => {
   const store = new MemorySessionStore()
+  let currentTime = NOW
   const coordinator = new EmberClientCoordinator(vaultSigner, {
     config: CONFIG,
-    fetch: sessionFetch({ expiresAt: '2026-07-27T23:59:00.000Z' }),
-    now: () => NOW,
+    fetch: sessionFetch({ expiresAt: '2026-07-28T00:01:00.000Z' }),
+    now: () => currentTime,
+    runtimeExtensionId,
     sessionStore: store,
   })
   await coordinator.enroll()
+  currentTime = new Date('2026-07-28T00:02:00.000Z')
 
   expect(await coordinator.activeClient()).toBeNull()
   expect((await coordinator.status()).phase).toBe('renewal_required')
@@ -191,6 +218,7 @@ test('revocation clears the local refresh credential even after the server call'
     config: CONFIG,
     fetch: sessionFetch(),
     now: () => NOW,
+    runtimeExtensionId,
     sessionStore: store,
   })
   await coordinator.enroll()

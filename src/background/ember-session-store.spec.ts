@@ -16,7 +16,7 @@ const SESSION: PersistedWalletSession = {
   scopes: ['offers:read'],
   sessionId: 'wallet_session_test',
   sessionPublicKey: '11111111111111111111111111111111',
-  walletAddress: '22222222222222222222222222222222',
+  walletAddress: 'So11111111111111111111111111111111111111112',
   walletSubjectId: 'wallet_subject_test',
 }
 

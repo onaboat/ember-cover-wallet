@@ -5,21 +5,23 @@ import {
   MAINNET_GENESIS_HASH,
   emberRuntimeConfig,
 } from './ember-config.ts'
+import { EMBER_CHROME_EXTENSION_ID } from '../config/chrome-identity.ts'
 
 test('production configuration binds HTTPS, mainnet, and the canonical genesis hash', () => {
   const config = emberRuntimeConfig({
     WXT_EMBER_API_BASE_URL: 'https://api.embercover.example/',
     WXT_EMBER_ENVIRONMENT: 'production',
-    WXT_EMBER_EXTENSION_ID: 'abcdefghijklmnopabcdefghijklmnop',
     WXT_EMBER_INTEGRATION_ID: 'integration_reference-wallet',
+    WXT_EMBER_INTEGRATION_VERSION: '1',
   })
   expect(config).toMatchObject({
     apiBaseUrl: 'https://api.embercover.example',
     environment: 'production',
     expectedCluster: 'mainnet-beta',
     expectedGenesisHash: MAINNET_GENESIS_HASH,
-    extensionId: 'abcdefghijklmnopabcdefghijklmnop',
+    extensionId: EMBER_CHROME_EXTENSION_ID,
     integrationId: 'integration_reference-wallet',
+    integrationVersion: 1,
     problems: [],
   })
 })
@@ -29,8 +31,8 @@ test('production rejects insecure transport and sandbox accepts exact loopback H
     emberRuntimeConfig({
       WXT_EMBER_API_BASE_URL: 'http://api.example.com',
       WXT_EMBER_ENVIRONMENT: 'production',
-      WXT_EMBER_EXTENSION_ID: 'abcdefghijklmnopabcdefghijklmnop',
       WXT_EMBER_INTEGRATION_ID: 'integration_reference-wallet',
+      WXT_EMBER_INTEGRATION_VERSION: '1',
     }).problems,
   ).toContain('Production Ember API configuration requires HTTPS')
   expect(
@@ -38,6 +40,7 @@ test('production rejects insecure transport and sandbox accepts exact loopback H
       WXT_EMBER_API_BASE_URL: 'http://127.0.0.1:18787',
       WXT_EMBER_ENVIRONMENT: 'sandbox',
       WXT_EMBER_INTEGRATION_ID: 'integration_reference-wallet',
+      WXT_EMBER_INTEGRATION_VERSION: '1',
     }),
   ).toMatchObject({
     expectedCluster: 'devnet',
@@ -51,5 +54,6 @@ test('missing public configuration is explicit instead of silently selecting a d
   expect(config.problems).toEqual([
     'WXT_EMBER_API_BASE_URL is not configured',
     'WXT_EMBER_INTEGRATION_ID must be a canonical integration identifier',
+    'WXT_EMBER_INTEGRATION_VERSION must be a positive signed 32-bit integer',
   ])
 })
