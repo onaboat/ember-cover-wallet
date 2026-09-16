@@ -20,6 +20,7 @@ import {
   MAINNET_GENESIS_HASH,
 } from '../cover/ember-config.ts'
 import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
+import { validateCoveragePaymentContract } from '../cover/coverage-payment-contract.ts'
 
 import type { EmberLifecycleProvider } from './cover-service.ts'
 import {
@@ -333,6 +334,42 @@ const signer = {
   getAddress: async () => WALLET,
   sign: vi.fn(async () => new Uint8Array(64).fill(7)),
 }
+
+test('validates the exact payable Devnet quote before Solana work begins', () => {
+  expect(
+    validateCoveragePaymentContract(QA_QUOTE, {
+      environment: 'sandbox',
+      expectedCluster: 'devnet',
+      expectedGenesisHash: DEVNET_GENESIS_HASH,
+      nowMs: NOW,
+      walletAddress: WALLET,
+    }).schedule.coverageDurationMonths,
+  ).toBe(12)
+})
+
+test('rejects a quote-wallet mismatch before Solana work begins', () => {
+  expect(() =>
+    validateCoveragePaymentContract(QA_QUOTE, {
+      environment: 'sandbox',
+      expectedCluster: 'devnet',
+      expectedGenesisHash: DEVNET_GENESIS_HASH,
+      nowMs: NOW,
+      walletAddress: TREASURY_OWNER,
+    }),
+  ).toThrow('bound to a different wallet')
+})
+
+test('rejects a production quote in the Devnet fixture boundary', () => {
+  expect(() =>
+    validateCoveragePaymentContract(QUOTE, {
+      environment: 'sandbox',
+      expectedCluster: 'devnet',
+      expectedGenesisHash: DEVNET_GENESIS_HASH,
+      nowMs: NOW,
+      walletAddress: WALLET,
+    }),
+  ).toThrow('does not match this wallet build environment')
+})
 
 beforeEach(() => {
   fakeBrowser.reset()

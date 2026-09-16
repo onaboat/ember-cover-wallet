@@ -5,39 +5,31 @@ import type {
   SignedQuoteResponse,
 } from '@embercover/wallet-sdk'
 import {
-  AccountRole,
-  address as toAddress,
-  appendTransactionMessageInstruction,
-  blockhash as toBlockhash,
-  compileTransaction,
   createSolanaRpc,
-  createTransactionMessage,
   getBase64EncodedWireTransaction,
   getSignatureFromTransaction,
-  pipe,
-  setTransactionMessageFeePayerSigner,
-  setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from '@solana/kit'
 import type {
-  Address,
   Base64EncodedWireTransaction,
   Signature,
-  SignatureBytes,
-  Transaction,
-  TransactionSigner,
-  Instruction,
 } from '@solana/kit'
-import {
-  findAssociatedTokenPda,
-  getTransferCheckedInstruction,
-} from '@solana-program/token'
 import { createProxyService, registerService } from '@webext-core/proxy-service'
 import type { ProxyService, ProxyServiceKey } from '@webext-core/proxy-service'
 import { storage } from 'wxt/utils/storage'
 
 import { EMBER_CONFIG } from '../cover/ember-config.ts'
 import type { EmberRuntimeConfig } from '../cover/ember-config.ts'
+import { validateCoveragePaymentContract } from '../cover/coverage-payment-contract.ts'
+import {
+  bindQuoteReference,
+  prepareCoveragePaymentTransaction,
+} from '../solana/coverage-payment-transaction.ts'
+import type {
+  CoveragePaymentPreparationRpc,
+  CoveragePaymentTransactionPreview,
+  PreparedCoveragePaymentTransaction,
+} from '../solana/coverage-payment-transaction.ts'
 
 import type { EmberLifecycleProvider } from './cover-service.ts'
 import { emberLifecycleStore } from './ember-lifecycle-store.ts'
@@ -49,68 +41,19 @@ import {
 import type { WalletCluster } from './wallet-data-config.ts'
 
 const STORE_KEY = 'local:ember-coverage-payment:v3' as const
-const CLASSIC_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-const MAINNET_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
-const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
-const DEVNET_QA_OFFER_ID = 'offer_devnet-qa-core-annual'
-const DEVNET_QA_PRICE_BASE_UNITS = '1000000'
-const PRODUCTION_PRICE_BASE_UNITS = '249990000'
-const DEFAULT_FEE_LAMPORTS = 5_000n
 
 type RpcSend<T> = { send(): Promise<T> }
 type RpcValue<T> = Readonly<{ value: T }>
-type LatestBlockhashValue = Readonly<{
-  blockhash: string
-  lastValidBlockHeight: bigint | number | string
-}>
-type SimulationValue = Readonly<{
-  err: unknown | null
-  fee?: bigint | number | string | null
-  logs?: readonly string[] | null
-}>
-type TokenBalanceValue = Readonly<{
-  amount: string
-  decimals: number
-  uiAmountString?: string
-}>
-type AccountInfoValue = Readonly<{
-  owner: string
-}>
 type SignatureStatus = Readonly<{
   confirmationStatus?: string | null
   err?: unknown | null
 }>
 
-export interface CoveragePaymentRpc {
-  getGenesisHash(): RpcSend<string>
-  getBalance(
-    address: Address,
-    config?: Readonly<{ commitment: 'confirmed' }>,
-  ): RpcSend<RpcValue<bigint | number | string>>
-  getLatestBlockhash(
-    config?: Readonly<{ commitment: 'confirmed' }>,
-  ): RpcSend<RpcValue<LatestBlockhashValue>>
-  getAccountInfo(
-    address: Address,
-    config?: Readonly<{ commitment: 'confirmed'; encoding: 'base64' }>,
-  ): RpcSend<RpcValue<AccountInfoValue | null>>
-  getTokenAccountBalance(
-    address: Address,
-    config?: Readonly<{ commitment: 'confirmed' }>,
-  ): RpcSend<RpcValue<TokenBalanceValue>>
+export interface CoveragePaymentRpc extends CoveragePaymentPreparationRpc {
   isBlockhashValid(
     blockhash: string,
     config?: Readonly<{ commitment: 'confirmed' }>,
   ): RpcSend<RpcValue<boolean>>
-  simulateTransaction(
-    transaction: Base64EncodedWireTransaction,
-    config: Readonly<{
-      commitment: 'confirmed'
-      encoding: 'base64'
-      replaceRecentBlockhash: false
-      sigVerify: false
-    }>,
-  ): RpcSend<RpcValue<SimulationValue>>
   sendTransaction(
     transaction: Base64EncodedWireTransaction,
     config: Readonly<{
@@ -156,39 +99,7 @@ export interface CoveragePaymentInput {
   offerId: string
 }
 
-export interface CoveragePaymentPreview {
-  amountBaseUnits: string
-  amountDisplay: string
-  asset: string
-  benefitPeriodCount: number
-  benefitPeriodLimitMicros: string
-  cluster: WalletCluster
-  durationDays: number
-  durationMonths: number
-  errors: string[]
-  feeLamports: string
-  offerId: string
-  offerVersion: number
-  quoteExpiresAt: string
-  quoteId: string
-  quoteReference: string
-  simulation: {
-    status: 'success' | 'failure'
-    error: string | null
-    logs: string[]
-  }
-  solBalanceLamports: string
-  sourceTokenAccount: string
-  termsSha256: string
-  termsVersion: string
-  tokenBalanceBaseUnits: string
-  tokenBalanceDisplay: string
-  tokenMint: string
-  tokenProgram: string
-  treasuryOwner: string
-  treasuryTokenAccount: string
-  walletAddress: string
-}
+export type CoveragePaymentPreview = CoveragePaymentTransactionPreview
 
 export type CoveragePaymentStatus =
   | 'quote_ready'
@@ -237,44 +148,12 @@ interface ProviderDependencies {
   statusAttempts?: number
 }
 
-interface PreparedPayment {
-  blockhash: string
-  lastValidBlockHeight: bigint
-  preview: CoveragePaymentPreview
+interface PreparedPayment extends PreparedCoveragePaymentTransaction {
   rpc: CoveragePaymentRpc
-  transactionMessage: Parameters<typeof signTransactionMessageWithSigners>[0]
 }
 
 function createPaymentRpc(cluster: WalletCluster): CoveragePaymentRpc {
   return createSolanaRpc(walletClusterConfig(cluster).rpcUrl) as unknown as CoveragePaymentRpc
-}
-
-function toBigInt(value: bigint | number | string): bigint {
-  return typeof value === 'bigint' ? value : BigInt(value)
-}
-
-function displayBaseUnits(value: string, decimals: number): string {
-  const amount = BigInt(value)
-  const divisor = 10n ** BigInt(decimals)
-  const whole = amount / divisor
-  const fraction = (amount % divisor).toString().padStart(decimals, '0').replace(/0+$/, '')
-  return fraction ? `${whole}.${fraction}` : whole.toString()
-}
-
-function createVaultTransactionSigner(
-  walletAddress: string,
-  sign: (message: Uint8Array) => Promise<Uint8Array>,
-): TransactionSigner {
-  const signerAddress = toAddress(walletAddress)
-  return {
-    address: signerAddress,
-    signTransactions: async (transactions: readonly Transaction[]) =>
-      await Promise.all(
-        transactions.map(async (transaction) => ({
-          [signerAddress]: (await sign(new Uint8Array(transaction.messageBytes))) as SignatureBytes,
-        })),
-      ),
-  }
 }
 
 function offerView(offer: AvailableOfferResponse): CoverageOfferView {
@@ -299,22 +178,7 @@ function offerView(offer: AvailableOfferResponse): CoverageOfferView {
   }
 }
 
-/** Add the server-issued quote reference as a static read-only non-signer account. */
-export function bindQuoteReference(
-  instruction: Instruction,
-  reference: Address,
-): Instruction {
-  return {
-    ...instruction,
-    accounts: [
-      ...(instruction.accounts ?? []),
-      {
-        address: reference,
-        role: AccountRole.READONLY,
-      },
-    ],
-  }
-}
+export { bindQuoteReference }
 
 export class CoveragePaymentProvider implements CoveragePaymentUI {
   private readonly config: EmberRuntimeConfig
@@ -490,225 +354,30 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
     quote: SignedQuoteResponse,
     walletAddress: string,
   ): Promise<PreparedPayment> {
-    const payload = quote.payload
-    const payment = payload.payment
-    const productionContract =
-      payload.mode === 'live' &&
-      payload.schemaVersion === 3 &&
-      payload.paymentAllowed &&
-      payload.createsCoverage &&
-      payload.offer.environment === 'production' &&
-      payload.offer.cluster === 'mainnet-beta' &&
-      payload.offer.offerId === 'offer_core-annual' &&
-      payload.offer.price === PRODUCTION_PRICE_BASE_UNITS &&
-      payment.amount === PRODUCTION_PRICE_BASE_UNITS &&
-      payment.mint === MAINNET_USDC_MINT
-    const devnetQaContract =
-      payload.mode === 'test' &&
-      payload.schemaVersion === 3 &&
-      payload.paymentAllowed &&
-      payload.createsCoverage &&
-      payload.offer.environment === 'sandbox' &&
-      payload.offer.cluster === 'devnet' &&
-      payload.offer.offerId === DEVNET_QA_OFFER_ID &&
-      payload.offer.price === DEVNET_QA_PRICE_BASE_UNITS &&
-      payment.amount === DEVNET_QA_PRICE_BASE_UNITS &&
-      payment.mint === DEVNET_USDC_MINT
-    if (!productionContract && !devnetQaContract) {
-      throw new Error('This verified quote is non-payable test data')
+    const expectedGenesisHash = this.config.expectedGenesisHash
+    const contract = validateCoveragePaymentContract(quote, {
+      environment: this.config.environment,
+      expectedCluster: this.config.expectedCluster,
+      expectedGenesisHash,
+      nowMs: this.now(),
+      walletAddress,
+    })
+    if (!expectedGenesisHash) {
+      throw new Error('The wallet build has no expected Solana genesis hash')
     }
-    const schedule = payload.benefitSchedule
-    if (
-      !schedule ||
-      schedule.coverageDurationMonths !== 12 ||
-      schedule.benefitPeriodCount !== 12 ||
-      schedule.benefitPeriodLimit !== '10000000000' ||
-      payload.offer.aggregateLimit !== '120000000000' ||
-      payload.offer.perLossLimit !== '10000000000'
-    ) {
-      throw new Error('The quote does not contain the approved P15 monthly benefit schedule')
-    }
-    if (
-      payload.protectedWallet !== walletAddress ||
-      payload.payerWallet !== walletAddress
-    ) {
-      throw new Error('The quote is bound to a different wallet')
-    }
-    if (
-      payload.offer.cluster !== this.config.expectedCluster ||
-      payload.offer.environment !== this.config.environment
-    ) {
-      throw new Error('The payable quote does not match this wallet build environment')
-    }
-    if (
-      !this.config.expectedGenesisHash ||
-      payment.genesisHash !== this.config.expectedGenesisHash
-    ) {
-      throw new Error('The quote is not bound to the expected Solana genesis hash')
-    }
-    if (payment.tokenProgram !== CLASSIC_TOKEN_PROGRAM) {
-      throw new Error('The quote does not use the supported classic SPL Token program')
-    }
-    if (!payment.treasuryOwner) {
-      throw new Error('The quote does not name the treasury owner')
-    }
-    if (this.now() >= Date.parse(payload.validity.expiresAt)) {
-      throw new Error('The server-signed quote expired; request a fresh quote')
-    }
-
     const cluster = this.config.expectedCluster
     const rpc = this.rpcFactory(cluster)
-    const genesisHash = await rpc.getGenesisHash().send()
-    if (
-      genesisHash !== payment.genesisHash ||
-      genesisHash !== this.config.expectedGenesisHash
-    ) {
-      throw new Error(`Connected RPC is not Solana ${cluster}`)
-    }
-    const wallet = toAddress(walletAddress)
-    const tokenProgram = toAddress(payment.tokenProgram)
-    const mint = toAddress(payment.mint)
-    const signer = createVaultTransactionSigner(walletAddress, (message) =>
-      this.signer.sign(message),
-    )
-    const [sourceTokenAccount] = await findAssociatedTokenPda({
-      mint,
-      owner: wallet,
-      tokenProgram,
-    })
-    const [balance, sourceAccount, latestBlockhash] = await Promise.all([
-      rpc.getBalance(wallet, { commitment: 'confirmed' }).send(),
-      rpc.getAccountInfo(sourceTokenAccount, {
-        commitment: 'confirmed',
-        encoding: 'base64',
-      }).send(),
-      rpc.getLatestBlockhash({ commitment: 'confirmed' }).send(),
-    ])
-    const errors: string[] = []
-    let tokenBalance: TokenBalanceValue = {
-      amount: '0',
-      decimals: payment.decimals,
-      uiAmountString: '0',
-    }
-    if (!sourceAccount.value) {
-      errors.push(
-        `Not enough ${payload.offer.paymentAsset}. You need ${displayBaseUnits(payment.amount, payment.decimals)} ${payload.offer.paymentAsset}, but this wallet has 0 ${payload.offer.paymentAsset}.`,
-      )
-    } else if (sourceAccount.value.owner !== payment.tokenProgram) {
-      errors.push('The payment token account is not owned by the expected token program')
-    } else {
-      tokenBalance = (
-        await rpc.getTokenAccountBalance(sourceTokenAccount, { commitment: 'confirmed' }).send()
-      ).value
-      if (tokenBalance.decimals !== payment.decimals) {
-        errors.push('Source token account decimals do not match the signed quote')
-      }
-      if (BigInt(tokenBalance.amount) < BigInt(payment.amount)) {
-        errors.push(
-          `Not enough ${payload.offer.paymentAsset}. You need ${displayBaseUnits(payment.amount, payment.decimals)} ${payload.offer.paymentAsset}, but this wallet has ${displayBaseUnits(tokenBalance.amount, tokenBalance.decimals)} ${payload.offer.paymentAsset}.`,
-        )
-      }
-    }
-    const transfer = getTransferCheckedInstruction(
-      {
-        amount: BigInt(payment.amount),
-        authority: signer,
-        decimals: payment.decimals,
-        destination: toAddress(payment.treasuryTokenAccount),
-        mint,
-        source: sourceTokenAccount,
-      },
-      { programAddress: tokenProgram },
-    )
-    const quoteBoundTransfer = bindQuoteReference(
-      transfer,
-      toAddress(payment.reference),
-    )
-    const blockhash = latestBlockhash.value.blockhash
-    const lastValidBlockHeight = toBigInt(latestBlockhash.value.lastValidBlockHeight)
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (message) => setTransactionMessageFeePayerSigner(signer, message),
-      (message) =>
-        setTransactionMessageLifetimeUsingBlockhash(
-          {
-            blockhash: toBlockhash(blockhash),
-            lastValidBlockHeight,
-          },
-          message,
-        ),
-      (message) => appendTransactionMessageInstruction(quoteBoundTransfer, message),
-    ) as PreparedPayment['transactionMessage']
-    let simulation: CoveragePaymentPreview['simulation'] = {
-      status: 'failure',
-      error: errors[0] ?? 'Payment preconditions failed',
-      logs: [],
-    }
-    let feeLamports = DEFAULT_FEE_LAMPORTS
-    if (errors.length === 0) {
-      const unsigned = getBase64EncodedWireTransaction(compileTransaction(transactionMessage))
-      const response = await rpc
-        .simulateTransaction(unsigned, {
-          commitment: 'confirmed',
-          encoding: 'base64',
-          replaceRecentBlockhash: false,
-          sigVerify: false,
-        })
-        .send()
-      feeLamports =
-        response.value.fee == null ? DEFAULT_FEE_LAMPORTS : toBigInt(response.value.fee)
-      const error = response.value.err
-        ? stringifyWithBigInts(response.value.err)
-        : null
-      if (error) errors.push(`Simulation failed: ${error}`)
-      simulation = {
-        status: error ? 'failure' : 'success',
-        error,
-        logs: [...(response.value.logs ?? [])],
-      }
-    }
-    if (toBigInt(balance.value) < feeLamports) {
-      errors.push('Not enough SOL for the network fee')
-      simulation = {
-        status: 'failure',
-        error: 'Not enough SOL for the network fee',
-        logs: simulation.logs,
-      }
-    }
-    return {
-      blockhash,
-      lastValidBlockHeight,
-      preview: {
-        amountBaseUnits: payment.amount,
-        amountDisplay: displayBaseUnits(payment.amount, payment.decimals),
-        asset: payload.offer.paymentAsset,
-        benefitPeriodCount: schedule.benefitPeriodCount,
-        benefitPeriodLimitMicros: schedule.benefitPeriodLimit,
-        cluster,
-        durationDays: payload.offer.coverageDurationDays,
-        durationMonths: schedule.coverageDurationMonths,
-        errors,
-        feeLamports: feeLamports.toString(),
-        offerId: payload.offer.offerId,
-        offerVersion: payload.offer.offerVersion,
-        quoteExpiresAt: payload.validity.expiresAt,
-        quoteId: payload.quoteId,
-        quoteReference: payment.reference,
-        simulation,
-        solBalanceLamports: String(balance.value),
-        sourceTokenAccount: String(sourceTokenAccount),
-        termsSha256: payload.offer.termsHash,
-        termsVersion: payload.offer.termsVersion,
-        tokenBalanceBaseUnits: tokenBalance.amount,
-        tokenBalanceDisplay: displayBaseUnits(tokenBalance.amount, tokenBalance.decimals),
-        tokenMint: payment.mint,
-        tokenProgram: payment.tokenProgram,
-        treasuryOwner: payment.treasuryOwner,
-        treasuryTokenAccount: payment.treasuryTokenAccount,
-        walletAddress,
-      },
+    const prepared = await prepareCoveragePaymentTransaction({
+      cluster,
+      contract,
+      expectedGenesisHash,
       rpc,
-      transactionMessage,
+      signMessage: (message) => this.signer.sign(message),
+      walletAddress,
+    })
+    return {
+      ...prepared,
+      rpc,
     }
   }
 

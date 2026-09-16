@@ -2,6 +2,10 @@ import type { IntegrationEnvironment } from '@embercover/wallet-sdk'
 
 import type { WalletCluster } from '../background/wallet-data-config.ts'
 import { EMBER_CHROME_EXTENSION_ID } from '../config/chrome-identity.ts'
+import {
+  DEVNET_GENESIS_HASH,
+  MAINNET_GENESIS_HASH,
+} from '../solana/clusters.ts'
 
 declare global {
   interface ImportMeta {
@@ -9,9 +13,7 @@ declare global {
   }
 }
 
-export const MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
-export const DEVNET_GENESIS_HASH =
-  'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'
+export { DEVNET_GENESIS_HASH, MAINNET_GENESIS_HASH }
 
 export interface EmberRuntimeConfig {
   apiBaseUrl: string | null

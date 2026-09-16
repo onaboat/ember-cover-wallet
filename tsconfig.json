@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "e2e"]
+  "include": ["src", "e2e", "tools/api-conformance"]
 }
