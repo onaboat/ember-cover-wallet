@@ -36,18 +36,24 @@ function element<T extends HTMLElement>(id: string): T {
   return value as T
 }
 
+function metaContent(name: string): string {
+  const value = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content
+  if (!value) throw new Error(`Operator metadata ${name} is unavailable`)
+  return value
+}
+
 function isFunction(value: unknown): value is (...args: never[]) => unknown {
   return typeof value === 'function'
 }
 
-function isOperatorWallet(value: unknown): value is OperatorWallet {
+function isOperatorWallet(value: unknown, expectedName: string): value is OperatorWallet {
   if (!value || typeof value !== 'object') return false
   const wallet = value as {
     accounts?: unknown
     features?: Record<string, unknown>
     name?: unknown
   }
-  if (wallet.name !== 'Ember' || !Array.isArray(wallet.accounts) || !wallet.features) {
+  if (wallet.name !== expectedName || !Array.isArray(wallet.accounts) || !wallet.features) {
     return false
   }
   const connect = wallet.features['standard:connect'] as
@@ -66,10 +72,8 @@ function isOperatorWallet(value: unknown): value is OperatorWallet {
   )
 }
 
-const token = document
-  .querySelector<HTMLMetaElement>('meta[name="ember-operator-token"]')
-  ?.content
-if (!token) throw new Error('Operator token is unavailable')
+const token = metaContent('ember-operator-token')
+const walletName = metaContent('ember-operator-wallet-name')
 
 const status = element<HTMLParagraphElement>('status')
 const connectButton = element<HTMLButtonElement>('connect')
@@ -78,6 +82,8 @@ const jobTitle = element<HTMLHeadingElement>('job-title')
 const summary = element<HTMLDListElement>('summary')
 const approveButton = element<HTMLButtonElement>('approve')
 const rejectButton = element<HTMLButtonElement>('reject')
+status.textContent = `Connect ${walletName} to begin.`
+connectButton.textContent = `Connect ${walletName}`
 
 let wallet: OperatorWallet | null = null
 let account: OperatorAccount | null = null
@@ -133,18 +139,18 @@ async function refresh(): Promise<void> {
 
 async function connectWallet(): Promise<void> {
   const availableWallets: readonly unknown[] = getWallets().get()
-  const candidate = availableWallets.find(isOperatorWallet)
+  const candidate = availableWallets.find((value) => isOperatorWallet(value, walletName))
   if (!candidate) {
-    throw new Error('The Ember wallet is not available in this browser')
+    throw new Error(`${walletName} is not available in this browser`)
   }
   const connected = await candidate.features['standard:connect'].connect()
   const selected = connected.accounts[0] ?? candidate.accounts[0]
-  if (!selected?.address) throw new Error('The Ember wallet returned no account')
+  if (!selected?.address) throw new Error(`${walletName} returned no account`)
   wallet = candidate
   account = selected
   await api('/api/connect', {
     method: 'POST',
-    body: JSON.stringify({ walletAddress: selected.address }),
+    body: JSON.stringify({ walletAddress: selected.address, walletName }),
   })
   status.textContent = `Connected ${selected.address}. Waiting for the runner.`
   connectButton.disabled = true

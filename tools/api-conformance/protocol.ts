@@ -53,6 +53,7 @@ export type OperatorResult =
 export interface OperatorState {
   connectedWallet: string | null
   job: OperatorJob | null
+  walletName: string
 }
 
 export function encodeBase64(bytes: Uint8Array): string {

@@ -40,6 +40,7 @@ import type {
 } from '../../src/solana/coverage-payment-transaction.ts'
 import { OperatorBridge } from './operator-bridge.ts'
 import { decodeBase64, encodeBase64 } from './protocol.ts'
+import { parseConformanceSignerWalletName } from './signer-wallet.ts'
 
 type RpcSend<T> = { send(): Promise<T> }
 type RpcValue<T> = Readonly<{ value: T }>
@@ -79,6 +80,7 @@ interface FixtureEnvironment {
   EMBER_CONFORMANCE_OPERATOR_TIMEOUT_MS?: string
   EMBER_CONFORMANCE_RECIPIENT?: string
   EMBER_CONFORMANCE_RPC_URL?: string
+  EMBER_CONFORMANCE_SIGNER_WALLET_NAME?: string
   EMBER_CONFORMANCE_TRANSFER_LAMPORTS?: string
 }
 
@@ -240,6 +242,9 @@ export async function createConformanceWalletFixture({
     throw new Error('The external wallet fixture is restricted to the sandbox environment')
   }
   const env = process.env as FixtureEnvironment
+  const signerWalletName = parseConformanceSignerWalletName(
+    env.EMBER_CONFORMANCE_SIGNER_WALLET_NAME,
+  )
   const rpcUrl = conformanceRpcUrl(env)
   const recipient = String(toAddress(required(env, 'EMBER_CONFORMANCE_RECIPIENT')))
   const transferLamports = positiveInteger(
@@ -253,7 +258,10 @@ export async function createConformanceWalletFixture({
   }
   const rpc = createSolanaRpc(devnet(rpcUrl)) as unknown as ConformanceRpc
   await verifyDevnet(rpc)
-  const bridge = await OperatorBridge.start({ timeoutMs: operatorTimeout(env) })
+  const bridge = await OperatorBridge.start({
+    timeoutMs: operatorTimeout(env),
+    walletName: signerWalletName,
+  })
   process.stderr.write(`\nOpen the local conformance operator in Chrome:\n${bridge.operatorUrl}\n\n`)
   const walletAddress = String(toAddress(await bridge.waitForWallet()))
   const signer = inertTransactionSigner(walletAddress)

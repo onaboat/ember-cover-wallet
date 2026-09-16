@@ -43,7 +43,7 @@ function state(overrides: Partial<LocalCoveragePaymentState> = {}): LocalCoverag
   }
 }
 
-test('uses protected only when the live API status is active and registered', () => {
+test('labels the account cover as active without implying the current request is covered', () => {
   expect(
     coveragePaymentStatusView({
       cluster: 'mainnet-beta',
@@ -54,7 +54,7 @@ test('uses protected only when the live API status is active and registered', ()
       paymentState: state({ status: 'active' }),
     }),
   ).toMatchObject({
-    badgeLabel: 'PROTECTED',
+    badgeLabel: 'COVER ACTIVE',
     badgeTone: 'protected',
     primaryAction: 'manage',
   })

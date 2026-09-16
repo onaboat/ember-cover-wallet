@@ -10,6 +10,7 @@ import type {
   OperatorResult,
   OperatorState,
 } from './protocol.ts'
+import { parseConformanceSignerWalletName } from './signer-wallet.ts'
 
 const MAX_BODY_BYTES = 256 * 1024
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
@@ -24,6 +25,7 @@ interface PendingJob {
 interface OperatorBridgeOptions {
   operatorScript?: string
   timeoutMs?: number
+  walletName: string
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -82,13 +84,23 @@ function requiredString(value: unknown, field: string): string {
   return value
 }
 
-function operatorPage(token: string): string {
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll("'", '&#39;')
+}
+
+function operatorPage(token: string, walletName: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="ember-operator-token" content="${token}">
+  <meta name="ember-operator-wallet-name" content="${escapeHtmlAttribute(walletName)}">
   <title>Ember API conformance operator</title>
   <link rel="stylesheet" href="/operator.css?token=${token}">
 </head>
@@ -96,8 +108,8 @@ function operatorPage(token: string): string {
   <main>
     <p class="eyebrow">Local Devnet operator</p>
     <h1>Ember API conformance</h1>
-    <p id="status">Connect the Ember wallet to begin.</p>
-    <button id="connect" type="button">Connect Ember wallet</button>
+    <p id="status">Connect the configured external wallet to begin.</p>
+    <button id="connect" type="button">Connect external wallet</button>
     <section id="job" hidden>
       <h2 id="job-title"></h2>
       <dl id="summary"></dl>
@@ -129,6 +141,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 export class OperatorBridge {
   readonly token = randomBytes(32).toString('hex')
   readonly timeoutMs: number
+  readonly walletName: string
 
   private connectedWallet: string | null = null
   private operatorScript = ''
@@ -143,9 +156,10 @@ export class OperatorBridge {
   private constructor(options: OperatorBridgeOptions) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.operatorScript = options.operatorScript ?? ''
+    this.walletName = parseConformanceSignerWalletName(options.walletName)
   }
 
-  static async start(options: OperatorBridgeOptions = {}): Promise<OperatorBridge> {
+  static async start(options: OperatorBridgeOptions): Promise<OperatorBridge> {
     const bridge = new OperatorBridge(options)
     if (!options.operatorScript) {
       bridge.operatorScript = await readFile(
@@ -251,7 +265,12 @@ export class OperatorBridge {
       return
     }
     if (request.method === 'GET' && url.pathname === '/') {
-      text(response, 200, 'text/html; charset=utf-8', operatorPage(this.token))
+      text(
+        response,
+        200,
+        'text/html; charset=utf-8',
+        operatorPage(this.token, this.walletName),
+      )
       return
     }
     if (request.method === 'GET' && url.pathname === '/operator.js') {
@@ -266,12 +285,17 @@ export class OperatorBridge {
       const state: OperatorState = {
         connectedWallet: this.connectedWallet,
         job: this.pendingJob?.job ?? null,
+        walletName: this.walletName,
       }
       json(response, 200, state)
       return
     }
     if (request.method === 'POST' && url.pathname === '/api/connect') {
       const body = record(await readJsonBody(request))
+      const walletName = requiredString(body.walletName, 'walletName')
+      if (walletName !== this.walletName) {
+        throw new Error('Connected wallet does not match the configured conformance signer')
+      }
       const walletAddress = requiredString(body.walletAddress, 'walletAddress')
       if (this.connectedWallet && this.connectedWallet !== walletAddress) {
         throw new Error('Operator wallet cannot change during a conformance run')

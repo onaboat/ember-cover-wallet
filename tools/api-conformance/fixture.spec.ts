@@ -16,6 +16,7 @@ test('rejects every environment except the SDK sandbox', async () => {
 })
 
 test('rejects a non-loopback plaintext RPC before network access', async () => {
+  vi.stubEnv('EMBER_CONFORMANCE_SIGNER_WALLET_NAME', 'Neutral Wallet')
   vi.stubEnv('EMBER_CONFORMANCE_RPC_URL', 'http://rpc.example.com')
   vi.stubEnv(
     'EMBER_CONFORMANCE_RECIPIENT',
@@ -32,6 +33,7 @@ test('rejects a non-loopback plaintext RPC before network access', async () => {
 })
 
 test('rejects a controlled transfer above the hard safety cap before network access', async () => {
+  vi.stubEnv('EMBER_CONFORMANCE_SIGNER_WALLET_NAME', 'Neutral Wallet')
   vi.stubEnv('EMBER_CONFORMANCE_RPC_URL', 'https://api.devnet.solana.com')
   vi.stubEnv(
     'EMBER_CONFORMANCE_RECIPIENT',
@@ -46,3 +48,17 @@ test('rejects a controlled transfer above the hard safety cap before network acc
     }),
   ).rejects.toThrow('must not exceed 100000')
 })
+
+test.each(['Ember', ' ember ', 'EMBER'])(
+  'rejects the Ember signer name %j before network access',
+  async (walletName) => {
+    vi.stubEnv('EMBER_CONFORMANCE_SIGNER_WALLET_NAME', walletName)
+
+    await expect(
+      createConformanceWalletFixture({
+        baseUrl: 'https://api.ember.example',
+        environment: 'sandbox',
+      }),
+    ).rejects.toThrow('owns its own cover decision flow')
+  },
+)
