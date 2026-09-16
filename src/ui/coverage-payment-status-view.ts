@@ -102,7 +102,7 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
 
   if (coverStatusSnapshot && coverStatusActive(coverStatusSnapshot, nowMs)) {
     return {
-      badgeLabel: 'PROTECTED',
+      badgeLabel: 'COVER ACTIVE',
       badgeTone: 'protected',
       detail: 'Ember Cover is active for this wallet.',
       metrics: [

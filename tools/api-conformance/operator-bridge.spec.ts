@@ -12,6 +12,7 @@ async function start(timeoutMs = 2_000): Promise<OperatorBridge> {
   const bridge = await OperatorBridge.start({
     operatorScript: 'console.log("operator fixture")',
     timeoutMs,
+    walletName: 'Neutral Wallet',
   })
   bridges.push(bridge)
   return bridge
@@ -27,6 +28,19 @@ test('rejects unauthenticated loopback requests', async () => {
   expect(response.status).toBe(401)
 })
 
+test('serves the configured external wallet name as escaped operator data', async () => {
+  const bridge = await OperatorBridge.start({
+    operatorScript: 'console.log("operator fixture")',
+    walletName: 'Neutral "QA" <Wallet>',
+  })
+  bridges.push(bridge)
+  const response = await fetch(bridge.operatorUrl)
+  expect(response.status).toBe(200)
+  const html = await response.text()
+  expect(html).toContain('content="Neutral &quot;QA&quot; &lt;Wallet&gt;"')
+  expect(html).not.toContain('content="Neutral "QA" <Wallet>"')
+})
+
 test('binds one wallet and resolves one exact message approval', async () => {
   const bridge = await start()
   const walletAddress = 'So11111111111111111111111111111111111111112'
@@ -36,7 +50,7 @@ test('binds one wallet and resolves one exact message approval', async () => {
       ...authorization(bridge),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ walletAddress }),
+    body: JSON.stringify({ walletAddress, walletName: 'Neutral Wallet' }),
   })
   expect(connect.status).toBe(200)
   await expect(bridge.waitForWallet()).resolves.toBe(walletAddress)
@@ -88,7 +102,7 @@ test('rejects a wallet change during a run', async () => {
         ...authorization(bridge),
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ walletAddress }),
+      body: JSON.stringify({ walletAddress, walletName: 'Neutral Wallet' }),
     })
   expect((await connect('wallet_one')).status).toBe(200)
   const changed = await connect('wallet_two')
@@ -106,7 +120,10 @@ test('allows only one pending operator request', async () => {
       ...authorization(bridge),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ walletAddress: 'wallet_one_request' }),
+    body: JSON.stringify({
+      walletAddress: 'wallet_one_request',
+      walletName: 'Neutral Wallet',
+    }),
   })
   const first = bridge.request({
     kind: 'sign_message',
@@ -143,7 +160,10 @@ test('times out instead of approving or retrying automatically', async () => {
       ...authorization(bridge),
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ walletAddress: 'wallet_timeout' }),
+    body: JSON.stringify({
+      walletAddress: 'wallet_timeout',
+      walletName: 'Neutral Wallet',
+    }),
   })
   await expect(
     bridge.request({
@@ -156,4 +176,32 @@ test('times out instead of approving or retrying automatically', async () => {
       },
     }),
   ).rejects.toThrow('Operator approval timed out')
+})
+
+test('rejects Ember as the SDK runner signer', async () => {
+  await expect(
+    OperatorBridge.start({
+      operatorScript: 'console.log("operator fixture")',
+      walletName: 'Ember',
+    }),
+  ).rejects.toThrow('owns its own cover decision flow')
+})
+
+test('rejects a connected wallet whose name differs from the configured signer', async () => {
+  const bridge = await start()
+  const response = await fetch(new URL('/api/connect', bridge.operatorUrl), {
+    method: 'POST',
+    headers: {
+      ...authorization(bridge),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      walletAddress: 'wallet_wrong_name',
+      walletName: 'Another Wallet',
+    }),
+  })
+  expect(response.status).toBe(400)
+  await expect(response.json()).resolves.toMatchObject({
+    error: 'Connected wallet does not match the configured conformance signer',
+  })
 })

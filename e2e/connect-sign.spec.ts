@@ -235,7 +235,7 @@ test('active cover reviews, signs, broadcasts, and submits exact evidence for a 
   expect(emberApi?.rpcTransactions).toHaveLength(transactionsBeforePayment + 1)
 
   await popup.getByRole('button', { name: 'Done', exact: true }).click()
-  await expect(popup.getByTestId('cover-status')).toHaveText('PROTECTED', {
+  await expect(popup.getByTestId('cover-status')).toHaveText('COVER ACTIVE', {
     timeout: 15_000,
   })
   await popup.getByTestId('send-sol').click()

@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Product, engineering and live QA plan for the Ember Chrome wallet and its later Solana-phone implementation.">
+  <title>Ember Wallet · Product and Delivery Plan</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #ffffff;
+      --surface: #f5f5f7;
+      --line: #d2d2d7;
+      --text: #1d1d1f;
+      --muted: #6e6e73;
+      --blue: #0066cc;
+      --green: #248a3d;
+      --orange: #b25000;
+      --red: #c41e3a;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+    }
+    a { color: var(--blue); }
+    code {
+      padding: 0.1em 0.32em;
+      border-radius: 5px;
+      background: #ececef;
+      color: #27272a;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88em;
+      overflow-wrap: anywhere;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 900px;
+      margin-bottom: 14px;
+      font-size: clamp(2.25rem, 6vw, 4.25rem);
+      line-height: 1.02;
+      letter-spacing: -0.045em;
+    }
+    h2 { margin-bottom: 16px; font-size: clamp(1.5rem, 3vw, 2rem); letter-spacing: -0.025em; }
+    h3 { margin-bottom: 9px; font-size: 1.08rem; }
+    p:last-child { margin-bottom: 0; }
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 72px; }
+    header { padding-bottom: 30px; border-bottom: 1px solid var(--line); }
+    .eyebrow {
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .lede { max-width: 900px; margin-bottom: 18px; color: var(--muted); font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 0.88rem; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 20px; }
+    nav a {
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--text);
+      font-size: 0.82rem;
+      text-decoration: none;
+    }
+    nav a:hover { background: var(--surface); }
+    main { display: grid; gap: 18px; padding-top: 20px; }
+    section { padding: 26px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--page); }
+    .surface { background: var(--surface); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--page); }
+    .card p { color: var(--muted); font-size: 0.93rem; }
+    .status {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 4px 8px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font-size: 0.71rem;
+      font-weight: 700;
+      letter-spacing: 0.045em;
+      text-transform: uppercase;
+    }
+    .good { color: var(--green); }
+    .attention { color: var(--orange); }
+    .blocking { color: var(--red); }
+    .planned { color: var(--blue); }
+    .callout { padding: 17px 19px; border-left: 4px solid var(--blue); background: var(--surface); }
+    .callout.warning { border-left-color: var(--orange); }
+    .callout.blocker { border-left-color: var(--red); }
+    .progress { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .progress strong { display: block; margin-top: 4px; font-size: 1.08rem; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 0.73rem; letter-spacing: 0.07em; text-transform: uppercase; }
+    td { font-size: 0.9rem; }
+    tbody tr:last-child td { border-bottom: 0; }
+    ol, ul { margin: 0; padding-left: 1.25rem; }
+    li + li { margin-top: 7px; }
+    .flow { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 8px; }
+    .flow div { min-height: 110px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
+    .flow strong { display: block; margin-bottom: 5px; }
+    .flow span { color: var(--muted); font-size: 0.82rem; }
+    .columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    footer { padding-top: 24px; color: var(--muted); font-size: 0.84rem; text-align: center; }
+    @media (max-width: 900px) {
+      .grid, .grid.three, .columns, .progress { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 20px, 1180px); padding-top: 26px; }
+      section { padding: 19px; }
+      .flow { grid-template-columns: 1fr; }
+    }
+    @media print {
+      nav { display: none; }
+      .shell { width: 100%; padding: 0; }
+      section, .card { break-inside: avoid; }
+      a { color: var(--text); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <p class="eyebrow">Ember product management · wallet application</p>
+      <h1>Wallet product and delivery plan</h1>
+      <p class="lede">The implementation and live-QA record for the Ember self-custody wallet. Chrome is the proof host. Solana-phone work begins only after the Chrome wallet, shared SDK and Devnet API complete the real activation lifecycle.</p>
+      <div class="meta">
+        <span><strong>Updated:</strong> 16 September 2026</span>
+        <span><strong>Wallet:</strong> <code>0.16.0</code></span>
+        <span><strong>Current branch:</strong> <code>codex/conformance-decision-ownership</code></span>
+        <span><strong>Document:</strong> local-only and gitignored</span>
+      </div>
+      <nav aria-label="Document sections">
+        <a href="#progress">Progress</a>
+        <a href="#scope">Scope</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#identity">Chrome identity</a>
+        <a href="#testing">Testing</a>
+        <a href="#live-qa">Live QA</a>
+        <a href="#release">Release gates</a>
+        <a href="#next">Next actions</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="progress" class="surface">
+        <p class="eyebrow">Delivery overview</p>
+        <h2>Where the wallet is up to</h2>
+        <div class="progress">
+          <article class="card">
+            <span class="status good">Done · Pushed</span>
+            <strong><code>codex/c2-wallet-baseline</code></strong>
+            <p>Clean C2 wallet baseline preserving the existing vault, Solana transaction, approval, activity and Ember Cover behavior.</p>
+          </article>
+          <article class="card">
+            <span class="status good">Functional lifecycle proven · UI/UX deferred</span>
+            <strong><code>codex/wallet-active-cover-e2e</code></strong>
+            <p>The live Devnet activation and deterministic packaged-Chrome transaction lifecycle now pass. Accepting terms cannot sign or send; the final payment confirmation remains the sole signing boundary. Unsigned quotes stay out of recovery and pending states, while signed recoverable payments remain protected from duplicate approval. Missing or insufficient USDC blocks payment. This branch adds the active-cover decision, signing, broadcast and exact evidence regression proof. It is not committed or pushed.</p>
+          </article>
+          <article class="card">
+            <span class="status good">Live activation passed</span>
+            <strong>Backend-confirmed Devnet cover is active</strong>
+            <p>The Chrome wallet completed the ownership challenge, scoped session, exact terms acceptance, signed-quote verification, Devnet simulation, explicit payment approval, signature, broadcast and backend activation. Transaction <a href="https://explorer.solana.com/tx/3TvRgSPtyWKHMhyw9PyaCH85wuNFAz8spTTNDzUUDm37kDocxJCvB3qT1fa4qtTTDfhPK8RTCG2xpLPDornrFQrF?cluster=devnet"><code>3TvRgSPt...ornrFQrF</code></a> finalized successfully: wallet <code>GCe1YzuZ2MQDpohCQKozaxkve4HC8Mqd2E9Fs9barCsx</code> paid exactly 1 official Devnet USDC to the expected Ember treasury token account and a 0.000005 SOL fee. The backend initially returned pending; Retry activation reused the saved payment and reached PROTECTED without a second payment.</p>
+          </article>
+          <article class="card">
+            <span class="status attention">Decision ownership corrected · Live report pending</span>
+            <strong><code>codex/conformance-decision-ownership</code></strong>
+            <p>The SDK runner has a wallet-neutral external signer fixture that prepares and simulates the exact Devnet payment and one capped controlled transaction. It now rejects Ember as its signer: Ember remains the sole owner of its own session, cover decision, approval, signing, broadcast and evidence use case, so the runner cannot create a competing decision for the same bytes. There is no cover bypass or trusted-dapp exception. A token-protected loopback operator requires explicit review and approval; Node receives no seed, private key or wallet password.</p>
+          </article>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Item</th><th>Branch or owner</th><th>Status</th><th>Exit condition</th></tr></thead>
+            <tbody>
+              <tr><td>Existing Chrome wallet baseline</td><td><code>codex/c2-wallet-baseline</code></td><td><span class="status good">Done · Pushed</span></td><td>Existing wallet tests and production build retained.</td></tr>
+              <tr><td>SDK beta.2 consumer integration</td><td><code>codex/wallet-sdk-live-qa</code></td><td><span class="status good">Automated pass</span></td><td>Publish SDK beta.2, update the declared dependency and frozen lock, then repeat the gates from a clean install.</td></tr>
+              <tr><td>Stable Chrome Web Store identity</td><td>Wallet</td><td><span class="status good">Done</span></td><td>Public key derives exact ID <code>odlknmnljpfblbidhjbkhahcijhjnadf</code> in unit, build and real unpacked-Chrome tests.</td></tr>
+              <tr><td>Offer-first SDK QA experience</td><td><code>codex/wallet-sdk-live-qa</code></td><td><span class="status attention">Implemented · Manual QA next</span></td><td>Offer and payment review are separate screens, preparation is explicit, unsigned records remain internal, and only the final confirmation may sign and broadcast.</td></tr>
+              <tr><td>Customer-facing Coverage experience</td><td>Wallet product/design follow-up</td><td><span class="status planned">Deferred until SDK lifecycle QA completes</span></td><td>Replace the functional card and flow with a clear benefit-led proposition, meaningful status and action language, stronger visual hierarchy, and complete loading, unavailable, no-cover, pending, protected and expired states before store release.</td></tr>
+              <tr><td>Live Chrome activation lifecycle</td><td>Wallet + SDK + Devnet API</td><td><span class="status good">Passed live</span></td><td>One explicitly approved 1 USDC Devnet payment finalized and the backend confirmed active cover. No duplicate payment occurred during retry.</td></tr>
+              <tr><td>Covered transaction lifecycle</td><td><code>codex/wallet-active-cover-e2e</code></td><td><span class="status good">Passed packaged Chrome</span></td><td>A covered SOL send is decided, explicitly approved, signed, broadcast and followed by evidence whose signed bytes exactly match the RPC broadcast bytes.</td></tr>
+              <tr><td>Honest uncovered signing</td><td>Wallet application service</td><td><span class="status good">Required behavior · Implemented</span></td><td>A fresh covered decision is presented and evidenced as covered. When cover is not offered, or the cover service is unavailable after retry, the wallet may sign only after explicit risk acknowledgement and must never imply protection. An expired covered decision requires recheck before signing.</td></tr>
+              <tr><td>SDK real-API external signer fixture</td><td><code>codex/conformance-decision-ownership</code></td><td><span class="status attention">Built and offline-verified</span></td><td>Use a dedicated external Wallet Standard QA signer—not Ember—run the SDK-owned lifecycle against the designated sandbox API, explicitly approve both Devnet transactions, and retain the reviewed public-safe JSON report. A local fixture build is not the live conformance result.</td></tr>
+              <tr><td>HTTPS web-wallet certification</td><td>Separate web host</td><td><span class="status planned">After Chrome</span></td><td>Exact HTTPS origin and backend CORS pass the shared SDK conformance suite.</td></tr>
+              <tr><td>Android / Solana-phone wallet</td><td>Future mobile branch</td><td><span class="status planned">Deferred</span></td><td>Begin only after Chrome live QA proves the product lifecycle.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warning" style="margin-top:16px">
+          <strong>UI/UX refinement deferred until the lifecycle works</strong>
+          <p>The current purchase presentation is not approved as the final customer experience. Do not spend further implementation time polishing it until Chrome proves the real session, offer, terms, signed quote, simulation, explicitly approved payment, backend activation and live status lifecycle. After that proof, redesign and user-test the benefit language, readable terms, step transitions, visual hierarchy and accessibility. The later design must preserve the separate final signing confirmation, verified quote, simulation and signed-payment recovery boundaries.</p>
+        </div>
+      </section>
+
+      <section id="scope">
+        <p class="eyebrow">Product boundary</p>
+        <h2>Build a real wallet, not an SDK demo</h2>
+        <div class="grid three">
+          <article class="card"><span class="status good">Wallet owns</span><h3>Vault and approval</h3><p>Key creation/import, encryption, lock state, protected signing, transaction review, broadcast, confirmation and recovery remain wallet behavior.</p></article>
+          <article class="card"><span class="status good">SDK owns</span><h3>Ember protocol</h3><p>Challenge validation, scoped session requests, response integrity, quotes, cover lifecycle and evidence contracts come from the separately versioned generic SDK.</p></article>
+          <article class="card"><span class="status good">API owns</span><h3>Server authority</h3><p>Integration registration, signed offers and quotes, payment confirmation, coverage activation, decisions, evidence and claims remain backend authority.</p></article>
+        </div>
+        <div class="callout" style="margin-top:16px">
+          <strong>Related SDK plan</strong>
+          <p>The generic SDK architecture and package release gates remain in <a href="../../wallet-sdk/project%20management/ember-wallet-sdk-product-plan.html">the Ember Wallet SDK product plan</a>. This document records only wallet-owned implementation and end-to-end product evidence.</p>
+        </div>
+      </section>
+
+      <section id="architecture" class="surface">
+        <p class="eyebrow">Clean Architecture</p>
+        <h2>Dependencies point toward wallet behavior</h2>
+        <div class="columns">
+          <article class="card"><h3>Domain</h3><ul><li>Vault and account state</li><li>Transaction review and approval state</li><li>Coverage status presentation</li><li>Explicit failure and recovery states</li></ul></article>
+          <article class="card"><h3>Application services</h3><ul><li>Serialized SDK session coordination</li><li>Cover activation and payment workflow</li><li>Pre-sign decision and evidence outbox</li><li>Wallet/RPC orchestration through typed ports</li></ul></article>
+          <article class="card"><h3>Infrastructure edges</h3><ul><li>Chrome storage and service worker</li><li>Ember SDK transport</li><li>Solana RPC and SPL Token adapters</li><li>WXT, React and browser messaging</li></ul></article>
+        </div>
+        <p class="lede" style="margin-top:16px">The UI and Chrome handlers stay thin. The SDK is an external protocol adapter, not the owner of vault keys, Chrome storage, transaction signing or broadcast.</p>
+        <div class="callout blocker" style="margin-top:16px">
+          <strong>ADR-001 · One decision owner per signing use case</strong>
+          <p><strong>Status:</strong> Accepted 16 September 2026. During the first live SDK conformance attempt, the SDK runner created a cover lifecycle while Ember independently treated the resulting Wallet Standard requests as a second product signing flow. That produced contradictory account and request states: active cover could appear at the wallet level while the ownership challenge or setup payment correctly remained uncovered. The run was stopped before either transaction was signed or broadcast.</p>
+          <p><strong>Decision:</strong> an SDK conformance run uses a dedicated neutral external Wallet Standard QA signer and the SDK runner owns that run's session, cover decision, approvals, broadcast and report. Ember is explicitly rejected as that signer. In the Chrome product, Ember owns the complete session, cover decision, approval, vault signing, broadcast and evidence flow. Android will follow the same product-owned boundary through its native protected-signer adapter.</p>
+          <p><strong>Rejected design:</strong> no privileged conformance bypass, trusted-dapp flag or externally injected decision is permitted. A dapp-controlled path around Ember's decision would invalidate the product's protection premise and create two authorities for the same approval.</p>
+          <p><strong>Product signing policy:</strong> the SDK's result describes cover; it does not decide whether the wallet may sign. A fresh <code>covered</code> decision is the only state presented as protected and it produces post-sign evidence. If cover is genuinely not offered (<code>not_covered</code> or <code>unsupported</code>), the user may explicitly acknowledge the risk and sign without cover. If the service is <code>unavailable</code>, the wallet offers retry and may continue only with the same explicit uncovered acknowledgement. An expired covered decision must be rechecked. Ownership messages and the one-time cover-purchase payment are explicit setup flows and must never imply that the setup action itself is covered.</p>
+        </div>
+        <div class="table-wrap" style="margin-top:16px">
+          <table>
+            <thead><tr><th>Execution context</th><th>Decision owner</th><th>Protected signer</th><th>Broadcast and evidence</th><th>Required proof</th></tr></thead>
+            <tbody>
+              <tr><td>SDK API conformance</td><td>SDK conformance runner application</td><td>Dedicated neutral external Wallet Standard QA wallet; never Ember</td><td>Runner records the approved Devnet lifecycle and public-safe report</td><td>Reviewed full-lifecycle sandbox report with package and contract provenance</td></tr>
+              <tr><td>Chrome wallet product</td><td>Ember wallet application service</td><td>Ember vault after explicit approval</td><td>Ember broadcasts and submits byte-correlated post-sign evidence</td><td>Covered request UI, one approval, one broadcast and byte-exact evidence</td></tr>
+              <tr><td>Android / Solana phone product</td><td>Android wallet application service</td><td>Native non-exportable signer through the Android adapter</td><td>Android host broadcasts and submits evidence through the same application boundary</td><td>Emulator and representative Solana-phone product conformance</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warning" style="margin-top:16px">
+          <strong>Correction record and current checkpoint</strong>
+          <p>The neutral-signer policy, exact wallet-name binding and Ember rejection are implemented on <code>codex/conformance-decision-ownership</code>. Type checking, 237 unit tests, fixture builds and all 12 packaged Chrome journeys pass. Existing unit coverage proves that uncovered signing requires explicit acknowledgement, while covered signing produces evidence. The remaining SDK conformance gate is operational: select the dedicated external QA wallet, set <code>EMBER_CONFORMANCE_SIGNER_WALLET_NAME</code>, review both simulations, explicitly approve them, and retain the reviewed public-safe live report.</p>
+        </div>
+      </section>
+
+      <section id="identity">
+        <p class="eyebrow">Chrome identity</p>
+        <h2>One stable ID in Web Store, developer mode and Ember</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Field</th><th>Exact value</th><th>Control</th></tr></thead>
+            <tbody>
+              <tr><td>Web Store item</td><td><code>odlknmnljpfblbidhjbkhahcijhjnadf</code></td><td>Draft; not published.</td></tr>
+              <tr><td>Ember client origin</td><td><code>chrome-extension://odlknmnljpfblbidhjbkhahcijhjnadf</code></td><td>Exact match only; no wildcard.</td></tr>
+              <tr><td>Manifest public key</td><td>Source-controlled public SPKI value</td><td>Derivation test must match the Item ID.</td></tr>
+              <tr><td>Private package-signing authority</td><td>Not held by either repository</td><td>Remains with Chrome Web Store.</td></tr>
+              <tr><td>Developer-mode path</td><td><code>/Users/hmx/Documents/Projects/ember-c2/wallet/.output/chrome-mv3</code></td><td>Load unpacked; Chrome must display the exact Item ID.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="testing" class="surface">
+        <p class="eyebrow">Evidence</p>
+        <h2>Current automated proof</h2>
+        <div class="grid three">
+          <article class="card"><span class="status good">Passed · 237 tests with beta.2</span><h3>Type safety and unit behavior</h3><p>TypeScript and all 237 tests across 47 files pass against the exact local SDK <code>1.3.2-beta.2</code> tarball. The committed beta.0 pin intentionally remains a release blocker: under that pin, the build and seven session tests fail because the required beta.2 session export is absent. Focused tests prove the SDK signer policy rejects Ember—including case and whitespace variants—before network access and rejects a connected wallet whose name differs from the configured external signer.</p></article>
+          <article class="card"><span class="status good">Passed · 12 journeys</span><h3>Packaged Chrome journeys</h3><p>All 12 Playwright journeys pass against the packaged MV3 extension under the exact Web Store ID. The new active-cover journey activates the fixture-backed cover, receives a covered pre-sign decision, requires wallet approval, signs and broadcasts the send, then verifies that post-sign evidence contains exactly the same signed transaction bytes sent to RPC.</p></article>
+          <article class="card"><span class="status good">Passed</span><h3>Live-config build inspection</h3><p>The build contains Railway Devnet and Solana Devnet as its only remote host permissions, with no partner secret, retired compatibility route or localhost fixture.</p></article>
+        </div>
+        <div class="callout warning" style="margin-top:16px">
+          <strong>What this evidence does not claim</strong>
+          <p>Deterministic local API/RPC journeys prove the wallet integration and packaged browser runtime without spending live funds. Live Railway and Solana Explorer evidence separately prove exact-origin registration, canonical challenge validation, protected-wallet message signing, session persistence, signed offer and quote handling, funded Devnet simulation, explicit approval, finalized transfer and backend-confirmed activation. Broader live failure and restart behavior remain separate gates.</p>
+        </div>
+      </section>
+
+      <section id="live-qa">
+        <p class="eyebrow">Manual Devnet run</p>
+        <h2>One observable lifecycle</h2>
+        <div class="flow">
+          <div><strong>1 · Registered ✓</strong><span>Railway is healthy and delivers a canonical challenge for the exact new Chrome origin.</span></div>
+          <div><strong>2 · Installed ✓</strong><span>The C2 output is loaded unpacked under the exact stable Web Store ID.</span></div>
+          <div><strong>3 · Funded ✓</strong><span>Devnet RPC verifies 1 SOL and 5 official Devnet USDC for the QA vault.</span></div>
+          <div><strong>4 · Session + offer ✓</strong><span>The protected wallet signed the ownership message, the API session persisted and the Core Annual Devnet QA offer loaded.</span></div>
+          <div><strong>5 · Quote + simulation ✓</strong><span>The exact terms were accepted, the server signature and quote authority were verified, and the 1 USDC Devnet transaction simulated without signing or broadcasting.</span></div>
+          <div><strong>6 · Approved ✓</strong><span>The user confirmed Devnet, the wallet fee payer, Ember treasury, 1 USDC and the simulated fee before signing.</span></div>
+          <div><strong>7 · Active ✓</strong><span>The transfer finalized on Devnet and Retry activation resolved the same saved payment to backend-confirmed PROTECTED status.</span></div>
+        </div>
+        <div class="callout blocker" style="margin-top:16px">
+          <strong>Transaction safety boundary</strong>
+          <p>No transaction is signed or broadcast automatically. Never request or expose a password, seed phrase or private key. Devnet does not remove the requirement for exact simulation review and explicit human approval.</p>
+        </div>
+      </section>
+
+      <section id="release" class="surface">
+        <p class="eyebrow">Release standard</p>
+        <h2>Chrome wallet cannot be called production-ready until</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Gate</th><th>Status</th><th>Required evidence</th></tr></thead>
+            <tbody>
+              <tr><td>Stable Web Store/development identity</td><td><span class="status good">Passed</span></td><td>Key-to-ID derivation plus real unpacked-Chrome assertion.</td></tr>
+              <tr><td>Exact SDK dependency</td><td><span class="status attention">Local beta.2 proven</span></td><td>Publish beta.2, pin package and integrity in <code>bun.lock</code>, clean install and repeat all checks.</td></tr>
+              <tr><td>Railway origin and wallet session</td><td><span class="status good">Passed live</span></td><td>The new exact Chrome origin receives a canonical challenge; real ownership signing, session creation and signed offer retrieval pass.</td></tr>
+              <tr><td>Live activation lifecycle</td><td><span class="status good">Passed live</span></td><td>Finalized transaction <code>3TvRgSPt...ornrFQrF</code> and wallet PROTECTED result provide public-safe evidence through backend-confirmed activation.</td></tr>
+              <tr><td>Packaged covered transaction</td><td><span class="status good">Passed</span></td><td>Packaged Chrome proves covered decision, explicit approval, signing, RPC broadcast and byte-exact post-sign evidence in one deterministic journey.</td></tr>
+              <tr><td>SDK real-API conformance fixture</td><td><span class="status attention">Offline gate passed</span></td><td>The secretless wallet-neutral fixture builds, rejects Ember as the runner's signer and preserves one decision owner. Release evidence still requires the SDK runner's reviewed full-lifecycle sandbox report using a dedicated external Wallet Standard QA account.</td></tr>
+              <tr><td>Failure and recovery</td><td><span class="status attention">Pending live evidence</span></td><td>Account switch, worker restart, timeout, rejected approval and interrupted payment recover honestly without duplication.</td></tr>
+              <tr><td>Store privacy and listing</td><td><span class="status planned">Before publication</span></td><td>Accurate single-purpose description, data-use disclosure, privacy policy, permission justification and store review.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="next">
+        <p class="eyebrow">Immediate checkpoint</p>
+        <h2>Actions in order</h2>
+        <ol>
+          <li><strong>Complete:</strong> Railway is deployed with <code>EMBER_DEVNET_QA_EXTENSION_ORIGIN=chrome-extension://odlknmnljpfblbidhjbkhahcijhjnadf</code> and returns the exact canonical challenge.</li>
+          <li><strong>Complete:</strong> wallet <code>GCe1YzuZ2MQDpohCQKozaxkve4HC8Mqd2E9Fs9barCsx</code> is funded with 1 SOL and 5 official Devnet USDC; mint, token program and account ownership validate on-chain.</li>
+          <li><strong>Complete:</strong> the real Chrome wallet connected its scoped Ember session and loaded the Core Annual Devnet QA offer.</li>
+          <li><strong>Deferred:</strong> further purchase-flow UI and text refinement remains a separate product-design slice now that the functional lifecycle is proven.</li>
+          <li><strong>Complete:</strong> the exact terms were accepted, the signed quote passed SDK verification and the 1 USDC payment passed Devnet simulation before approval.</li>
+          <li><strong>Complete:</strong> an unsigned <code>quote_ready</code> record is now invisible on the customer home and recovery screens; only a signed payment can display pending/recovery language.</li>
+          <li><strong>Complete:</strong> one explicitly approved payment finalized on Devnet and backend activation reached PROTECTED without a second payment.</li>
+          <li><strong>Complete:</strong> all 12 packaged-Chrome journeys pass, including a covered transaction whose signed evidence bytes exactly match the bytes accepted by the RPC fixture.</li>
+          <li><strong>Complete:</strong> the external API-conformance fixture builds as Node and browser artifacts; it is wallet-neutral, rejects Ember as the runner's signer and has no cover-bypass path.</li>
+          <li><strong>Complete:</strong> all 12 packaged-Chrome journeys still pass after the decision-ownership correction, including the Ember-owned covered transaction, one explicit approval, one broadcast and byte-exact evidence.</li>
+          <li><strong>Next manual conformance gate:</strong> configure a dedicated external Wallet Standard QA signer, run the SDK-owned lifecycle against the designated sandbox API, explicitly approve the setup payment and capped controlled Devnet transfer, then retain the public-safe JSON report.</li>
+          <li><strong>Next Chrome product gate:</strong> separately use Ember's normal send flow with active cover and require the exact transaction to show <code>COVERED</code> before signing. The SDK runner must not create this product decision.</li>
+          <li><strong>Next release gate:</strong> publish and pin SDK beta.2, update the frozen lock from the registry, clean-install the wallet and repeat typecheck, 237 tests, the production build and all 12 packaged-Chrome journeys.</li>
+          <li><strong>Next live reliability QA:</strong> exercise account switch, worker restart, timeout, rejected approval and interrupted activation without duplicate payment.</li>
+          <li>Only after Chrome passes, plan the Solana-phone wallet implementation and device QA.</li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>Local working plan · intentionally excluded from wallet Git history</footer>
+  </div>
+</body>
+</html>

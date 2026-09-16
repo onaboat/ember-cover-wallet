@@ -30,7 +30,7 @@
   /* ---- Status semantics ---- */
   --ec-covered: #2e9f55;
   --ec-covered-soft: #e5f4e9;
-  --ec-protected: #34c759;      /* loud "PROTECTED" badge */
+  --ec-protected: #34c759;      /* active-cover and covered-request state */
   --ec-protected-ink: #0c2a16;
   --ec-warning: #b77a21;
   --ec-warning-soft: #f8ecd8;
