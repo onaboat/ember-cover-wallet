@@ -2,6 +2,28 @@ import { defineConfig } from 'wxt'
 
 import { EMBER_CHROME_EXTENSION_PUBLIC_KEY } from './src/config/chrome-identity.ts'
 
+const INSTALLED_DEVNET_QA_PROFILE = 'installed-devnet-qa'
+const DEVNET_QA_BUILD_ENV = {
+  WXT_EMBER_API_BASE_URL: 'https://ember-devnet-qa.up.railway.app',
+  WXT_EMBER_ENVIRONMENT: 'sandbox',
+  WXT_EMBER_INTEGRATION_ID: 'integration_reference-wallet',
+  WXT_EMBER_INTEGRATION_VERSION: '1',
+  WXT_SOLANA_RPC_URL: 'https://api.devnet.solana.com',
+} as const
+
+const installedDevnetQaBuild =
+  process.env.EMBER_BUILD_PROFILE === INSTALLED_DEVNET_QA_PROFILE
+
+if (installedDevnetQaBuild) {
+  for (const [name, expected] of Object.entries(DEVNET_QA_BUILD_ENV)) {
+    if (process.env[name] !== expected) {
+      throw new Error(
+        `${INSTALLED_DEVNET_QA_PROFILE} requires ${name}=${expected}`,
+      )
+    }
+  }
+}
+
 function hostPermission(value: string | undefined): string | null {
   if (!value) return null
   try {
@@ -14,6 +36,10 @@ function hostPermission(value: string | undefined): string | null {
 
 export default defineConfig({
   srcDir: 'src',
+  // Chrome is loaded from .output/chrome-mv3 for live Devnet QA. Keep every
+  // other build in an isolated directory so CI, E2E, and local fixture builds
+  // cannot silently replace the installed extension with non-live config.
+  outDir: installedDevnetQaBuild ? '.output' : '.output/nonlive',
   imports: false,
   modules: ['@wxt-dev/module-react', '@wxt-dev/auto-icons'],
   dev: {

@@ -9,7 +9,7 @@
     "build": "wxt build",
     "build:conformance-fixture": "bun build tools/api-conformance/fixture.ts --target node --format esm --outfile tools/api-conformance/dist/ember-conformance-wallet.mjs && bun build tools/api-conformance/operator.ts --target browser --format iife --outfile tools/api-conformance/dist/operator.js",
     "verify:qa": "bun scripts/verify-qa-build.ts",
-    "build:qa": "wxt build && bun scripts/verify-qa-build.ts",
+    "build:qa": "EMBER_BUILD_PROFILE=installed-devnet-qa WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=https://ember-devnet-qa.up.railway.app WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_EMBER_INTEGRATION_VERSION=1 WXT_SOLANA_RPC_URL=https://api.devnet.solana.com wxt build && EMBER_BUILD_PROFILE=installed-devnet-qa WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=https://ember-devnet-qa.up.railway.app WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_EMBER_INTEGRATION_VERSION=1 WXT_SOLANA_RPC_URL=https://api.devnet.solana.com bun scripts/verify-qa-build.ts",
     "postinstall": "wxt prepare",
     "check-types": "tsc --noEmit",
     "test": "vitest run",

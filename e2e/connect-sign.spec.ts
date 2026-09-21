@@ -45,7 +45,7 @@ function buildTx(feePayer: string): Uint8Array {
   return new Uint8Array(getTransactionEncoder().encode(compileTransaction(message)))
 }
 
-const EXT = path.resolve('.output/chrome-mv3')
+const EXT = path.resolve('.output/nonlive/chrome-mv3')
 const DAPP_FILE = path.resolve('e2e/fixtures/dapp.html')
 const PASSWORD = 'Str0ng-pass-correct-horse'
 const SEND_DESTINATION = base58Encode(new Uint8Array(32).fill(51))

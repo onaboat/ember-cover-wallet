@@ -216,3 +216,19 @@ test('requires a live status refresh instead of offering another payment when st
     primaryAction: 'refresh',
   })
 })
+
+test('reconnects an expired session without offering another payment', () => {
+  expect(
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
+      coverEnrolled: false,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      paymentState: state({ status: 'active' }),
+    }),
+  ).toMatchObject({
+    badgeLabel: 'RECONNECT',
+    detail: 'Reconnect Ember Cover to verify your saved coverage. No payment is required.',
+    primaryAction: 'reconnect',
+  })
+})

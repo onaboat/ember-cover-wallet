@@ -16,6 +16,6 @@ createServer((_req, res) => {
   res.end(html)
 }).listen(DAPP_PORT, () => {
   console.log(`✓ test dapp     http://127.0.0.1:${DAPP_PORT}`)
-  console.log('\nNext: load .output/chrome-mv3 unpacked in Chrome, then open the test dapp.')
+  console.log('\nNext: load .output/nonlive/chrome-mv3 unpacked in Chrome, then open the test dapp.')
   console.log('Ctrl-C to stop.')
 })

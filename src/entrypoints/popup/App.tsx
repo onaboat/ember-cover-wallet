@@ -755,6 +755,25 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
   }
 
+  async function reconnectCoverSession() {
+    setPaymentBusy(true)
+    setError('')
+    try {
+      if (!(await vault.isUnlocked())) {
+        setError('Unlock the wallet before reconnecting Ember Cover.')
+        return
+      }
+      if (!(await cover.enroll())) {
+        throw new Error('The Ember session challenge was not completed')
+      }
+      await refreshCoverState()
+    } catch (e) {
+      setError(errorMessage(e, 'Could not reconnect Ember Cover'))
+    } finally {
+      setPaymentBusy(false)
+    }
+  }
+
   async function disconnectEmberSession() {
     setPaymentBusy(true)
     setPaymentError('')
@@ -1065,6 +1084,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     const actionLabel =
       paymentStatusView.primaryAction === 'manage'
         ? 'Manage Cover'
+        : paymentStatusView.primaryAction === 'reconnect'
+          ? 'Reconnect'
         : paymentStatusView.primaryAction === 'connect'
           ? 'View offer'
           : paymentStatusView.primaryAction === 'review'
@@ -1077,6 +1098,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     const actionTestId =
       paymentStatusView.primaryAction === 'manage'
         ? 'manage-cover'
+        : paymentStatusView.primaryAction === 'reconnect'
+          ? 'reconnect-cover'
         : paymentStatusView.primaryAction === 'refresh'
           ? 'refresh-cover-status'
           : 'activate-cover'
@@ -1098,13 +1121,16 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           <button
             className={
               paymentStatusView.primaryAction === 'activate' ||
-              paymentStatusView.primaryAction === 'review'
+              paymentStatusView.primaryAction === 'review' ||
+              paymentStatusView.primaryAction === 'reconnect'
                 ? 'ec-primary'
                 : 'ec-secondary'
             }
             data-testid={actionTestId}
             onClick={
-              paymentStatusView.primaryAction === 'refresh'
+              paymentStatusView.primaryAction === 'reconnect'
+                ? () => void reconnectCoverSession()
+                : paymentStatusView.primaryAction === 'refresh'
                 ? () => void refreshCoverState()
                 : openCoverActivation
             }
@@ -1797,20 +1823,29 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
     const needsSync = paymentStatusView.primaryAction === 'sync'
     const needsRefresh = paymentStatusView.primaryAction === 'refresh'
+    const needsReconnect = paymentStatusView.primaryAction === 'reconnect'
     return (
       <section
         className="ec-inline-cover"
-        data-tone={needsSync || needsRefresh ? 'unavailable' : 'none'}
+        data-tone={needsSync || needsRefresh || needsReconnect ? 'unavailable' : 'none'}
         data-testid="send-cover-status"
       >
-        <span>{needsSync || needsRefresh ? 'Cover status unavailable' : 'Cover is not active'}</span>
+        <span>{needsSync || needsRefresh || needsReconnect ? 'Cover status unavailable' : 'Cover is not active'}</span>
         <p>{paymentStatusView.detail}</p>
         <button
           className="ec-secondary"
-          onClick={needsRefresh ? () => void refreshCoverState() : openCoverActivation}
+          onClick={
+            needsReconnect
+              ? () => void reconnectCoverSession()
+              : needsRefresh
+                ? () => void refreshCoverState()
+                : openCoverActivation
+          }
           type="button"
         >
-          {needsRefresh
+          {needsReconnect
+            ? 'Reconnect'
+            : needsRefresh
             ? 'Check cover'
             : needsSync
               ? 'Retry activation'

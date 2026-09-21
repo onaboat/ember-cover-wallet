@@ -21,7 +21,7 @@ export interface PaymentStatusView {
   badgeTone: PaymentBadgeTone
   detail: string
   metrics: PaymentStatusMetric[]
-  primaryAction: 'activate' | 'connect' | 'manage' | 'refresh' | 'review' | 'sync'
+  primaryAction: 'activate' | 'connect' | 'manage' | 'reconnect' | 'refresh' | 'review' | 'sync'
   title: string
 }
 
@@ -190,6 +190,16 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
   }
 
   if (submittedPaymentState) {
+    if (coverEnrolled === false) {
+      return {
+        badgeLabel: 'RECONNECT',
+        badgeTone: 'unavailable',
+        detail: 'Reconnect Ember Cover to verify your saved coverage. No payment is required.',
+        metrics: stateMetrics(submittedPaymentState),
+        primaryAction: 'reconnect',
+        title: 'Coverage',
+      }
+    }
     return {
       badgeLabel: 'UNAVAILABLE',
       badgeTone: 'unavailable',

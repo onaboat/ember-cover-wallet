@@ -10,7 +10,7 @@ import {
 } from './fixtures/ember-api-server.ts'
 import { EMBER_CHROME_EXTENSION_ID } from '../src/config/chrome-identity.ts'
 
-const EXT = path.resolve('.output/chrome-mv3')
+const EXT = path.resolve('.output/nonlive/chrome-mv3')
 let emberApi: EmberApiFixture | undefined
 
 test.beforeAll(async () => {
