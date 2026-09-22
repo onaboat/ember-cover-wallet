@@ -243,7 +243,8 @@ function decisionResponse(
     decisionExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
     decisionId,
     decisionReason: 'eligible',
-    evaluationCountImpact: 1,
+    evaluationCountImpact: 0,
+    allowance: { limit: 100, committed: 0, reserved: 1, available: 99 },
     evidenceState: 'pre_sign',
     kind,
     maximumPayoutMicros: OFFER.perLossLimitMicros,
@@ -310,6 +311,7 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
   let decisionSequence = 0
   let challenge: SessionChallenge | null = null
   let activatedPayment: PaymentResponse | null = null
+  let activatedWalletAddress: string | null = null
   let sessionOrigin: string | null = null
   const server = createServer((req, res) => {
     void (async () => {
@@ -549,6 +551,7 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
           return
         }
         activatedPayment = paymentResponse(body.paymentSignature)
+        activatedWalletAddress = challenge.walletAddress
         response(res, 200, activatedPayment, origin)
         return
       }
@@ -558,6 +561,23 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
           return
         }
         response(res, 200, activatedPayment, origin)
+        return
+      }
+      if (req.method === 'GET' && path === '/v1/coverage-instances/current') {
+        response(res, 200, challenge && activatedPayment && activatedWalletAddress === challenge.walletAddress ? {
+          status: 'active', coverage: coverageResponse(challenge.walletAddress, activatedPayment.paymentSignature),
+          allowance: { limit: 100, committed: 0, reserved: 0, available: 100 },
+        } : { status: 'none' }, origin)
+        return
+      }
+      const cancelMatch = path.match(/^\/v1\/decisions\/([^/]+)\/cancel$/)
+      if (req.method === 'POST' && cancelMatch) {
+        const decisionId = decodeURIComponent(cancelMatch[1] ?? '')
+        const decision = decisions.get(decisionId)
+        if (!decision) { response(res, 404, { error: 'decision_not_found' }, origin); return }
+        const cancelled = decision.evidenceState === 'pre_sign' || decision.evidenceState === 'dropped'
+        if (cancelled) decisions.set(decisionId, { ...decision, evidenceState: 'dropped' })
+        response(res, 200, { decisionId, cancelled, evidenceState: cancelled ? 'dropped' : decision.evidenceState }, origin)
         return
       }
       if (req.method === 'GET' && path === `/v1/coverage-instances/${COVERAGE_INSTANCE_ID}`) {

@@ -38,10 +38,6 @@ function clusterLabel(cluster: WalletCluster): string {
   return cluster === 'mainnet-beta' ? 'Mainnet' : 'Devnet'
 }
 
-function money(value: number): string {
-  return `$${value.toLocaleString()}`
-}
-
 function paymentLabel(status: LocalCoveragePaymentState['status']): string {
   switch (status) {
     case 'quote_ready':
@@ -108,12 +104,8 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
       metrics: [
         { label: 'Plan', value: coverStatusSnapshot.tier },
         {
-          label: 'Checks',
+          label: 'Transactions available',
           value: `${coverStatusSnapshot.remainingCoveredTxThisMonth} of ${coverStatusSnapshot.coveredTxPerMonth}`,
-        },
-        {
-          label: 'Loss cap',
-          value: `${money(coverStatusSnapshot.remainingLossCapUsd)} of ${money(coverStatusSnapshot.monthlyLossCapUsd)}`,
         },
       ],
       primaryAction: 'manage',

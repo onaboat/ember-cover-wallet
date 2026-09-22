@@ -23,6 +23,8 @@ import { buildSignMessageOutputs } from './sign-message-output.ts'
 import { buildSignTransactionOutputs } from './sign-transaction-output.ts'
 import { decodeTransactionSummary } from '../entrypoints/request/decode-transaction.ts'
 import { walletClusterForChain } from '../wallet-standard/chains.ts'
+import { preflightTransaction } from './transaction-preflight.ts'
+import type { TransactionPreflight } from './transaction-preflight.ts'
 
 /** The SW-side signer the request service needs. The real VaultController satisfies this. */
 export interface VaultSigner {
@@ -93,6 +95,7 @@ type PendingRequest =
       coverDecision?: CoverDecision | null
       coverCheck?: Promise<void>
       coverChecking?: boolean
+      transactionPreflight?: TransactionPreflight
       reviewedBytesBase64?: string
     }
 
@@ -104,6 +107,7 @@ type ResolveType<T extends RequestType> =
 
 /** Read-only view of the pending request, safe to send to the popup. */
 export interface PendingRequestView {
+  signingStarted?: boolean
   /** Per-request nonce. The approval UI captures this and passes it to approve/reject so a
    *  stale still-open window can never act on a different, later request. */
   id: string
@@ -113,6 +117,7 @@ export interface PendingRequestView {
   cover?: CoverSummary
   /** True only while the single background underwriting request is unresolved. */
   coverChecking?: boolean
+  transactionPreflight?: TransactionPreflight
 }
 
 /** The NARROW surface the approval popup may call. `create` is absent on purpose.
@@ -141,6 +146,10 @@ function typeToSlug(type: RequestType): string {
 export class RequestService implements RequestApproval {
   #request: PendingRequest | null = null
   #seq = 0
+  #transactionApprovalInFlight = false
+  #signedTransactionRequestId: string | null = null
+  #signingRequestId: string | null = null
+  #messageApprovalInFlight = false
   #signer: VaultSigner
   #cover: CoverProvider | undefined
 
@@ -149,6 +158,8 @@ export class RequestService implements RequestApproval {
     this.#cover = cover
     browser.windows.onRemoved.addListener((windowId: number) => {
       if (this.#request && this.#request.windowId === windowId) {
+        if (this.#signingRequestId === this.#request.id) return
+        this.#cancelUnsignedReview(this.#request)
         this.#request.reject(new Error('Request closed'))
         this.#clear()
       }
@@ -180,8 +191,7 @@ export class RequestService implements RequestApproval {
     })
     const request = this.#request as PendingRequest | null
     if (
-      this.#cover &&
-      (request?.type === 'signTransaction' || request?.type === 'signMessage') &&
+      (request?.type === 'signTransaction' || (this.#cover && request?.type === 'signMessage')) &&
       request.data.length === 1
     ) {
       void this.#startCoverCheck(request)
@@ -195,6 +205,7 @@ export class RequestService implements RequestApproval {
    * creating duplicate evaluations while the original result is still late.
    */
   #startCoverCheck(request: PendingSignRequest): Promise<void> {
+    if (this.#signingRequestId === request.id) throw new Error('Signing has started')
     if (request.coverCheck) {
       return request.coverCheck
     }
@@ -231,15 +242,20 @@ export class RequestService implements RequestApproval {
 
   /** Perform pre-sign review and attach only the opaque public decision. */
   async #fetchCover(request: PendingSignRequest): Promise<void> {
-    if (!this.#cover) {
-      throw new Error('Cover provider is unavailable')
-    }
     if (request.type === 'signTransaction') {
       const first = request.data[0]
       if (!first || first.transaction == null) {
         throw new Error('Transaction bytes are unavailable for cover review')
       }
       const transactionBytes = toBase64(decodeTransportBytes(first.transaction))
+      const validation = await preflightTransaction(decodeTransportBytes(first.transaction), walletClusterForChain(first.chain))
+      if (this.#request !== request) return
+      request.transactionPreflight = validation
+      if (validation.status === 'blocked') {
+        delete request.coverDecision
+        return
+      }
+      if (!this.#cover) return
       const decision = await this.#cover.preSign({
         transactionBytes,
         cluster: walletClusterForChain(first.chain),
@@ -248,9 +264,12 @@ export class RequestService implements RequestApproval {
       if (this.#request === request) {
         request.coverDecision = decision
         request.reviewedBytesBase64 = transactionBytes
+      } else if (decision.requestId) {
+        void this.#cover.cancelReview(decision.requestId).catch(() => {})
       }
     }
     if (request.type === 'signMessage') {
+      if (!this.#cover) return
       const first = request.data[0]
       if (!first || first.message == null) {
         throw new Error('Message bytes are unavailable for cover review')
@@ -265,6 +284,8 @@ export class RequestService implements RequestApproval {
       if (this.#request === request) {
         request.coverDecision = decision
         request.reviewedBytesBase64 = messageBytes
+      } else if (decision.requestId) {
+        void this.#cover.cancelReview(decision.requestId).catch(() => {})
       }
     }
   }
@@ -284,11 +305,13 @@ export class RequestService implements RequestApproval {
         : undefined
     return {
       id,
+      signingStarted: this.#signingRequestId === id,
       type,
       data,
       ...(origin === undefined ? {} : { origin }),
       ...(cover === undefined ? {} : { cover }),
       ...(coverChecking === undefined ? {} : { coverChecking }),
+      ...(this.#request.type === 'signTransaction' && this.#request.transactionPreflight ? { transactionPreflight: this.#request.transactionPreflight } : {}),
     }
   }
 
@@ -304,6 +327,7 @@ export class RequestService implements RequestApproval {
     if (request.data.length !== 1) {
       return this.get()
     }
+    if (this.#signingRequestId === request.id) throw new Error('Signing has started')
     if (request.coverCheck) {
       await request.coverCheck
       return this.get()
@@ -340,6 +364,12 @@ export class RequestService implements RequestApproval {
 
   /** SW-side: sign through the injected vault signer (key never leaves SW). */
   async approveSignMessage(id?: string): Promise<void> {
+    if (this.#messageApprovalInFlight || this.#signingRequestId === this.#request?.id) throw new Error('Message approval is already in progress')
+    this.#messageApprovalInFlight = true
+    try { await this.#approveSignMessage(id) } finally { this.#messageApprovalInFlight = false }
+  }
+
+  async #approveSignMessage(id?: string): Promise<void> {
     const request = this.#request
     if (!request || request.type !== 'signMessage') {
       throw new Error('No signMessage request to approve')
@@ -369,19 +399,28 @@ export class RequestService implements RequestApproval {
     ) {
       throw new Error('Signing bytes changed after Ember review')
     }
-    const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address)
+    if (this.#request !== request) throw new Error('Request closed')
+    this.#signingRequestId = request.id
+    const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address).catch((error: unknown) => {
+      // A failed signing attempt ends this request. Never leave the dapp waiting
+      // or retry custody on the same approval; the unsigned reservation expires.
+      if (this.#request === request) {
+        request.reject(error instanceof Error ? error : new Error('Signing failed'))
+        this.#clear()
+        void this.#closeWindow(request.windowId)
+      }
+      throw error
+    })
     // The user may have closed the window mid-sign; if so onRemoved already rejected the dapp.
     // Bail before resolving or sending post-sign evidence so the cancelled request yields nothing.
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
     const first = outputs[0]
-    const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
     if (
       this.#cover &&
       decision &&
       decision.coverStatus !== 'unavailable' &&
-      decisionIsFresh &&
       decision.requestId &&
       first?.signedMessage &&
       first.signature
@@ -400,6 +439,19 @@ export class RequestService implements RequestApproval {
   }
 
   async approveSignTransaction(id?: string): Promise<void> {
+    if (this.#transactionApprovalInFlight) throw new Error('Transaction approval is already in progress')
+    if (this.#request && (this.#signedTransactionRequestId === this.#request.id || this.#signingRequestId === this.#request.id)) {
+      throw new Error('Signing has already started. Check Activity and evidence recovery; do not sign this request again.')
+    }
+    this.#transactionApprovalInFlight = true
+    try {
+      await this.#approveSignTransaction(id)
+    } finally {
+      this.#transactionApprovalInFlight = false
+    }
+  }
+
+  async #approveSignTransaction(id?: string): Promise<void> {
     const request = this.#request
     if (!request || request.type !== 'signTransaction') {
       throw new Error('No signTransaction request to approve')
@@ -409,6 +461,10 @@ export class RequestService implements RequestApproval {
     }
     if (request.data.length !== 1) {
       throw new Error('Multiple transaction signing is not supported')
+    }
+    if (request.coverChecking) throw new Error(this.#cover ? 'Cover check is still in progress' : 'Transaction check is still in progress')
+    if (request.transactionPreflight?.status === 'blocked') {
+      throw new Error(request.transactionPreflight.message)
     }
     if (this.#cover && (request.coverChecking || !request.coverDecision)) {
       throw new Error('Cover check is still in progress')
@@ -431,9 +487,35 @@ export class RequestService implements RequestApproval {
     ) {
       throw new Error('Signing bytes changed after Ember review')
     }
-    const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address)
-    // The user may have closed the window mid-sign; if so onRemoved already rejected the dapp.
-    // Bail before resolving, recording, or sending post-sign evidence for a cancelled request.
+    const validation = await preflightTransaction(
+      decodeTransportBytes(request.data[0]!.transaction),
+      walletClusterForChain(request.data[0]!.chain),
+    )
+    if (this.#request !== request) throw new Error('Request closed')
+    request.transactionPreflight = validation
+    if (validation.status === 'blocked') throw new Error(validation.message)
+    if (await this.#signer.getAddress() !== address) throw new Error('Wallet changed. Cancel and review a new request.')
+    if (this.#request !== request) throw new Error('Request closed')
+    if (decision && isCoverable(decision) && !(Date.now() < Date.parse(decision.decisionExpiresAt))) {
+      throw new Error('Cover decision expired')
+    }
+    if (currentTransactionBytes !== toBase64(decodeTransportBytes(request.data[0]!.transaction))) {
+      throw new Error('Signing bytes changed during transaction validation')
+    }
+    this.#signingRequestId = request.id
+    const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address).catch((error: unknown) => {
+      // A failed signing attempt ends this request. Never leave the dapp waiting
+      // or retry custody on the same approval; the unsigned reservation expires.
+      if (this.#request === request) {
+        request.reject(error instanceof Error ? error : new Error('Signing failed'))
+        this.#clear()
+        void this.#closeWindow(request.windowId)
+      }
+      throw error
+    })
+    this.#signedTransactionRequestId = request.id
+    // UI dismissal after signing begins does not cancel this request. Retain
+    // the identity check against any unrelated request replacement.
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
@@ -448,7 +530,6 @@ export class RequestService implements RequestApproval {
         signature = null
       }
     }
-    const decisionIsFresh = decision ? Date.now() < Date.parse(decision.decisionExpiresAt) : false
     // Record the cover verdict locally for the Activity feed. This is a display
     // cache only; Ember's lifecycle endpoints remain authoritative.
     if (decision && signature) {
@@ -484,7 +565,6 @@ export class RequestService implements RequestApproval {
       this.#cover &&
       decision &&
       decision.coverStatus !== 'unavailable' &&
-      decisionIsFresh &&
       decision.requestId &&
       signedTransaction
     ) {
@@ -508,8 +588,18 @@ export class RequestService implements RequestApproval {
     if (id !== undefined && this.#request.id !== id) {
       throw new Error('Stale request')
     }
+    if (this.#signingRequestId === this.#request.id) throw new Error('Signing has started. Continue recovery; this review cannot be cancelled.')
+    this.#cancelUnsignedReview(this.#request)
     this.#request.reject(new Error('Request rejected'))
     void this.#close()
+  }
+
+  #cancelUnsignedReview(request: PendingRequest): void {
+    if (request.type === 'connect' || this.#signingRequestId === request.id) return
+    const decisionId = request.coverDecision?.requestId
+    // Offline cancellation cannot promise an immediate refund; the server's
+    // reservation expiry remains authoritative if this request cannot arrive.
+    if (decisionId && this.#cover) void this.#cover.cancelReview(decisionId).catch(() => {})
   }
 
   async #createPopupWindow(type: RequestType): Promise<number> {

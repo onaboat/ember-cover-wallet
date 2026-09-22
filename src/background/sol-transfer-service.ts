@@ -70,6 +70,10 @@ type SimulateValue = Readonly<{
 interface TransferRpcClient {
   getBalance(address: Address, config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<bigint | number | string>>
   getLatestBlockhash(config?: Readonly<{ commitment: 'confirmed' }>): RpcSend<RpcValue<LatestBlockhashValue>>
+  isBlockhashValid(
+    blockhash: string,
+    config?: Readonly<{ commitment: 'confirmed' }>,
+  ): RpcSend<RpcValue<boolean>>
   getAccountInfo?(
     address: Address,
     config: Readonly<{ commitment: 'confirmed'; encoding: 'jsonParsed' }>,
@@ -148,12 +152,16 @@ export interface WalletTransferInput {
   destination: string
 }
 
+export type WalletTransferReviewId = `transfer-review_${string}`
+
 export interface WalletTransferSendInput extends WalletTransferInput {
+  reviewId: WalletTransferReviewId
   acknowledgeHighRisk?: boolean
   acknowledgeUncovered?: boolean
 }
 
 export interface SolTransferSendInput extends SolTransferInput {
+  reviewId: WalletTransferReviewId
   acknowledgeHighRisk?: boolean
   acknowledgeUncovered?: boolean
 }
@@ -171,6 +179,8 @@ export interface SolTransferCoverView {
 }
 
 export interface SolTransferPreview {
+  reviewId: WalletTransferReviewId
+  cluster: WalletCluster
   asset: WalletTransferAsset
   amount: string
   amountBaseUnits: string
@@ -196,15 +206,19 @@ export interface SolTransferPreview {
   tokenAccountSize: number | null
 }
 
-export interface SolTransferResult {
+export type SolTransferResult = {
   signature: string
   explorerUrl: string
   cover: SolTransferCoverView
-}
+} & (
+  | { status: 'submitted' }
+  | { status: 'broadcast_pending'; message: string }
+)
 
 export interface WalletTransferUI {
   previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview>
   sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult>
+  discardReview(reviewId: WalletTransferReviewId): Promise<void>
   previewSolTransfer(input: SolTransferInput): Promise<SolTransferPreview>
   sendSolTransfer(input: SolTransferSendInput): Promise<SolTransferResult>
 }
@@ -215,6 +229,19 @@ interface WalletTransferProviderDeps {
   rpcFactory?: (cluster: WalletCluster) => TransferRpcClient
 }
 
+interface PreparedWalletTransfer {
+  blockhash: string
+  cluster: WalletCluster
+  decision: CoverDecision
+  lastValidBlockHeight: string
+  preview: SolTransferPreview
+  reviewKey: string
+  rpc: TransferRpcClient
+  transactionMessage: Parameters<typeof signTransactionMessageWithSigners>[0]
+  unsignedBytes: Base64EncodedWireTransaction
+  walletAddress: string
+}
+
 function createTransferRpc(cluster: WalletCluster): TransferRpcClient {
   const config = walletClusterConfig(cluster)
   const url = cluster === 'devnet' ? devnet(config.rpcUrl) : config.rpcUrl
@@ -223,6 +250,26 @@ function createTransferRpc(cluster: WalletCluster): TransferRpcClient {
 
 function toBigInt(value: bigint | number | string): bigint {
   return typeof value === 'bigint' ? value : BigInt(value)
+}
+
+function transferReviewKey(input: WalletTransferInput, cluster: WalletCluster): string {
+  const asset = input.asset.kind === 'sol'
+    ? { kind: 'sol', symbol: input.asset.symbol }
+    : {
+        decimals: input.asset.decimals,
+        kind: 'token',
+        mint: input.asset.mint,
+        programId: input.asset.programId,
+        rawBalance: input.asset.rawBalance,
+        symbol: input.asset.symbol,
+        tokenAccount: input.asset.tokenAccount,
+      }
+  return JSON.stringify({
+    amount: input.amount.trim(),
+    asset,
+    cluster,
+    destination: input.destination.trim(),
+  })
 }
 
 function parseAddress(value: string): Address {
@@ -442,12 +489,19 @@ function createSystemTransferInstruction({
   }
 }
 
+type TransferReviewState =
+  | { phase: 'idle' }
+  | { phase: 'preparing'; reviewId: WalletTransferReviewId }
+  | { phase: 'reviewed'; transfer: PreparedWalletTransfer }
+  | { phase: 'sending'; reviewId: WalletTransferReviewId }
+
 export class WalletTransferProvider implements WalletTransferUI {
   #cluster: WalletCluster
   #cover: CoverProvider | undefined
   #now: () => number
   #rpcFactory: (cluster: WalletCluster) => TransferRpcClient
   #signer: SolTransferSigner
+  #reviewState: TransferReviewState = { phase: 'idle' }
 
   constructor(signer: SolTransferSigner, cover?: CoverProvider, deps: WalletTransferProviderDeps = {}) {
     this.#cluster = deps.cluster ?? 'devnet'
@@ -468,6 +522,7 @@ export class WalletTransferProvider implements WalletTransferUI {
 
   async sendSolTransfer(input: SolTransferSendInput): Promise<SolTransferResult> {
     return await this.sendTransfer({
+      reviewId: input.reviewId,
       amount: input.amountSol,
       asset: { kind: 'sol', symbol: 'SOL' },
       ...(input.cluster === undefined ? {} : { cluster: input.cluster }),
@@ -478,12 +533,77 @@ export class WalletTransferProvider implements WalletTransferUI {
   }
 
   async previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview> {
-    const prepared = await this.#prepare(input)
-    return prepared.preview
+    if (this.#reviewState.phase === 'sending') {
+      throw new Error('This send is already in progress')
+    }
+    const previous = this.#reviewState
+    if (previous.phase === 'reviewed' && previous.transfer.decision.requestId && this.#cover) {
+      void this.#cover.cancelReview(previous.transfer.decision.requestId).catch(() => {})
+    }
+    const reviewId: WalletTransferReviewId = `transfer-review_${crypto.randomUUID()}`
+    const preparing = { phase: 'preparing', reviewId } as const
+    this.#reviewState = preparing
+    try {
+      const prepared = await this.#prepare(input, reviewId)
+      if (this.#reviewState !== preparing) {
+        if (prepared.decision.requestId && this.#cover) void this.#cover.cancelReview(prepared.decision.requestId).catch(() => {})
+        throw new Error('This review was replaced. Use the latest send review.')
+      }
+      this.#reviewState = { phase: 'reviewed', transfer: prepared }
+      return prepared.preview
+    } catch (error) {
+      if (this.#reviewState === preparing) this.#reviewState = { phase: 'idle' }
+      throw error
+    }
+  }
+
+  async discardReview(reviewId: WalletTransferReviewId): Promise<void> {
+    if (this.#reviewState.phase === 'reviewed' &&
+        this.#reviewState.transfer.preview.reviewId === reviewId) {
+      const decisionId = this.#reviewState.transfer.decision.requestId
+      this.#reviewState = { phase: 'idle' }
+      if (decisionId && this.#cover) await this.#cover.cancelReview(decisionId)
+    }
   }
 
   async sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult> {
-    const prepared = await this.#prepare(input)
+    if (this.#reviewState.phase === 'sending') {
+      throw new Error('This send is already in progress')
+    }
+    const state = this.#reviewState
+    if (state.phase !== 'reviewed' || state.transfer.preview.reviewId !== input.reviewId) {
+      throw new Error('This send review is no longer available. Review the send again.')
+    }
+    const prepared = state.transfer
+    // Claim the review synchronously, before any asynchronous validation. A
+    // failed or completed attempt cannot prepare another transaction implicitly.
+    this.#reviewState = { phase: 'sending', reviewId: input.reviewId }
+    try {
+      const cluster = input.cluster ?? this.#cluster
+      if (prepared.reviewKey !== transferReviewKey(input, cluster)) {
+        throw new Error('Send details changed. Review the send again.')
+      }
+      return await this.#sendTransfer(prepared, input)
+    } finally {
+      this.#reviewState = { phase: 'idle' }
+    }
+  }
+
+  async #assertReviewAuthority(prepared: PreparedWalletTransfer): Promise<void> {
+    if (await this.#signer.getAddress() !== prepared.walletAddress) {
+      throw new Error('Wallet changed. Review the send again.')
+    }
+    if (prepared.decision.requestId &&
+        !(this.#now() < Date.parse(prepared.preview.cover.decisionExpiresAt))) {
+      throw new Error('Cover decision expired. Review the send again.')
+    }
+  }
+
+  async #sendTransfer(
+    prepared: PreparedWalletTransfer,
+    input: WalletTransferSendInput,
+  ): Promise<SolTransferResult> {
+    await this.#assertReviewAuthority(prepared)
     const { cover, simulation } = prepared.preview
     if (simulation.status !== 'success') {
       throw new Error('Simulation failed. The transaction was not sent.')
@@ -494,10 +614,27 @@ export class WalletTransferProvider implements WalletTransferUI {
     if (cover.requiresHighRiskAck && !input.acknowledgeHighRisk) {
       throw new Error('Confirm you understand this covered send is high risk')
     }
-    if (prepared.decision.requestId && this.#now() >= Date.parse(cover.decisionExpiresAt)) {
-      throw new Error('Cover decision expired. Review the send again.')
+    const blockhashValid = await prepared.rpc
+      .isBlockhashValid(prepared.blockhash, { commitment: 'confirmed' })
+      .send()
+    if (!blockhashValid.value) {
+      throw new Error('Transaction blockhash expired. Review the send again; nothing was signed or sent.')
+    }
+    const currentSimulation = await prepared.rpc
+      .simulateTransaction(prepared.unsignedBytes, {
+        commitment: 'confirmed',
+        encoding: 'base64',
+        replaceRecentBlockhash: false,
+        sigVerify: false,
+      })
+      .send()
+    if (currentSimulation.value.err) {
+      throw new Error('Transaction state changed and simulation now fails. Review the send again; nothing was signed or sent.')
     }
 
+    // Runtime checks may take time; revalidate wallet and decision authority at
+    // the signing boundary as well as before starting those checks.
+    await this.#assertReviewAuthority(prepared)
     const signedTransaction = await signTransactionMessageWithSigners(prepared.transactionMessage)
     const signedBytes = getBase64EncodedWireTransaction(signedTransaction)
     const signature = getSignatureFromTransaction(signedTransaction)
@@ -577,19 +714,24 @@ export class WalletTransferProvider implements WalletTransferUI {
           },
         ])
         .catch(() => {})
-      throw new Error(
-        `Transaction signed and saved, but broadcast was not confirmed. Do not sign again; Ember will retry it while the blockhash is valid. ${String(error)}`,
-      )
+      return {
+        status: 'broadcast_pending',
+        signature,
+        explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
+        cover,
+        message: 'Transaction signed and saved. Broadcast has not been confirmed. Check Activity to retry the saved transaction; do not create another send.',
+      }
     }
 
     return {
+      status: 'submitted',
       signature,
       explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
       cover,
     }
   }
 
-  async #prepare(input: WalletTransferInput) {
+  async #prepare(input: WalletTransferInput, reviewId: WalletTransferReviewId): Promise<PreparedWalletTransfer> {
     const walletAddress = await this.#signer.getAddress()
     if (!walletAddress) {
       throw new Error('No wallet')
@@ -600,6 +742,7 @@ export class WalletTransferProvider implements WalletTransferUI {
       throw new Error('Recipient is this wallet')
     }
     const cluster = input.cluster ?? this.#cluster
+    const reviewKey = transferReviewKey(input, cluster)
     const rpc = this.#rpcFactory(cluster)
     const [balanceResponse, latestBlockhashResponse] = await Promise.all([
       rpc.getBalance(source, { commitment: 'confirmed' }).send(),
@@ -814,6 +957,8 @@ export class WalletTransferProvider implements WalletTransferUI {
     return {
       decision,
       preview: {
+        reviewId,
+        cluster,
         asset: input.asset,
         amount: formatBaseUnits(
           amountBaseUnits,
@@ -845,7 +990,9 @@ export class WalletTransferProvider implements WalletTransferUI {
       cluster,
       blockhash: latestBlockhashResponse.value.blockhash,
       lastValidBlockHeight: toBigInt(latestBlockhashResponse.value.lastValidBlockHeight).toString(),
+      reviewKey,
       transactionMessage,
+      unsignedBytes,
       walletAddress,
     }
   }
@@ -863,6 +1010,7 @@ export function registerWalletTransferService(provider: WalletTransferUI): void 
   const facade: WalletTransferUI = {
     previewTransfer: (input) => provider.previewTransfer(input),
     sendTransfer: (input) => provider.sendTransfer(input),
+    discardReview: (reviewId) => provider.discardReview(reviewId),
     previewSolTransfer: (input) => provider.previewSolTransfer(input),
     sendSolTransfer: (input) => provider.sendSolTransfer(input),
   }

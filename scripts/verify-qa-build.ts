@@ -12,11 +12,13 @@ import {
 } from '../src/config/chrome-identity.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
-const OUTPUT = path.join(ROOT, '.output', 'chrome-mv3')
+const OUTPUT = path.join(ROOT, '.output', ...(process.env.EMBER_BUILD_PROFILE === 'candidate-devnet-qa' ? ['qa-candidate'] : []), 'chrome-mv3')
 const SDK_PACKAGE = '@embercover/wallet-sdk'
-const EXPECTED_SDK_VERSION = '1.3.2-beta.0'
-const EXPECTED_SDK_INTEGRITY =
-  'sha512-7W0nUgjnzcGdPoVbpdKn4Wy93skutNnVIivUeenNHOe3Zxi3QFOIacKiObbfOUXmr585KlX2s2SaeyaVESrfgg=='
+const EXPECTED_SDK_VERSION = '1.3.2-beta.3'
+const SDK_TARBALL = 'vendor/embercover-wallet-sdk-1.3.2-beta.3.tgz'
+const EXPECTED_SDK_SPEC = `file:${SDK_TARBALL}`
+const EXPECTED_SDK_SHA256 =
+  '2f344615b3f9b00726845cd321a0bc82ac5bda968fef24147268750d4c539b27'
 const RETIRED_BUNDLE_MARKERS = [
   'EMBER_PARTNER_API_KEY',
   'test-partner-key',
@@ -89,9 +91,16 @@ async function scanBundle(): Promise<void> {
 const projectPackage = JSON.parse(
   await readFile(path.join(ROOT, 'package.json'), 'utf8'),
 ) as { dependencies?: Record<string, string> }
-if (projectPackage.dependencies?.[SDK_PACKAGE] !== EXPECTED_SDK_VERSION) {
+if (projectPackage.dependencies?.[SDK_PACKAGE] !== EXPECTED_SDK_SPEC) {
   throw new Error(
-    `Expected exact ${SDK_PACKAGE}@${EXPECTED_SDK_VERSION} dependency`,
+    `Expected ${SDK_PACKAGE} to use reviewed artifact ${EXPECTED_SDK_SPEC}`,
+  )
+}
+const sdkTarball = await readFile(path.join(ROOT, SDK_TARBALL))
+const sdkTarballSha256 = createHash('sha256').update(sdkTarball).digest('hex')
+if (sdkTarballSha256 !== EXPECTED_SDK_SHA256) {
+  throw new Error(
+    `Reviewed SDK artifact digest mismatch: ${sdkTarballSha256}`,
   )
 }
 const installedSdk = JSON.parse(
@@ -113,10 +122,10 @@ const sdkLockEntry = bunLock
   .split('\n')
   .find((line) => line.trimStart().startsWith(`"${SDK_PACKAGE}": [`))
 if (
-  !sdkLockEntry?.includes(`${SDK_PACKAGE}@${EXPECTED_SDK_VERSION}`) ||
-  !sdkLockEntry.includes(EXPECTED_SDK_INTEGRITY)
+  !sdkLockEntry?.includes(EXPECTED_SDK_VERSION) ||
+  !sdkLockEntry.includes(SDK_TARBALL)
 ) {
-  throw new Error(`Locked ${SDK_PACKAGE} version or npm integrity mismatch`)
+  throw new Error(`Locked ${SDK_PACKAGE} is not the reviewed SDK artifact`)
 }
 
 const manifest = JSON.parse(
@@ -175,7 +184,7 @@ console.log(
   JSON.stringify({
     bundle: 'verified',
     extensionId: EMBER_CHROME_EXTENSION_ID,
-    sdkIntegrity: EXPECTED_SDK_INTEGRITY,
+    sdkArtifactSha256: EXPECTED_SDK_SHA256,
     sdkVersion: EXPECTED_SDK_VERSION,
     version: manifest.version,
   }),

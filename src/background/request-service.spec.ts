@@ -17,6 +17,9 @@ import { beforeEach, expect, test, vi } from 'vitest'
 import { buildConnectAccount } from './build-account.ts'
 import type { CoverProvider } from './cover-service.ts'
 import { RequestService } from './request-service.ts'
+import { preflightTransaction } from './transaction-preflight.ts'
+
+vi.mock('./transaction-preflight.ts', () => ({ preflightTransaction: vi.fn() }))
 
 const FEE_PAYER = 'So11111111111111111111111111111111111111112'
 const ACCOUNT = buildConnectAccount(FEE_PAYER)
@@ -58,6 +61,7 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
       decisionReason: 'temporarily_unavailable',
       decisionExpiresAt: new Date(0).toISOString(),
     }),
+    cancelReview: vi.fn(async () => {}),
     postSign: async () => {},
     status: async () => null,
     preSignMessage: async () => ({
@@ -77,6 +81,7 @@ function coverProvider(overrides: Partial<CoverProvider>): CoverProvider {
 beforeEach(() => {
   fakeBrowser.reset()
   vi.restoreAllMocks()
+  vi.mocked(preflightTransaction).mockReset().mockResolvedValue({ status: 'valid' })
 })
 
 test('rejects a second concurrent request', async () => {
@@ -275,7 +280,7 @@ test('a stale id cannot approve a request it never displayed', async () => {
   expect(out?.signedTransaction).toBeDefined()
 })
 
-test('closing the window mid-sign cancels: no signature to the dapp, no post-sign, no record', async () => {
+test('closing the window after signing starts preserves evidence and completes the request', async () => {
   let releaseSign = () => {}
   const gate = new Promise<void>((resolve) => {
     releaseSign = resolve
@@ -308,12 +313,12 @@ test('closing the window mid-sign cancels: no signature to the dapp, no post-sig
   fakeBrowser.windows.onRemoved.trigger(7)
   releaseSign()
 
-  await expect(pending).rejects.toThrow('closed')
-  await approveP.catch(() => {})
-  // A cancelled request must not send evidence or write a local record.
-  expect(postSign).not.toHaveBeenCalled()
+  await approveP
+  expect(await pending).toHaveLength(1)
+  // Closing UI cannot cancel signing that has already started.
+  expect(postSign).toHaveBeenCalledOnce()
   const records = await storage.getItem<unknown[]>('local:ember-cover-records')
-  expect(records ?? []).toHaveLength(0)
+  expect(records ?? []).toHaveLength(1)
 })
 
 test('reject settles the pending promise with an error', async () => {
@@ -606,4 +611,94 @@ test('exhausted cap is not covered and skips post sign evidence', async () => {
   // must show "not covered" in Activity, so recording is NOT gated on freshness.
   const records = await storage.getItem<Array<{ coverStatus: string }>>('local:ember-cover-records')
   expect(records?.[0]?.coverStatus).toBe('not_covered')
+})
+
+test('a failed dapp simulation blocks signing and exposes its result without issuing cover', async () => {
+  const sign = vi.fn(signer.sign)
+  const preSign = vi.fn(coverProvider({}).preSign)
+  vi.mocked(preflightTransaction).mockResolvedValue({ status: 'blocked', reason: 'simulation_failed', message: 'Simulation failed: insufficient lamports' })
+  const svc = new RequestService({ ...signer, sign }, coverProvider({ preSign }))
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.transactionPreflight?.status).toBe('blocked'))
+  await expect(svc.approveSignTransaction()).rejects.toThrow('insufficient lamports')
+  expect(sign).not.toHaveBeenCalled()
+  expect(preSign).not.toHaveBeenCalled()
+  svc.reject()
+})
+
+test('a blockhash expiring after review cannot be signed even with cover', async () => {
+  const sign = vi.fn(signer.sign)
+  vi.mocked(preflightTransaction)
+    .mockResolvedValueOnce({ status: 'valid' })
+    .mockResolvedValueOnce({ status: 'blocked', reason: 'expired', message: 'Blockhash expired. Cancel and start again from the app.' })
+  const cover = coverProvider({ preSign: async () => ({ requestId: 'decision-test', coverStatus: 'covered', riskBand: 'low', decisionReason: 'eligible', decisionExpiresAt: new Date(Date.now() + 60000).toISOString() }) })
+  const svc = new RequestService({ ...signer, sign }, cover)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
+  await expect(svc.approveSignTransaction()).rejects.toThrow('Blockhash expired')
+  expect(svc.get()?.transactionPreflight).toMatchObject({ status: 'blocked', reason: 'expired' })
+  expect(sign).not.toHaveBeenCalled()
+  svc.reject()
+})
+
+test('retrying validation after funding can proceed without changing dapp transaction bytes', async () => {
+  const sign = vi.fn(signer.sign)
+  vi.mocked(preflightTransaction).mockResolvedValueOnce({ status: 'blocked', reason: 'simulation_failed', message: 'Insufficient lamports' })
+  const svc = new RequestService({ ...signer, sign })
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const input = transactionInput()
+  const pending = svc.create('signTransaction', [input])
+  await vi.waitFor(() => expect(svc.get()?.transactionPreflight?.status).toBe('blocked'))
+  await svc.refreshCover()
+  expect(svc.get()?.transactionPreflight).toEqual({ status: 'valid' })
+  await svc.approveSignTransaction()
+  await pending
+  expect(sign).toHaveBeenCalledOnce()
+  expect(preflightTransaction).toHaveBeenLastCalledWith(input.transaction, 'devnet')
+})
+
+test('concurrent dapp confirmations do not sign twice during final validation', async () => {
+  const sign = vi.fn(signer.sign)
+  const svc = new RequestService({ ...signer, sign })
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  await vi.waitFor(() => expect(svc.get()?.coverChecking).toBe(false))
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  vi.mocked(preflightTransaction).mockImplementationOnce(async () => { await gate; return { status: 'valid' } })
+  const first = svc.approveSignTransaction()
+  await expect(svc.approveSignTransaction()).rejects.toThrow('already in progress')
+  release()
+  await first
+  await pending
+  expect(sign).toHaveBeenCalledOnce()
+})
+
+test('rejecting an unsigned covered request releases its server reservation', async () => {
+  const cancelReview = vi.fn(async () => {})
+  const cover = coverProvider({ cancelReview, preSign: async () => ({ requestId: 'decision_cancel', coverStatus: 'covered', riskBand: 'low', decisionReason: 'eligible', decisionExpiresAt: new Date(Date.now() + 60000).toISOString() }) })
+  const svc = new RequestService(signer, cover)
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 9 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.cover?.coverStatus).toBe('covered'))
+  svc.reject()
+  await expect(pending).rejects.toThrow('rejected')
+  expect(cancelReview).toHaveBeenCalledWith('decision_cancel')
+})
+
+test('a signer error cannot trigger a second signing attempt for the same review', async () => {
+  const sign = vi.fn(async () => { throw new Error('signer interrupted') })
+  const svc = new RequestService({ getAddress: signer.getAddress, sign })
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 12 } as never)
+  void svc.create('signTransaction', [transactionInput()]).catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.coverChecking).toBe(false))
+  await expect(svc.approveSignTransaction()).rejects.toThrow('signer interrupted')
+  await expect(svc.approveSignTransaction()).rejects.toThrow('No signTransaction request')
+  expect(svc.get()).toBeNull()
+  expect(sign).toHaveBeenCalledOnce()
 })

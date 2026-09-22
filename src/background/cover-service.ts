@@ -37,6 +37,7 @@ import {
   evidenceOutbox,
 } from './evidence-outbox.ts'
 import type { WalletCluster } from './wallet-data-config.ts'
+import { coverStatusFromLifecycle } from '../cover/coverage-status.ts'
 
 export interface PreSignArgs {
   transactionBytes: string
@@ -74,6 +75,7 @@ export interface MessagePostSignArgs {
 export interface CoverProvider {
   preSign(args: PreSignArgs): Promise<CoverDecision>
   postSign(args: PostSignArgs): Promise<void>
+  cancelReview(requestId: string): Promise<void>
   status(): Promise<CoverStatusSnapshot | null>
   preSignMessage(args: MessagePreSignArgs): Promise<CoverDecision>
   postSignMessage(args: MessagePostSignArgs): Promise<void>
@@ -254,6 +256,12 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
     })
   }
 
+  async cancelReview(requestId: string): Promise<void> {
+    if (!requestId) return
+    const client = await this.requireActiveClient()
+    await client.cancelDecision(requestId)
+  }
+
   async postSign(args: PostSignArgs): Promise<void> {
     await evidenceOutbox.put(args.requestId, {
       kind: 'transaction',
@@ -275,42 +283,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
 
   async status(): Promise<CoverStatusSnapshot | null> {
     const snapshot = await this.lifecycle()
-    if (!snapshot || snapshot.authority !== 'server' || !snapshot.coverage) return null
-    const coverage = snapshot.coverage
-    const latestDecision = snapshot.decisions.at(-1)?.cachedDecision
-    const remaining =
-      latestDecision?.coverageInstanceId === coverage.coverageInstanceId
-        ? latestDecision.remainingUnderwritingEvaluations
-        : coverage.coveredTransactionLimit
-    const used = Math.max(0, coverage.coveredTransactionLimit - remaining)
-    return {
-      subscriptionActive:
-        coverage.status === 'active' && Date.now() < Date.parse(coverage.coverageEndsAt),
-      subscriptionStatus: coverage.status,
-      walletRegistered: true,
-      tier: coverage.offerId,
-      month: new Date().toISOString().slice(0, 7),
-      currentPeriodEnd:
-        coverage.currentBenefitPeriodEndsAt ?? coverage.coverageEndsAt,
-      coveredTxPerMonth: coverage.coveredTransactionLimit,
-      usedCoveredTxThisMonth: used,
-      remainingCoveredTxThisMonth: remaining,
-      monthlyLossCapUsd: microsToUsd(coverage.benefitPeriodLimitMicros),
-      usedLossCapUsd: Math.max(
-        0,
-        microsToUsd(coverage.benefitPeriodLimitMicros) -
-          microsToUsd(
-            latestDecision?.remainingAggregateLimitMicros ??
-              coverage.remainingBenefitPeriodLimitMicros ??
-              coverage.benefitPeriodLimitMicros,
-          ),
-      ),
-      remainingLossCapUsd: microsToUsd(
-        latestDecision?.remainingAggregateLimitMicros ??
-          coverage.remainingBenefitPeriodLimitMicros ??
-          coverage.benefitPeriodLimitMicros,
-      ),
-    }
+    return coverStatusFromLifecycle(snapshot)
   }
 
   async claimEligibility(decisionId: string): Promise<ClaimEligibilityResponse> {
@@ -360,8 +333,17 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
         enrolled: false,
       })
     }
-    const lifecycle = await emberLifecycleStore.refresh(walletAddress, client)
-    const coverage = lifecycle.authority === 'server' ? lifecycle.coverage : null
+    const coverageSnapshot = await emberLifecycleStore.resolveCoverageForDecision(
+      walletAddress,
+      client,
+    )
+    const coverage = coverageSnapshot.coverage
+    if (!coverage && coverageSnapshot.authority !== 'server') {
+      return unavailable({
+        stage: 'provider_error', apiAttempted: true, walletAddress, enrolled: true,
+        error: coverageSnapshot.error ?? 'Coverage could not be verified',
+      })
+    }
     if (
       !coverage ||
       coverage.status !== 'active' ||
@@ -373,9 +355,9 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
         walletAddress,
         enrolled: true,
         error:
-          lifecycle.authority === 'server'
+          coverageSnapshot.authority === 'server'
             ? 'No active server-confirmed coverage'
-            : lifecycle.error ?? 'Coverage could not be verified',
+            : coverageSnapshot.error ?? 'Coverage could not be verified',
       })
     }
     const review = await client.reviewForSigning({

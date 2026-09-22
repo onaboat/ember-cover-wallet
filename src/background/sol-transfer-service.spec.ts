@@ -24,13 +24,16 @@ beforeEach(() => {
   fakeBrowser.reset()
 })
 
-function rpcStub(options: { balanceLamports?: bigint; simulationError?: unknown } = {}) {
+function rpcStub(options: { balanceLamports?: bigint; blockhashValid?: boolean; simulationError?: unknown } = {}) {
   return {
     getBalance: () => ({
       send: async () => ({ value: options.balanceLamports ?? 2_000_000_000n }),
     }),
     getLatestBlockhash: () => ({
       send: async () => ({ value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1n } }),
+    }),
+    isBlockhashValid: () => ({
+      send: async () => ({ value: options.blockhashValid ?? true }),
     }),
     simulateTransaction: () => ({
       send: async () => ({ value: { err: options.simulationError ?? null, fee: 5_000n, logs: [] } }),
@@ -134,6 +137,7 @@ function coverStub(
       ...(options.capContext === undefined ? {} : { capContext: options.capContext }),
       ...(options.coveredTxCountImpact === undefined ? {} : { coveredTxCountImpact: options.coveredTxCountImpact }),
     })),
+    cancelReview: vi.fn(async () => {}),
     postSign: vi.fn(async () => {}),
     status: vi.fn(async () => null),
     preSignMessage: vi.fn(async () => ({
@@ -499,7 +503,9 @@ test('not covered sends require acknowledgement before signing', async () => {
   const signer = signerStub()
   const provider = new WalletTransferProvider(signer, coverStub('not_covered'), { rpcFactory: () => rpcStub() })
 
-  await expect(provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  await expect(provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
     'not covered',
   )
 
@@ -512,7 +518,9 @@ test('high risk covered sends require acknowledgement before signing', async () 
     rpcFactory: () => rpcStub(),
   })
 
-  await expect(provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  await expect(provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
     'high risk',
   )
 
@@ -525,8 +533,10 @@ test('expired covered sends are rejected before signing', async () => {
     rpcFactory: () => rpcStub(),
   })
 
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
   await expect(
-    provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION, acknowledgeHighRisk: true }),
+    provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION, acknowledgeHighRisk: true }),
   ).rejects.toThrow('expired')
 
   expect(signer.sign).not.toHaveBeenCalled()
@@ -545,7 +555,9 @@ test('covered sends sign, broadcast, and post sign evidence', async () => {
   const cover = coverStub('covered')
   const provider = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
 
-  const result = await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  const result = await provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })
 
   expect(result.signature).toBeTruthy()
   expect(result.cover.coverStatus).toBe('covered')
@@ -553,10 +565,108 @@ test('covered sends sign, broadcast, and post sign evidence', async () => {
   expect(cover.postSign).toHaveBeenCalledOnce()
 })
 
+test('preview and send reuse one exact cover decision and transaction', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const getLatestBlockhash = vi.fn(() => ({
+    send: async () => ({ value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1n } }),
+  }))
+  const provider = new WalletTransferProvider(signer, cover, {
+    rpcFactory: () => ({ ...rpcStub(), getLatestBlockhash }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+
+  const preview = await provider.previewSolTransfer(input)
+  await provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })
+
+  expect(cover.preSign).toHaveBeenCalledOnce()
+  expect(getLatestBlockhash).toHaveBeenCalledOnce()
+  expect(signer.sign).toHaveBeenCalledOnce()
+})
+
+test('concurrent send attempts cannot sign the same reviewed transaction twice', async () => {
+  const signer = signerStub()
+  let releaseBroadcast!: () => void
+  const broadcastGate = new Promise<void>((resolve) => {
+    releaseBroadcast = resolve
+  })
+  const provider = new WalletTransferProvider(signer, coverStub('covered'), {
+    rpcFactory: () => ({
+      ...rpcStub(),
+      sendTransaction: (transaction: string) => ({
+        send: async () => {
+          await broadcastGate
+          return getSignatureFromTransaction(
+            getTransactionDecoder().decode(
+              Uint8Array.from(atob(transaction), (character) => character.charCodeAt(0)),
+            ),
+          ) as never
+        },
+      }),
+    }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const preview = await provider.previewSolTransfer(input)
+
+  const first = provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })
+  await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })).rejects.toThrow('already in progress')
+  releaseBroadcast()
+  await first
+
+  expect(signer.sign).toHaveBeenCalledOnce()
+})
+
+test('expired reviewed blockhash requires a new review before signing', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const provider = new WalletTransferProvider(signer, cover, {
+    rpcFactory: () => rpcStub({ blockhashValid: false }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+
+  const preview = await provider.previewSolTransfer(input)
+  await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })).rejects.toThrow('blockhash expired')
+
+  expect(cover.preSign).toHaveBeenCalledOnce()
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('state change that breaks the exact reviewed transaction blocks signing', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  let simulations = 0
+  const provider = new WalletTransferProvider(signer, cover, {
+    rpcFactory: () => ({
+      ...rpcStub(),
+      simulateTransaction: () => ({
+        send: async () => {
+          simulations += 1
+          return {
+            value: {
+              err: simulations === 1 ? null : { InstructionError: [0, 'Custom'] },
+              fee: 5_000n,
+              logs: [],
+            },
+          }
+        },
+      }),
+    }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+
+  const preview = await provider.previewSolTransfer(input)
+  await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })).rejects.toThrow('state changed')
+
+  expect(cover.preSign).toHaveBeenCalledOnce()
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
 test('records the cover verdict locally so the in-wallet send shows its status in Activity', async () => {
   const provider = new WalletTransferProvider(signerStub(), coverStub('covered'), { rpcFactory: () => rpcStub() })
 
-  const result = await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  const result = await provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })
 
   const records = await storage.getItem<Array<{ signature: string; coverStatus: string; walletAddress: string }>>(
     'local:ember-cover-records',
@@ -578,9 +688,12 @@ test('persists a signed wallet-owned transaction before a failed broadcast so it
     }),
   })
 
-  await expect(
-    provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION }),
-  ).rejects.toThrow('RPC unavailable')
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  const result = await provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })
+  expect(result.status).toBe('broadcast_pending')
+  await expect(provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION }))
+    .rejects.toThrow('Review the send again')
 
   const records = await storage.getItem<
     Array<{
@@ -607,7 +720,7 @@ test('zero remaining cap on a covered send stays covered and posts sign evidence
   expect(preview.cover.coverStatus).toBe('covered')
   expect(preview.cover.body).toBe('Ember Cover is available for this send.')
 
-  await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+  await provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })
 
   expect(cover.postSign).toHaveBeenCalledOnce()
 })
@@ -626,7 +739,7 @@ test('exhausted cap makes a send not covered and skips post sign evidence', asyn
   expect(preview.cover.coverStatus).toBe('not_covered')
   expect(preview.cover.body).toBe('No Ember Cover checks left in this coverage period.')
 
-  await provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION, acknowledgeUncovered: true })
+  await provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION, acknowledgeUncovered: true })
 
   expect(cover.postSign).not.toHaveBeenCalled()
 })
@@ -637,9 +750,164 @@ test('simulation failures are not sent', async () => {
     rpcFactory: () => rpcStub({ simulationError: { InstructionError: [0, 'Custom'] } }),
   })
 
-  await expect(provider.sendSolTransfer({ amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
+  const preview = await provider.previewSolTransfer({ amountSol: '0.25', destination: DESTINATION })
+
+  await expect(provider.sendSolTransfer({ reviewId: preview.reviewId, amountSol: '0.25', destination: DESTINATION })).rejects.toThrow(
     'Simulation failed',
   )
 
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('confirmation without a review cannot prepare, sign or broadcast', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const provider = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
+  await expect(provider.sendSolTransfer({
+    reviewId: 'transfer-review_missing', amountSol: '0.25', destination: DESTINATION,
+  })).rejects.toThrow('Review the send again')
+  expect(cover.preSign).not.toHaveBeenCalled()
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('a completed review cannot create a second send on a later retry', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const sendTransaction = vi.fn(rpcStub().sendTransaction)
+  const provider = new WalletTransferProvider(signer, cover, {
+    rpcFactory: () => ({ ...rpcStub(), sendTransaction }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const preview = await provider.previewSolTransfer(input)
+  const confirmation = { ...input, reviewId: preview.reviewId }
+  await provider.sendSolTransfer(confirmation)
+  await expect(provider.sendSolTransfer(confirmation)).rejects.toThrow('Review the send again')
+  expect(cover.preSign).toHaveBeenCalledOnce()
+  expect(signer.sign).toHaveBeenCalledOnce()
+  expect(sendTransaction).toHaveBeenCalledOnce()
+})
+
+test.each([
+  { amountSol: '0.5' },
+  { destination: TOKEN_ACCOUNT },
+  { cluster: 'mainnet-beta' as const },
+])('changed send details require explicit review again: %j', async (change) => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const provider = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const preview = await provider.previewSolTransfer(input)
+  await expect(provider.sendSolTransfer({ ...input, ...change, reviewId: preview.reviewId }))
+    .rejects.toThrow('Send details changed')
+  await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId }))
+    .rejects.toThrow('Review the send again')
+  expect(cover.preSign).toHaveBeenCalledOnce()
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('a replaced or cancelled review cannot sign or invalidate the latest review', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const provider = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const old = await provider.previewSolTransfer(input)
+  const current = await provider.previewSolTransfer(input)
+  await provider.discardReview(old.reviewId)
+  await expect(provider.sendSolTransfer({ ...input, reviewId: old.reviewId }))
+    .rejects.toThrow('Review the send again')
+  await provider.discardReview(current.reviewId)
+  await expect(provider.sendSolTransfer({ ...input, reviewId: current.reviewId }))
+    .rejects.toThrow('Review the send again')
+  expect(cover.cancelReview).toHaveBeenCalledTimes(2)
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('a failed replacement review invalidates the earlier approval', async () => {
+  const signer = signerStub()
+  const provider = new WalletTransferProvider(signer, coverStub('covered'), { rpcFactory: () => rpcStub() })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const old = await provider.previewSolTransfer(input)
+  await expect(provider.previewSolTransfer({ ...input, destination: 'invalid' })).rejects.toThrow('valid Solana address')
+  await expect(provider.sendSolTransfer({ ...input, reviewId: old.reviewId }))
+    .rejects.toThrow('Review the send again')
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('an earlier slow preview cannot replace a newer completed review', async () => {
+  let releaseFirst!: () => void
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  let requests = 0
+  const signer = signerStub()
+  const provider = new WalletTransferProvider(signer, coverStub('covered'), {
+    rpcFactory: () => ({
+      ...rpcStub(),
+      getBalance: () => ({ send: async () => {
+        if (++requests === 1) await firstGate
+        return { value: 2_000_000_000n }
+      } }),
+    }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const older = provider.previewSolTransfer(input)
+  const rejected = expect(older).rejects.toThrow('review was replaced')
+  const latest = await provider.previewSolTransfer({ ...input, amountSol: '0.5' })
+  releaseFirst()
+  await rejected
+  await provider.sendSolTransfer({ ...input, amountSol: '0.5', reviewId: latest.reviewId })
+  expect(signer.sign).toHaveBeenCalledOnce()
+})
+
+test.each(['before confirmation', 'during final simulation'])(
+  'wallet change %s blocks the reviewed send', async (when) => {
+    let wallet = SOURCE
+    let simulations = 0
+    const signer = { ...signerStub(), getAddress: async () => wallet }
+    const provider = new WalletTransferProvider(signer, coverStub('covered'), {
+      rpcFactory: () => ({
+        ...rpcStub(),
+        simulateTransaction: () => ({ send: async () => {
+          if (++simulations === 2 && when === 'during final simulation') wallet = TOKEN_ACCOUNT
+          return { value: { err: null, fee: 5_000n, logs: [] } }
+        } }),
+      }),
+    })
+    const input = { amountSol: '0.25', destination: DESTINATION }
+    const preview = await provider.previewSolTransfer(input)
+    if (when === 'before confirmation') wallet = TOKEN_ACCOUNT
+    await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })).rejects.toThrow('Wallet changed')
+    expect(signer.sign).not.toHaveBeenCalled()
+  },
+)
+
+test('decision expiry during final simulation blocks signing', async () => {
+  let now = 0
+  let simulations = 0
+  const signer = signerStub()
+  const provider = new WalletTransferProvider(signer, coverStub('covered', { expiresAt: new Date(1000).toISOString() }), {
+    now: () => now,
+    rpcFactory: () => ({
+      ...rpcStub(),
+      simulateTransaction: () => ({ send: async () => {
+        if (++simulations === 2) now = 1001
+        return { value: { err: null, fee: 5_000n, logs: [] } }
+      } }),
+    }),
+  })
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const preview = await provider.previewSolTransfer(input)
+  await expect(provider.sendSolTransfer({ ...input, reviewId: preview.reviewId })).rejects.toThrow('decision expired')
+  expect(signer.sign).not.toHaveBeenCalled()
+})
+
+test('a restarted service requires a fresh review rather than reconstructing the old send', async () => {
+  const signer = signerStub()
+  const cover = coverStub('covered')
+  const input = { amountSol: '0.25', destination: DESTINATION }
+  const beforeRestart = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
+  const preview = await beforeRestart.previewSolTransfer(input)
+  const afterRestart = new WalletTransferProvider(signer, cover, { rpcFactory: () => rpcStub() })
+  await expect(afterRestart.sendSolTransfer({ ...input, reviewId: preview.reviewId }))
+    .rejects.toThrow('Review the send again')
+  expect(cover.preSign).toHaveBeenCalledOnce()
   expect(signer.sign).not.toHaveBeenCalled()
 })

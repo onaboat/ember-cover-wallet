@@ -3,7 +3,7 @@ import type {
   CoverageInstanceResponse,
   PaymentResponse,
 } from '@embercover/wallet-sdk'
-import { beforeEach, expect, test } from 'vitest'
+import { beforeEach, expect, test, vi } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
 import { storage } from 'wxt/utils/storage'
 
@@ -51,7 +51,8 @@ const DECISION = {
   decisionExpiresAt: '2026-07-28T00:01:00.000Z',
   decisionId: 'decision_test',
   decisionReason: 'eligible',
-  evaluationCountImpact: 1,
+  evaluationCountImpact: 0,
+    allowance: { limit: 100, committed: 0, reserved: 1, available: 99 },
   evidenceState: 'pre_sign',
   kind: 'transaction',
   maximumPayoutMicros: '1000',
@@ -96,6 +97,7 @@ test('local state stores identifiers and cached display data but refresh uses se
   })
   const client = {
     getPayment: async () => ({ ...PAYMENT, status: 'activated', coverageInstanceId: COVERAGE.coverageInstanceId }),
+    getCurrentCoverage: vi.fn(async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 0, reserved: 1, available: 99 } })),
     getCoverageInstance: async () => COVERAGE,
     getDecision: async () => ({ ...DECISION, evidenceState: 'sealed' }),
     getDecisionLineage: async () => ({
@@ -127,4 +129,72 @@ test('API failure marks cached records as non-authoritative', async () => {
   } as never)
   expect(snapshot.authority).toBe('cache')
   expect(snapshot.error).toBe('offline')
+})
+
+test('decision coverage lookup never synchronizes decisions, lineage, or claims', async () => {
+  const now = new Date('2026-07-28T00:00:00.000Z')
+  const store = new EmberLifecycleStore(() => now)
+  await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, COVERAGE)
+  await store.recordDecision({
+    walletAddress: COVERAGE.protectedWallet,
+    decision: DECISION,
+  })
+  const client = {
+    getPayment: vi.fn(async () => PAYMENT),
+    getCurrentCoverage: vi.fn(async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 0, reserved: 1, available: 99 } })),
+    getCoverageInstance: vi.fn(async () => COVERAGE),
+    getDecision: vi.fn(async () => DECISION),
+    getDecisionLineage: vi.fn(async () => ({ lifecycle: [] })),
+    listClaims: vi.fn(async () => ({ claims: [] })),
+  }
+
+  const snapshot = await store.resolveCoverageForDecision(
+    COVERAGE.protectedWallet,
+    client as never,
+  )
+
+  expect(snapshot.authority).toBe('cache')
+  expect(snapshot.coverage?.coverageInstanceId).toBe(COVERAGE.coverageInstanceId)
+  expect(client.getPayment).not.toHaveBeenCalled()
+  expect(client.getCoverageInstance).not.toHaveBeenCalled()
+  expect(client.getDecision).not.toHaveBeenCalled()
+  expect(client.getDecisionLineage).not.toHaveBeenCalled()
+  expect(client.listClaims).not.toHaveBeenCalled()
+})
+
+test('missing coverage uses one targeted refresh without lifecycle fan-out', async () => {
+  const store = new EmberLifecycleStore(() => new Date('2026-07-28T00:00:00.000Z'))
+  await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, null)
+  const client = {
+    getPayment: vi.fn(async () => ({
+      ...PAYMENT,
+      coverageInstanceId: COVERAGE.coverageInstanceId,
+    })),
+    getCurrentCoverage: vi.fn(async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 0, reserved: 1, available: 99 } })),
+    getCoverageInstance: vi.fn(async () => COVERAGE),
+    getDecision: vi.fn(async () => DECISION),
+    getDecisionLineage: vi.fn(async () => ({ lifecycle: [] })),
+    listClaims: vi.fn(async () => ({ claims: [] })),
+  }
+
+  const snapshot = await store.resolveCoverageForDecision(
+    COVERAGE.protectedWallet,
+    client as never,
+  )
+
+  expect(snapshot.authority).toBe('server')
+  expect(client.getPayment).not.toHaveBeenCalled()
+  expect(client.getCurrentCoverage).toHaveBeenCalledOnce()
+  expect(client.getDecision).not.toHaveBeenCalled()
+  expect(client.getDecisionLineage).not.toHaveBeenCalled()
+  expect(client.listClaims).not.toHaveBeenCalled()
+})
+
+test('discovers paid coverage without any saved payment or coverage references', async () => {
+  const store = new EmberLifecycleStore()
+  const getCurrentCoverage = vi.fn(async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 3, reserved: 2, available: 95 } }))
+  const snapshot = await store.refreshCoverage(COVERAGE.protectedWallet, { getCurrentCoverage } as never)
+  expect(getCurrentCoverage).toHaveBeenCalledOnce()
+  expect(snapshot.coverage?.coverageInstanceId).toBe(COVERAGE.coverageInstanceId)
+  expect(snapshot.allowance?.available).toBe(95)
 })

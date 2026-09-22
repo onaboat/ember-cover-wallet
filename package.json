@@ -15,10 +15,11 @@
     "test": "vitest run",
     "e2e": "WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=http://127.0.0.1:18787 WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_EMBER_INTEGRATION_VERSION=1 WXT_SOLANA_RPC_URL=http://127.0.0.1:18787 wxt build && playwright test",
     "dev:test": "bun scripts/dev-test.ts",
-    "dev:api": "bun scripts/dev-api.ts"
+    "dev:api": "bun scripts/dev-api.ts",
+    "build:qa-candidate": "EMBER_BUILD_PROFILE=candidate-devnet-qa WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=https://ember-devnet-qa.up.railway.app WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_EMBER_INTEGRATION_VERSION=1 WXT_SOLANA_RPC_URL=https://api.devnet.solana.com wxt build && EMBER_BUILD_PROFILE=candidate-devnet-qa WXT_EMBER_ENVIRONMENT=sandbox WXT_EMBER_API_BASE_URL=https://ember-devnet-qa.up.railway.app WXT_EMBER_INTEGRATION_ID=integration_reference-wallet WXT_EMBER_INTEGRATION_VERSION=1 WXT_SOLANA_RPC_URL=https://api.devnet.solana.com bun scripts/verify-qa-build.ts"
   },
   "dependencies": {
-    "@embercover/wallet-sdk": "1.3.2-beta.0",
+    "@embercover/wallet-sdk": "file:vendor/embercover-wallet-sdk-1.3.2-beta.3.tgz",
     "@noble/hashes": "^1.5.0",
     "@solana-program/system": "^0.12.2",
     "@solana-program/token": "^0.14.0",

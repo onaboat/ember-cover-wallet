@@ -70,7 +70,8 @@ const DECISION = {
   decisionExpiresAt: '2027-07-28T00:01:00.000Z',
   decisionId: 'decision_test',
   decisionReason: 'eligible',
-  evaluationCountImpact: 1,
+  evaluationCountImpact: 0,
+    allowance: { limit: 100, committed: 0, reserved: 1, available: 99 },
   evidenceState: 'pre_sign',
   kind: 'transaction',
   maximumPayoutMicros: '1000',
@@ -93,6 +94,7 @@ const signer = {
 function fakeClient(overrides: Record<string, unknown> = {}) {
   return {
     getPayment: vi.fn(async () => PAYMENT),
+    getCurrentCoverage: vi.fn(async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 0, reserved: 1, available: 99 } })),
     getCoverageInstance: vi.fn(async () => COVERAGE),
     getDecision: vi.fn(async () => DECISION),
     getDecisionLineage: vi.fn(async () => ({
@@ -167,8 +169,31 @@ test('reviews the exact transaction through the packaged SDK and maps its decisi
   expect(decision).toMatchObject({
     coverStatus: 'covered',
     requestId: DECISION.decisionId,
-    coveredTxCountImpact: 1,
+    coveredTxCountImpact: 0,
   })
+  expect(client.getPayment).not.toHaveBeenCalled()
+  expect(client.getCoverageInstance).not.toHaveBeenCalled()
+  expect(client.getDecision).not.toHaveBeenCalled()
+  expect(client.getDecisionLineage).not.toHaveBeenCalled()
+  expect(client.listClaims).not.toHaveBeenCalled()
+})
+
+test('refreshes only payment and coverage when no active coverage reference is cached', async () => {
+  await emberLifecycleStore.recordPayment(WALLET, PAYMENT, null)
+  const client = fakeClient()
+  const provider = new EmberCoverProvider(signer, {
+    config: CONFIG,
+    coordinator: fakeCoordinator(client),
+  })
+
+  await provider.preSign({ cluster: 'devnet', transactionBytes: 'AQID' })
+
+  expect(client.getPayment).not.toHaveBeenCalled()
+  expect(client.getCurrentCoverage).toHaveBeenCalledOnce()
+  expect(client.reviewForSigning).toHaveBeenCalledOnce()
+  expect(client.getDecision).not.toHaveBeenCalled()
+  expect(client.getDecisionLineage).not.toHaveBeenCalled()
+  expect(client.listClaims).not.toHaveBeenCalled()
 })
 
 test('reviews messages with the SDK message contract', async () => {
@@ -221,7 +246,7 @@ test('server lifecycle records, not local assumptions, produce the status snapsh
     subscriptionActive: true,
     tier: COVERAGE.offerId,
     coveredTxPerMonth: 100,
-    remainingCoveredTxThisMonth: 100,
+    remainingCoveredTxThisMonth: 99,
   })
 })
 

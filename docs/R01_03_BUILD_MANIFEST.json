@@ -1,0 +1,65 @@
+{
+  "sdkVersion": "1.3.2-beta.3",
+  "files": [
+    {
+      "path": "assets/App-DktBY0wz.css",
+      "sha256": "e0cc3d4c38b58498515f3f3641810f4918453408d80cab335fe2aa8582b7e2a2"
+    },
+    {
+      "path": "background.js",
+      "sha256": "74983821ee9dbb22e4aba6282dfd2c2a80e4fa4376881e1ff25dac9e660cf946"
+    },
+    {
+      "path": "chunks/App-CgkFU6Be.js",
+      "sha256": "873d0003a1596ea07f761214ae94105384391147ac06faf404bad3b0e8e8e6e8"
+    },
+    {
+      "path": "chunks/ApprovalScreen-DsbtMMEO.js",
+      "sha256": "41671e6c8cab83ad758325c966146876be597b2ddef8ce481a6c01ce17ac6ede"
+    },
+    {
+      "path": "chunks/popup-Cw_ucl4F.js",
+      "sha256": "427e8edf41a21fa50731cbcd10b3d5620e714dd856273a5d37125cbab293d2c9"
+    },
+    {
+      "path": "chunks/request-CVWzdzZI.js",
+      "sha256": "eb138396f0a33fd1b52e6bfdde65c306d5105dcac105fc2e973ab9dfe741f142"
+    },
+    {
+      "path": "content-scripts/content.js",
+      "sha256": "0dbbb5021b494b06a5289b7a4d61a2131427bff655484fdbb7107bd5a03554a1"
+    },
+    {
+      "path": "content-scripts/inpage.js",
+      "sha256": "4da6341030caea61baa6aa8c1a5f2c1393a9ee027d4a1aa576a72a97a6277f2e"
+    },
+    {
+      "path": "icons/128.png",
+      "sha256": "affbd80ef4e19ae33207ba19e313767aa2218172e7f8fedda6ea34e255940bff"
+    },
+    {
+      "path": "icons/16.png",
+      "sha256": "f6b3147fa2bfe933da50d34d4983824bff3fd19e5b730572d020ec8ba986245b"
+    },
+    {
+      "path": "icons/32.png",
+      "sha256": "ce9e5c974e25605fa619fced49ba736dd95f23fca24478928ee4cb5c26682c37"
+    },
+    {
+      "path": "icons/48.png",
+      "sha256": "69bf338ff63956fe30278ab42659386658899d9340df1f2c420522e3cbc14488"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "923bf62a6ca67a5b35b7d7c35869b168260f1216c27b4a4ee568371016834366"
+    },
+    {
+      "path": "popup.html",
+      "sha256": "75f2f71d6bfcbe5ad0a348c73296350d1cb8960465b9c9ff9fa9f56c1925c144"
+    },
+    {
+      "path": "request.html",
+      "sha256": "f81e5505e5d5d043e9a2237f9c5cb930a8eec93a5d48ec18e0aa45af22deb06f"
+    }
+  ]
+}

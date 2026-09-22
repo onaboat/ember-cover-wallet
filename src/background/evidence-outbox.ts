@@ -7,7 +7,6 @@ import { storage } from 'wxt/utils/storage'
 
 const STORE_KEY = 'local:ember-evidence-outbox:v1' as const
 const ALARM_NAME = 'ember-evidence-outbox-drain'
-const MAX_ENTRIES = 100
 
 export interface EvidenceOutboxEntry {
   attempts: number
@@ -30,24 +29,26 @@ function normalizeEntries(value: unknown): EvidenceOutboxEntry[] {
         typeof (entry as EvidenceOutboxEntry).attempts === 'number' &&
         typeof (entry as EvidenceOutboxEntry).request === 'object',
     )
-    .slice(-MAX_ENTRIES)
+
 }
 
 export class EvidenceOutbox {
   private readonly now: () => Date
+  private writes: Promise<void> = Promise.resolve()
+  private draining: Promise<void> | null = null
 
   constructor(now: () => Date = () => new Date()) {
     this.now = now
   }
 
   async put(decisionId: string, request: SubmitDecisionEvidenceRequest): Promise<void> {
-    const entries = await this.list()
+    await this.mutate(async (entries) => {
     const existing = entries.find((entry) => entry.decisionId === decisionId)
     if (existing) {
       if (JSON.stringify(existing.request) !== JSON.stringify(request)) {
         throw new Error('Evidence decision already has different signed bytes')
       }
-      return
+      return entries
     }
     const next: EvidenceOutboxEntry = {
       attempts: 0,
@@ -57,7 +58,16 @@ export class EvidenceOutbox {
       lastError: null,
       request,
     }
-    await storage.setItem(STORE_KEY, [...entries, next].slice(-MAX_ENTRIES))
+    return [...entries, next]
+    })
+  }
+
+  private async mutate(update: (entries: EvidenceOutboxEntry[]) => Promise<EvidenceOutboxEntry[]>): Promise<void> {
+    const write = this.writes.then(async () => {
+      await storage.setItem(STORE_KEY, await update(await this.list()))
+    })
+    this.writes = write.catch(() => {})
+    await write
   }
 
   async list(): Promise<EvidenceOutboxEntry[]> {
@@ -65,17 +75,23 @@ export class EvidenceOutbox {
   }
 
   async drain(client: EmberWalletClient): Promise<void> {
-    let entries = await this.list()
+    if (this.draining) return this.draining
+    this.draining = this.drainEntries(client).finally(() => { this.draining = null })
+    return this.draining
+  }
+
+  private async drainEntries(client: EmberWalletClient): Promise<void> {
+    const entries = await this.list()
     for (const entry of [...entries]) {
       try {
         const response = await client.submitDecisionEvidence(entry.decisionId, entry.request)
         if (!response.accepted) {
           throw new Error('Ember did not accept the exact signed evidence')
         }
-        entries = entries.filter((candidate) => candidate.decisionId !== entry.decisionId)
+        await this.mutate(async (current) => current.filter((candidate) => candidate.decisionId !== entry.decisionId))
       } catch (error) {
         const now = this.now().toISOString()
-        entries = entries.map((candidate) =>
+        await this.mutate(async (current) => current.map((candidate) =>
           candidate.decisionId === entry.decisionId
             ? {
                 ...candidate,
@@ -84,9 +100,8 @@ export class EvidenceOutbox {
                 lastError: error instanceof Error ? error.message : 'Evidence delivery failed',
               }
             : candidate,
-        )
+        ))
       }
-      await storage.setItem(STORE_KEY, entries)
     }
   }
 

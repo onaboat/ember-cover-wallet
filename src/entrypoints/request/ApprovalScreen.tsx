@@ -69,8 +69,8 @@ function coverDisplay(
   }
   if (cover?.coverStatus === 'unavailable') {
     return {
-      label: 'Cover check failed',
-      body: 'Ember could not reach the cover service for this approval.',
+      label: 'Cover unavailable',
+      body: 'Ember could not complete the cover assessment for this transaction.',
       tone: 'unavailable',
       nextAction: 'retry',
     }
@@ -175,7 +175,7 @@ function approvalLabel(args: {
       return 'Recheck cover'
     }
     if (args.checkingCover) {
-      return 'Checking cover...'
+      return 'Sign message'
     }
     if (args.coverAckRequired && !args.coverAcknowledged && args.coverApproveLabel) {
       return args.coverApproveLabel
@@ -186,7 +186,7 @@ function approvalLabel(args: {
     return 'Recheck cover'
   }
   if (args.checkingCover) {
-    return 'Checking cover...'
+    return 'Approve and sign'
   }
   if (args.impactAckRequired && !args.impactAcknowledged && !args.coverApproveLabel) {
     return 'Acknowledge unknown changes'
@@ -306,7 +306,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     (pending?.type === 'signTransaction' || pending?.type === 'signMessage') &&
     !batchUnsupported &&
     (refreshingCover || pending.coverChecking === true)
-  const displayedCover = checkingCover ? null : cover
+  const transactionBlocked = pending?.transactionPreflight?.status === 'blocked' ? pending.transactionPreflight : null
+  const displayedCover = checkingCover || transactionBlocked ? null : cover
   const coverExpired =
     displayedCover?.coverStatus === 'covered' &&
     displayedCover.decisionExpiresAt !== undefined &&
@@ -327,7 +328,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const impactAckRequired = pending?.type === 'signTransaction' && !!transactionImpact && !transactionImpact.isComplete
   const messageAckRequired = pending?.type === 'signMessage' && messageRiskView.requiresAck
   const approveDisabled =
-    busy ||
+    busy || pending?.signingStarted === true ||
+    !!transactionBlocked ||
     batchUnsupported ||
     (!coverExpired &&
       (checkingCover ||
@@ -360,11 +362,14 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     if (batchUnsupported) {
       return { label: 'BATCH', tone: 'failed' }
     }
+    if (transactionBlocked) {
+      return { label: transactionBlocked.reason === 'expired' ? 'EXPIRED' : 'CANNOT SIGN', tone: 'failed' }
+    }
     if (coverExpired) {
       return { label: 'EXPIRED', tone: 'unavailable' }
     }
     if (checkingCover) {
-      return { label: 'CHECKING', tone: 'checking' }
+      return { label: 'REVIEW', tone: 'pending' }
     }
     if (coverBanner?.tone === 'covered') {
       return { label: 'COVERED', tone: 'protected' }
@@ -373,7 +378,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
       return { label: 'WARNING', tone: 'setup' }
     }
     if (coverBanner?.tone === 'unavailable') {
-      return { label: 'NO COVER', tone: 'unavailable' }
+      return { label: 'UNAVAILABLE', tone: 'unavailable' }
     }
     // "Review" means the tx is outside cover / needs a careful look — a caution
     // state, so it reads as warning-orange (matching the "Not covered" pill),
@@ -470,6 +475,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
         setError('Vault re-locked. Enter your password again.')
       } else {
         setError(message)
+        setPending(await request.get())
       }
       setBusy(false)
     }
@@ -513,6 +519,18 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   }
 
   function CoverDecisionPanel() {
+    if (transactionBlocked) {
+      return (
+        <section className="ec-review-card" role="alert" data-testid="transaction-preflight-error">
+          <h3>{transactionBlocked.reason === 'expired' ? 'Transaction expired' : 'Transaction cannot be signed'}</h3>
+          <p>{transactionBlocked.message}</p>
+          {transactionBlocked.details ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{transactionBlocked.details}</pre> : null}
+          {transactionBlocked.reason !== 'expired' && transactionBlocked.reason !== 'invalid_transaction' ? (
+            <button className="ec-secondary" disabled={busy || checkingCover} onClick={() => void refreshCoverDecision()}>Retry transaction check</button>
+          ) : null}
+        </section>
+      )
+    }
     if (!coverDisplayView) {
       return null
     }
@@ -624,7 +642,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
             {checkingCover ? <span className="ec-button-spinner" aria-hidden="true" /> : null}
             {approveText}
           </button>
-          <button className="ec-secondary" data-testid="reject" disabled={busy} onClick={() => void onReject()}>
+          <button className="ec-secondary" data-testid="reject" disabled={busy || pending?.signingStarted} onClick={() => void onReject()}>
             Cancel
           </button>
         </div>

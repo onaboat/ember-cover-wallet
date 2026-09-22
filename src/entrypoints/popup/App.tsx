@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { address as toAddress } from '@solana/kit'
 import type {
   ClaimEligibilityResponse,
@@ -36,6 +36,7 @@ import { coverCapReviewText, formatCoverStatusSnapshot } from '../../cover/cover
 import { EMBER_CONFIG } from '../../cover/ember-config.ts'
 import type { CoverStatusSnapshot } from '../../cover/ember-types.ts'
 import { coverStatusActive } from '../../cover/ember-types.ts'
+import { coverStatusFromLifecycle } from '../../cover/coverage-status.ts'
 import { BrandMark } from '../../ui/BrandMark.tsx'
 import { coveragePaymentStatusView } from '../../ui/coverage-payment-status-view.ts'
 import { isVaultLockedError } from '../../vault/vault-lock.ts'
@@ -248,6 +249,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [walletDataLoading, setWalletDataLoading] = useState(false)
   const [walletDataError, setWalletDataError] = useState('')
   const [copied, setCopied] = useState(false)
+  const sendPreviewGeneration = useRef(0)
+  const sendAttemptInFlight = useRef(false)
   const [sendStep, setSendStep] = useState<SendStep>('form')
   const [sendRecipient, setSendRecipient] = useState('')
   const [sendRecipientFromClipboard, setSendRecipientFromClipboard] = useState(false)
@@ -345,11 +348,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       setCoverSession(session)
       setCoverEnrolled(enrolled)
       if (enrolled) {
-        const [status, lifecycle] = await Promise.all([
-          cover.status(),
-          cover.lifecycle(),
-        ])
-        setCoverStatusSnapshot(status)
+        const lifecycle = await cover.lifecycle()
+        setCoverStatusSnapshot(coverStatusFromLifecycle(lifecycle))
         setCoverLifecycle(lifecycle)
       } else {
         setCoverStatusSnapshot(null)
@@ -366,10 +366,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   }
 
   useEffect(() => {
-    if (view === 'account') {
+    // The approval screen owns its one exact decision. Loading the general
+    // wallet lifecycle here would duplicate the visible checking state and
+    // fan out through unrelated history/claim reads while approval is open.
+    if (mode === 'wallet' && view === 'account') {
       void refreshCoverState()
     }
-  }, [view])
+  }, [mode, view])
 
   useEffect(() => {
     if (mode !== 'wallet' || view !== 'account' || window.location.hash !== '#cover') {
@@ -450,6 +453,19 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     const timer = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [sendStep, sendPreview?.cover.decisionExpiresAt])
+
+  useEffect(() => {
+    return () => {
+      sendPreviewGeneration.current += 1
+    }
+  }, [accountScreen, address, cluster, view])
+
+  useEffect(() => {
+    if (!sendPreview) return
+    return () => {
+      void transfers.discardReview(sendPreview.reviewId).catch(() => {})
+    }
+  }, [sendPreview, accountScreen, sendStep, address, cluster, view])
 
   async function onClusterChange(nextCluster: WalletCluster) {
     const previousCluster = cluster
@@ -941,6 +957,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   }
 
   async function loadSendPreview() {
+    const generation = ++sendPreviewGeneration.current
     setSendPreviewLoading(true)
     setSendError('')
     setSendPreview(null)
@@ -948,27 +965,34 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setHighRiskAck(false)
     setNowMs(Date.now())
     try {
-      setSendPreview(
-        await transfers.previewTransfer({
-          amount: sendAmount,
-          asset: sendAsset,
-          cluster,
-          destination: recipientTrimmed,
-        }),
-      )
-      void refreshCoverState()
+      const preview = await transfers.previewTransfer({
+        amount: sendAmount,
+        asset: sendAsset,
+        cluster,
+        destination: recipientTrimmed,
+      })
+      if (generation !== sendPreviewGeneration.current) {
+        await transfers.discardReview(preview.reviewId)
+        return
+      }
+      setSendPreview(preview)
     } catch (e) {
-      setSendError(errorMessage(e, 'Could not review send'))
+      if (generation === sendPreviewGeneration.current) {
+        setSendError(errorMessage(e, 'Could not review send'))
+      }
     } finally {
-      setSendPreviewLoading(false)
+      if (generation === sendPreviewGeneration.current) setSendPreviewLoading(false)
     }
   }
 
   async function onSendSol() {
+    if (!sendPreview || sendAttemptInFlight.current) return
+    sendAttemptInFlight.current = true
     setSendBusy(true)
     setSendError('')
     try {
       const result = await transfers.sendTransfer({
+        reviewId: sendPreview.reviewId,
         amount: sendAmount,
         asset: sendAsset,
         cluster,
@@ -981,8 +1005,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       void refreshWalletData()
       void refreshCoverState()
     } catch (e) {
+      setSendPreview(null)
+      setUncoveredAck(false)
+      setHighRiskAck(false)
       setSendError(errorMessage(e, `Could not send ${sendAsset.symbol}`))
     } finally {
+      sendAttemptInFlight.current = false
       setSendBusy(false)
     }
   }
@@ -999,9 +1027,11 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <span className="ec-brand-subtitle">Cover wallet</span>
           </span>
         </div>
-        <span className="ec-status-badge" data-tone={paymentStatusView.badgeTone}>
-          {paymentStatusView.badgeLabel}
-        </span>
+        {mode === 'wallet' ? (
+          <span className="ec-status-badge" data-tone={paymentStatusView.badgeTone}>
+            {paymentStatusView.badgeLabel}
+          </span>
+        ) : null}
       </header>
     )
   }
@@ -1864,11 +1894,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           <div className="ec-screen-head">
             <span className="ec-screen-head__spacer" />
             <div>
-              <span className="ec-control-label">Submitted</span>
-              <h2>Send submitted</h2>
+              <span className="ec-control-label">{sendResult?.status === 'broadcast_pending' ? 'Saved' : 'Submitted'}</span>
+              <h2>{sendResult?.status === 'broadcast_pending' ? 'Send awaiting broadcast' : 'Send submitted'}</h2>
             </div>
           </div>
           <p className="ec-help">{sendResult?.cover.label ?? 'Submitted'}</p>
+          {sendResult?.status === 'broadcast_pending' ? <p role="status">{sendResult.message}</p> : null}
           {sendResult ? (
             <p>
               <a href={sendResult.explorerUrl} rel="noreferrer" target="_blank">
@@ -1881,10 +1912,11 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               className="ec-primary"
               onClick={() => {
                 setAccountScreen('home')
+                if (sendResult?.status === 'broadcast_pending') setMainTab('activity')
                 setSendStep('form')
               }}
             >
-              Done
+              {sendResult?.status === 'broadcast_pending' ? 'View Activity' : 'Done'}
             </button>
           </div>
         </section>
@@ -1917,7 +1949,11 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       return (
         <section className="ec-task-screen" data-testid="send-review">
           <div className="ec-screen-head">
-            {renderBackButton(() => setSendStep('form'))}
+            {renderBackButton(() => {
+              sendPreviewGeneration.current += 1
+              setSendPreview(null)
+              setSendStep('form')
+            })}
             <div>
               <span className="ec-control-label">{clusterLabel(cluster)}</span>
               <h2>Review send</h2>

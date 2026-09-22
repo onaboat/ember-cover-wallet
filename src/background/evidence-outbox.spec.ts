@@ -50,3 +50,23 @@ test('rejects changed bytes for an existing decision identifier', async () => {
     queue.put('decision_test', { kind: 'transaction', signedBytes: 'changed' }),
   ).rejects.toThrow('different signed bytes')
 })
+
+test('new evidence survives an older upload and overlapping drains share the attempt', async () => {
+  const queue = new EvidenceOutbox()
+  await queue.put('decision_old', REQUEST)
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  let calls = 0
+  const client = { submitDecisionEvidence: async () => {
+    calls += 1
+    await gate
+    return { accepted: true, decisionId: 'decision_old', evidenceState: 'post_sign' }
+  } } as never
+  const first = queue.drain(client)
+  const second = queue.drain(client)
+  await queue.put('decision_new', { kind: 'transaction', signedBytes: 'BAUG' })
+  release()
+  await Promise.all([first, second])
+  expect(calls).toBe(1)
+  expect(await queue.list()).toMatchObject([{ decisionId: 'decision_new', request: { signedBytes: 'BAUG' } }])
+})

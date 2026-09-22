@@ -1,4 +1,5 @@
 import type {
+  AllowanceSnapshot,
   CoverageDecisionResponse,
   CoverageInstanceResponse,
   DecisionLineageResponse,
@@ -26,6 +27,7 @@ export interface WalletLifecycleCache {
   version: 2
   walletAddress: string
   payment: PaymentResponse | null
+  allowance?: AllowanceSnapshot | null
   coverage: CoverageInstanceResponse | null
   decisions: DecisionReference[]
   claims: WalletClaimResponse[]
@@ -37,12 +39,23 @@ export interface WalletLifecycleSnapshot extends WalletLifecycleCache {
   error: string | null
 }
 
+export interface WalletCoverageSnapshot {
+  authority: 'server' | 'cache' | 'unavailable'
+  allowance?: AllowanceSnapshot | null
+  coverage: CoverageInstanceResponse | null
+  error: string | null
+  payment: PaymentResponse | null
+  updatedAt: string
+  walletAddress: string
+}
+
 function emptyCache(walletAddress: string, now = new Date()): WalletLifecycleCache {
   return {
     version: 2,
     walletAddress,
     payment: null,
     coverage: null,
+    allowance: null,
     decisions: [],
     claims: [],
     updatedAt: now.toISOString(),
@@ -114,6 +127,7 @@ export class EmberLifecycleStore {
     }
     await this.save({
       ...current,
+      allowance: input.decision.allowance,
       decisions: [
         ...current.decisions.filter((reference) => reference.decisionId !== next.decisionId),
         next,
@@ -122,20 +136,82 @@ export class EmberLifecycleStore {
     })
   }
 
+  /**
+   * Resolve only the coverage authority needed to request a decision.
+   *
+   * A cached active instance is safe as a lookup reference because the
+   * decision endpoint independently revalidates its wallet, environment,
+   * status, and dates. If the cache is not usable, refresh only payment and
+   * coverage; approval must never wait for history, lineage, or claims.
+   */
+  async resolveCoverageForDecision(
+    walletAddress: string,
+    client: EmberWalletClient,
+  ): Promise<WalletCoverageSnapshot> {
+    const cached = await this.load(walletAddress)
+    if (this.isUsableCoverage(cached.coverage, walletAddress)) {
+      return {
+        authority: 'cache',
+        coverage: cached.coverage,
+        error: null,
+        payment: cached.payment,
+        updatedAt: cached.updatedAt,
+        walletAddress,
+      }
+    }
+    return await this.refreshCoverage(walletAddress, client, cached)
+  }
+
+  async refreshCoverage(
+    walletAddress: string,
+    client: EmberWalletClient,
+    current?: WalletLifecycleCache,
+  ): Promise<WalletCoverageSnapshot> {
+    const cached = current ?? await this.load(walletAddress)
+    try {
+      const payment = cached.payment
+      const currentCoverage = await client.getCurrentCoverage()
+      const coverage = currentCoverage.status === 'active' ? currentCoverage.coverage : null
+      const allowance = currentCoverage.status === 'active' ? currentCoverage.allowance : null
+      const updatedAt = this.now().toISOString()
+      await this.save({
+        ...cached,
+        payment,
+        coverage,
+        allowance,
+        updatedAt,
+      })
+      return {
+        authority: 'server',
+        coverage,
+        allowance,
+        error: null,
+        payment,
+        updatedAt,
+        walletAddress,
+      }
+    } catch (error) {
+      return {
+        authority: cached.payment || cached.coverage ? 'cache' : 'unavailable',
+        coverage: cached.coverage,
+        error: error instanceof Error ? error.message : 'Ember coverage unavailable',
+        payment: cached.payment,
+        updatedAt: cached.updatedAt,
+        walletAddress,
+      }
+    }
+  }
+
   async refresh(
     walletAddress: string,
     client: EmberWalletClient,
   ): Promise<WalletLifecycleSnapshot> {
     const cached = await this.load(walletAddress)
     try {
-      const payment = cached.payment
-        ? await client.getPayment(cached.payment.paymentId)
-        : null
-      const coverageId =
-        payment?.coverageInstanceId ?? cached.coverage?.coverageInstanceId ?? null
-      const coverage = coverageId
-        ? await client.getCoverageInstance(coverageId)
-        : null
+      const payment = cached.payment ? await client.getPayment(cached.payment.paymentId) : null
+      const currentCoverage = await client.getCurrentCoverage()
+      const coverage = currentCoverage.status === 'active' ? currentCoverage.coverage : null
+      const allowance = currentCoverage.status === 'active' ? currentCoverage.allowance : null
       const decisions = await Promise.all(
         cached.decisions.map(async (reference) => ({
           ...reference,
@@ -148,6 +224,7 @@ export class EmberLifecycleStore {
         ...cached,
         payment,
         coverage,
+        allowance,
         decisions,
         claims: claimList.claims,
         updatedAt: this.now().toISOString(),
@@ -168,6 +245,17 @@ export class EmberLifecycleStore {
 
   async clear(): Promise<void> {
     await storage.removeItem(STORE_KEY)
+  }
+
+  private isUsableCoverage(
+    coverage: CoverageInstanceResponse | null,
+    walletAddress: string,
+  ): coverage is CoverageInstanceResponse {
+    if (!coverage || coverage.protectedWallet !== walletAddress || coverage.status !== 'active') {
+      return false
+    }
+    const now = this.now().getTime()
+    return now >= Date.parse(coverage.coverageStartsAt) && now < Date.parse(coverage.coverageEndsAt)
   }
 
   private async save(value: WalletLifecycleCache): Promise<void> {
