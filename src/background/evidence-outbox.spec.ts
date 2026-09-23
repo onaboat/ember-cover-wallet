@@ -51,22 +51,42 @@ test('rejects changed bytes for an existing decision identifier', async () => {
   ).rejects.toThrow('different signed bytes')
 })
 
-test('new evidence survives an older upload and overlapping drains share the attempt', async () => {
+test('new evidence is uploaded when its drain request arrives during another upload', async () => {
   const queue = new EvidenceOutbox()
   await queue.put('decision_old', REQUEST)
-  let release = () => {}
+  let release!: () => void
+  let began!: () => void
+  const started = new Promise<void>((resolve) => { began = resolve })
   const gate = new Promise<void>((resolve) => { release = resolve })
-  let calls = 0
-  const client = { submitDecisionEvidence: async () => {
-    calls += 1
-    await gate
-    return { accepted: true, decisionId: 'decision_old', evidenceState: 'post_sign' }
+  const uploaded: string[] = []
+  const client = { submitDecisionEvidence: async (id: string) => {
+    uploaded.push(id); began(); await gate
+    return { accepted: true, decisionId: id, evidenceState: 'post_sign' }
   } } as never
   const first = queue.drain(client)
-  const second = queue.drain(client)
+  await started
   await queue.put('decision_new', { kind: 'transaction', signedBytes: 'BAUG' })
+  const second = queue.drain(client)
   release()
   await Promise.all([first, second])
-  expect(calls).toBe(1)
-  expect(await queue.list()).toMatchObject([{ decisionId: 'decision_new', request: { signedBytes: 'BAUG' } }])
+  expect(uploaded).toEqual(['decision_old', 'decision_new'])
+  expect(await queue.list()).toEqual([])
+})
+
+test('a wakeup delivers new evidence without repeatedly retrying an old failure', async () => {
+  const queue = new EvidenceOutbox()
+  await queue.put('old', REQUEST)
+  const calls: string[] = []
+  const client = { submitDecisionEvidence: async (id: string) => {
+    calls.push(id)
+    if (id === 'old') {
+      await queue.put('new', { kind: 'transaction', signedBytes: 'BAUG' })
+      void queue.drain(client)
+      throw new Error('offline for old evidence')
+    }
+    return { accepted: true, decisionId: id, evidenceState: 'post_sign' }
+  } } as never
+  await queue.drain(client)
+  expect(calls).toEqual(['old', 'new'])
+  expect(await queue.list()).toMatchObject([{ decisionId: 'old', attempts: 1 }])
 })

@@ -34,10 +34,10 @@ test('not_covered reads as not covered and requires no-cover acknowledgment', ()
   })
 })
 
-test('unsupported is opaque to the user (also "not covered")', () => {
+test('unsupported distinguishes unknown effects from a coverage refusal', () => {
   expect(bannerView({ coverStatus: 'unsupported', riskBand: 'high' }, false)).toMatchObject({
-    label: 'Not covered',
-    body: 'This approval is outside Ember Cover.',
+    label: 'Effects not understood',
+    body: 'Ember could not sufficiently understand this approval. Cover does not apply.',
     showAck: true,
     approveLabel: 'Sign without cover',
   })

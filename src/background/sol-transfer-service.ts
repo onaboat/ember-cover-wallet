@@ -1,3 +1,5 @@
+import { signingDisposition, signingPolicyMessage } from '../signing/signing-policy.ts'
+import type { SigningDisposition } from '../signing/signing-policy.ts'
 import {
   AccountRole,
   address as toAddress,
@@ -158,15 +160,18 @@ export interface WalletTransferSendInput extends WalletTransferInput {
   reviewId: WalletTransferReviewId
   acknowledgeHighRisk?: boolean
   acknowledgeUncovered?: boolean
+  acknowledgeSafety?: boolean
 }
 
 export interface SolTransferSendInput extends SolTransferInput {
   reviewId: WalletTransferReviewId
   acknowledgeHighRisk?: boolean
   acknowledgeUncovered?: boolean
+  acknowledgeSafety?: boolean
 }
 
 export interface SolTransferCoverView {
+  signingDisposition: SigningDisposition
   coverStatus: CoverStatus
   riskBand: RiskBand
   decisionExpiresAt: string
@@ -213,9 +218,12 @@ export type SolTransferResult = {
 } & (
   | { status: 'submitted' }
   | { status: 'broadcast_pending'; message: string }
+  | { status: 'save_pending'; reviewId: WalletTransferReviewId; message: string }
 )
 
 export interface WalletTransferUI {
+  pendingSignedTransfer(): SolTransferResult | null
+  retrySignedTransfer(reviewId: WalletTransferReviewId): Promise<SolTransferResult>
   previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview>
   sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult>
   discardReview(reviewId: WalletTransferReviewId): Promise<void>
@@ -398,6 +406,7 @@ function coverView(decision: CoverDecision): SolTransferCoverView {
   const highRisk = coverStatus === 'covered' && (decision.riskBand === 'high' || decision.riskBand === 'severe')
   if (highRisk) {
     return {
+      signingDisposition: signingDisposition(decision.signingDisposition),
       coverStatus,
       riskBand: decision.riskBand,
       decisionExpiresAt: decision.decisionExpiresAt,
@@ -411,6 +420,7 @@ function coverView(decision: CoverDecision): SolTransferCoverView {
   }
   if (coverStatus === 'covered') {
     return {
+      signingDisposition: signingDisposition(decision.signingDisposition),
       coverStatus,
       riskBand: decision.riskBand,
       decisionExpiresAt: decision.decisionExpiresAt,
@@ -424,6 +434,7 @@ function coverView(decision: CoverDecision): SolTransferCoverView {
   }
   if (coverStatus === 'unavailable') {
     return {
+      signingDisposition: signingDisposition(decision.signingDisposition),
       coverStatus,
       riskBand: decision.riskBand,
       decisionExpiresAt: decision.decisionExpiresAt,
@@ -436,6 +447,7 @@ function coverView(decision: CoverDecision): SolTransferCoverView {
     }
   }
   return {
+    signingDisposition: signingDisposition(decision.signingDisposition),
     coverStatus,
     riskBand: decision.riskBand,
     decisionExpiresAt: decision.decisionExpiresAt,
@@ -493,7 +505,8 @@ type TransferReviewState =
   | { phase: 'idle' }
   | { phase: 'preparing'; reviewId: WalletTransferReviewId }
   | { phase: 'reviewed'; transfer: PreparedWalletTransfer }
-  | { phase: 'sending'; reviewId: WalletTransferReviewId }
+  | { phase: 'sending'; transfer: PreparedWalletTransfer }
+  | { phase: 'signed'; transfer: PreparedWalletTransfer; signature: string; saving: boolean; finish: () => Promise<SolTransferResult> }
 
 export class WalletTransferProvider implements WalletTransferUI {
   #cluster: WalletCluster
@@ -502,6 +515,31 @@ export class WalletTransferProvider implements WalletTransferUI {
   #rpcFactory: (cluster: WalletCluster) => TransferRpcClient
   #signer: SolTransferSigner
   #reviewState: TransferReviewState = { phase: 'idle' }
+  #preparingCount = 0
+  #retiredDecisions = new Set<string>()
+  #signedDecisions = new Map<string, number>()
+  #cancellations = new Set<Promise<void>>()
+
+  #releaseUnusedDecisions(): void {
+    // A still-running preparation may return the same deduplicated decision.
+    if (this.#preparingCount > 0) return
+    const state = this.#reviewState
+    const owned = state.phase === 'reviewed' || state.phase === 'sending' || state.phase === 'signed'
+      ? state.transfer.decision.requestId : null
+    for (const [id, expires] of this.#signedDecisions) {
+      if (this.#now() >= expires) this.#signedDecisions.delete(id)
+    }
+    for (const id of this.#retiredDecisions) {
+      if (id === owned) continue
+      this.#retiredDecisions.delete(id)
+      if (this.#signedDecisions.has(id) || !this.#cover) continue
+      const cancellation = this.#cover.cancelReview(id).catch(() => {}).finally(() => {
+        this.#cancellations.delete(cancellation)
+      })
+      this.#cancellations.add(cancellation)
+    }
+  }
+
 
   constructor(signer: SolTransferSigner, cover?: CoverProvider, deps: WalletTransferProviderDeps = {}) {
     this.#cluster = deps.cluster ?? 'devnet'
@@ -529,24 +567,24 @@ export class WalletTransferProvider implements WalletTransferUI {
       destination: input.destination,
       ...(input.acknowledgeHighRisk === undefined ? {} : { acknowledgeHighRisk: input.acknowledgeHighRisk }),
       ...(input.acknowledgeUncovered === undefined ? {} : { acknowledgeUncovered: input.acknowledgeUncovered }),
+      ...(input.acknowledgeSafety === undefined ? {} : { acknowledgeSafety: input.acknowledgeSafety }),
     })
   }
 
   async previewTransfer(input: WalletTransferInput): Promise<SolTransferPreview> {
-    if (this.#reviewState.phase === 'sending') {
+    if (this.#reviewState.phase === 'sending' || this.#reviewState.phase === 'signed') {
       throw new Error('This send is already in progress')
-    }
-    const previous = this.#reviewState
-    if (previous.phase === 'reviewed' && previous.transfer.decision.requestId && this.#cover) {
-      void this.#cover.cancelReview(previous.transfer.decision.requestId).catch(() => {})
     }
     const reviewId: WalletTransferReviewId = `transfer-review_${crypto.randomUUID()}`
     const preparing = { phase: 'preparing', reviewId } as const
     this.#reviewState = preparing
+    this.#preparingCount += 1
     try {
+      // A previously released decision must reach its terminal state before a
+      // new request can reuse identical bytes and observe its authority.
+      await Promise.all(this.#cancellations)
       const prepared = await this.#prepare(input, reviewId)
       if (this.#reviewState !== preparing) {
-        if (prepared.decision.requestId && this.#cover) void this.#cover.cancelReview(prepared.decision.requestId).catch(() => {})
         throw new Error('This review was replaced. Use the latest send review.')
       }
       this.#reviewState = { phase: 'reviewed', transfer: prepared }
@@ -554,20 +592,23 @@ export class WalletTransferProvider implements WalletTransferUI {
     } catch (error) {
       if (this.#reviewState === preparing) this.#reviewState = { phase: 'idle' }
       throw error
+    } finally {
+      this.#preparingCount -= 1
+      this.#releaseUnusedDecisions()
     }
   }
 
   async discardReview(reviewId: WalletTransferReviewId): Promise<void> {
     if (this.#reviewState.phase === 'reviewed' &&
         this.#reviewState.transfer.preview.reviewId === reviewId) {
-      const decisionId = this.#reviewState.transfer.decision.requestId
       this.#reviewState = { phase: 'idle' }
-      if (decisionId && this.#cover) await this.#cover.cancelReview(decisionId)
+      this.#releaseUnusedDecisions()
+      await Promise.all(this.#cancellations)
     }
   }
 
   async sendTransfer(input: WalletTransferSendInput): Promise<SolTransferResult> {
-    if (this.#reviewState.phase === 'sending') {
+    if (this.#reviewState.phase === 'sending' || this.#reviewState.phase === 'signed') {
       throw new Error('This send is already in progress')
     }
     const state = this.#reviewState
@@ -577,7 +618,7 @@ export class WalletTransferProvider implements WalletTransferUI {
     const prepared = state.transfer
     // Claim the review synchronously, before any asynchronous validation. A
     // failed or completed attempt cannot prepare another transaction implicitly.
-    this.#reviewState = { phase: 'sending', reviewId: input.reviewId }
+    this.#reviewState = { phase: 'sending', transfer: prepared }
     try {
       const cluster = input.cluster ?? this.#cluster
       if (prepared.reviewKey !== transferReviewKey(input, cluster)) {
@@ -585,7 +626,40 @@ export class WalletTransferProvider implements WalletTransferUI {
       }
       return await this.#sendTransfer(prepared, input)
     } finally {
+      if (!this.pendingSignedTransfer()) this.#reviewState = { phase: 'idle' }
+      this.#releaseUnusedDecisions()
+    }
+  }
+
+  pendingSignedTransfer(): SolTransferResult | null {
+    const state = this.#reviewState
+    if (state.phase !== 'signed') return null
+    return {
+      status: 'save_pending',
+      reviewId: state.transfer.preview.reviewId,
+      signature: state.signature,
+      explorerUrl: explorerTransactionUrl(state.signature, state.transfer.cluster),
+      cover: state.transfer.preview.cover,
+      message: 'The transaction was signed but saving is incomplete. Retry saving the existing signature; do not create another send.',
+    }
+  }
+
+  async retrySignedTransfer(reviewId: WalletTransferReviewId): Promise<SolTransferResult> {
+    const state = this.#reviewState
+    if (state.phase !== 'signed' || state.transfer.preview.reviewId !== reviewId) {
+      throw new Error('No signed transfer to recover')
+    }
+    if (state.saving) throw new Error('Saving the signed transfer is already in progress')
+    state.saving = true
+    try {
+      const result = await state.finish()
       this.#reviewState = { phase: 'idle' }
+      this.#releaseUnusedDecisions()
+      return result
+    } catch {
+      state.saving = false
+      // Preserve the output in this state. Retrying must not enter the signer.
+      return this.pendingSignedTransfer()!
     }
   }
 
@@ -605,6 +679,9 @@ export class WalletTransferProvider implements WalletTransferUI {
   ): Promise<SolTransferResult> {
     await this.#assertReviewAuthority(prepared)
     const { cover, simulation } = prepared.preview
+    const disposition = signingDisposition(prepared.decision.signingDisposition)
+    if (disposition.status === 'block') throw new Error(signingPolicyMessage(disposition))
+    if (disposition.status === 'acknowledge' && input.acknowledgeSafety !== true) throw new Error('Confirm you understand the signing safety warning')
     if (simulation.status !== 'success') {
       throw new Error('Simulation failed. The transaction was not sent.')
     }
@@ -635,100 +712,107 @@ export class WalletTransferProvider implements WalletTransferUI {
     // Runtime checks may take time; revalidate wallet and decision authority at
     // the signing boundary as well as before starting those checks.
     await this.#assertReviewAuthority(prepared)
+    if (prepared.decision.requestId) {
+      this.#signedDecisions.set(prepared.decision.requestId, Date.parse(prepared.decision.decisionExpiresAt))
+    }
     const signedTransaction = await signTransactionMessageWithSigners(prepared.transactionMessage)
     const signedBytes = getBase64EncodedWireTransaction(signedTransaction)
     const signature = getSignatureFromTransaction(signedTransaction)
-    await coverRecords.record({
-      signature,
-      walletAddress: prepared.walletAddress,
-      coverStatus: toWalletCoverStatus(prepared.decision.coverStatus),
-      riskBand: prepared.decision.riskBand,
-      requestId: prepared.decision.requestId ?? null,
-      dappOrigin: null,
-      title:
-        prepared.preview.asset.kind === 'sol'
-          ? `Sent ${prepared.preview.amount} SOL`
-          : `Sent ${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
-      actionKind: prepared.preview.asset.kind === 'sol' ? 'sol_transfer' : 'token_transfer',
-      amount: `${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
-      tokenSymbol: prepared.preview.asset.symbol,
-      tokenMint: prepared.preview.asset.kind === 'token' ? prepared.preview.asset.mint : null,
-      recipient: prepared.preview.destination,
-      source: prepared.preview.source,
-      feePayer: prepared.preview.source,
-      programs:
-        prepared.preview.asset.kind === 'sol'
-          ? ['System Program']
-          : [
-              prepared.preview.asset.programId === TOKEN_2022_PROGRAM_ADDRESS ? 'Token 2022' : 'Token Program',
-              ...(prepared.preview.createsDestinationTokenAccount ? ['Associated Token'] : []),
-            ],
-      cluster: prepared.cluster,
-      transactionStatus: 'signed',
-      blockhash: prepared.blockhash,
-      lastValidBlockHeight: prepared.lastValidBlockHeight,
-      broadcastOwner: 'wallet',
-      signedTransactionBase64: String(signedBytes),
-    })
-    if (
-      this.#cover &&
-      prepared.decision.coverStatus !== 'unavailable' &&
-      prepared.decision.requestId
-    ) {
-      // Persist exact evidence before the first broadcast attempt. A service
-      // worker restart can therefore recover delivery without signing again.
-      await this.#cover.postSign({
-        requestId: prepared.decision.requestId,
-        signedBytes,
+    const finish = async (): Promise<SolTransferResult> => {
+      await coverRecords.record({
         signature,
-        signingWalletPublicKey: prepared.walletAddress,
-        walletTimestamp: new Date(this.#now()).toISOString(),
+        walletAddress: prepared.walletAddress,
+        coverStatus: toWalletCoverStatus(prepared.decision.coverStatus),
+        riskBand: prepared.decision.riskBand,
+        requestId: prepared.decision.requestId ?? null,
+        dappOrigin: null,
+        title:
+          prepared.preview.asset.kind === 'sol'
+            ? `Sent ${prepared.preview.amount} SOL`
+            : `Sent ${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+        actionKind: prepared.preview.asset.kind === 'sol' ? 'sol_transfer' : 'token_transfer',
+        amount: `${prepared.preview.amount} ${prepared.preview.asset.symbol}`,
+        tokenSymbol: prepared.preview.asset.symbol,
+        tokenMint: prepared.preview.asset.kind === 'token' ? prepared.preview.asset.mint : null,
+        recipient: prepared.preview.destination,
+        source: prepared.preview.source,
+        feePayer: prepared.preview.source,
+        programs:
+          prepared.preview.asset.kind === 'sol'
+            ? ['System Program']
+            : [
+                prepared.preview.asset.programId === TOKEN_2022_PROGRAM_ADDRESS ? 'Token 2022' : 'Token Program',
+                ...(prepared.preview.createsDestinationTokenAccount ? ['Associated Token'] : []),
+              ],
+        cluster: prepared.cluster,
+        transactionStatus: 'signed',
+        blockhash: prepared.blockhash,
+        lastValidBlockHeight: prepared.lastValidBlockHeight,
+        broadcastOwner: 'wallet',
+        signedTransactionBase64: String(signedBytes),
       })
-    }
-    try {
-      const returnedSignature = await prepared.rpc
-        .sendTransaction(signedBytes, {
-          encoding: 'base64',
-          maxRetries: 3,
-          preflightCommitment: 'confirmed',
-        })
-        .send()
-      if (String(returnedSignature) !== String(signature)) {
-        throw new Error('RPC returned an unexpected transaction signature.')
-      }
-      await coverRecords.updateTransactionStates([
-        {
+      if (
+        this.#cover &&
+        prepared.decision.coverStatus !== 'unavailable' &&
+        prepared.decision.requestId
+      ) {
+        // Persist exact evidence before the first broadcast attempt. A service
+        // worker restart can therefore recover delivery without signing again.
+        await this.#cover.postSign({
+          requestId: prepared.decision.requestId,
+          signedBytes,
           signature,
-          walletAddress: prepared.walletAddress,
-          transactionStatus: 'broadcast',
-        },
-      ])
-    } catch (error) {
-      await coverRecords
-        .updateTransactionStates([
+          signingWalletPublicKey: prepared.walletAddress,
+          walletTimestamp: new Date(this.#now()).toISOString(),
+        })
+      }
+      try {
+        const returnedSignature = await prepared.rpc
+          .sendTransaction(signedBytes, {
+            encoding: 'base64',
+            maxRetries: 3,
+            preflightCommitment: 'confirmed',
+          })
+          .send()
+        if (String(returnedSignature) !== String(signature)) {
+          throw new Error('RPC returned an unexpected transaction signature.')
+        }
+        await coverRecords.updateTransactionStates([
           {
             signature,
             walletAddress: prepared.walletAddress,
-            transactionStatus: 'signed',
-            failureReason: `Broadcast needs retry: ${String(error)}`,
+            transactionStatus: 'broadcast',
           },
         ])
-        .catch(() => {})
+      } catch (error) {
+        await coverRecords
+          .updateTransactionStates([
+            {
+              signature,
+              walletAddress: prepared.walletAddress,
+              transactionStatus: 'signed',
+              failureReason: `Broadcast needs retry: ${String(error)}`,
+            },
+          ])
+          .catch(() => {})
+        return {
+          status: 'broadcast_pending',
+          signature,
+          explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
+          cover,
+          message: 'Transaction signed and saved. Broadcast has not been confirmed. Check Activity to retry the saved transaction; do not create another send.',
+        }
+      }
+
       return {
-        status: 'broadcast_pending',
+        status: 'submitted',
         signature,
         explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
         cover,
-        message: 'Transaction signed and saved. Broadcast has not been confirmed. Check Activity to retry the saved transaction; do not create another send.',
       }
     }
-
-    return {
-      status: 'submitted',
-      signature,
-      explorerUrl: explorerTransactionUrl(signature, prepared.cluster),
-      cover,
-    }
+    this.#reviewState = { phase: 'signed', transfer: prepared, signature, saving: false, finish }
+    return await this.retrySignedTransfer(prepared.preview.reviewId)
   }
 
   async #prepare(input: WalletTransferInput, reviewId: WalletTransferReviewId): Promise<PreparedWalletTransfer> {
@@ -925,7 +1009,11 @@ export class WalletTransferProvider implements WalletTransferUI {
     const unsignedBytes = getBase64EncodedWireTransaction(unsignedTransaction)
     const [decision, simulationResponse] = await Promise.all([
       this.#cover
-        ? this.#cover.preSign({ transactionBytes: unsignedBytes, cluster })
+        ? this.#cover.preSign({ transactionBytes: unsignedBytes, cluster }).then((decision) => {
+            if (decision.requestId) this.#retiredDecisions.add(decision.requestId)
+            this.#releaseUnusedDecisions()
+            return decision
+          })
         : Promise.resolve({
             requestId: '',
             coverStatus: 'unavailable' as const,
@@ -1008,6 +1096,8 @@ const WALLET_TRANSFER_SERVICE_KEY = 'ember.WalletTransferService' as ProxyServic
 
 export function registerWalletTransferService(provider: WalletTransferUI): void {
   const facade: WalletTransferUI = {
+    pendingSignedTransfer: () => provider.pendingSignedTransfer(),
+    retrySignedTransfer: (reviewId) => provider.retrySignedTransfer(reviewId),
     previewTransfer: (input) => provider.previewTransfer(input),
     sendTransfer: (input) => provider.sendTransfer(input),
     discardReview: (reviewId) => provider.discardReview(reviewId),

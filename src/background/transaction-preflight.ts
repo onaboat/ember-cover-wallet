@@ -1,3 +1,6 @@
+import { simulationSigningBlock } from './simulation-signing-facts.ts'
+import type { SigningDisposition } from '../signing/signing-policy.ts'
+import { signingPolicyMessage } from '../signing/signing-policy.ts'
 import { createSolanaRpc, getBase64EncodedWireTransaction, getTransactionDecoder } from '@solana/kit'
 import type { Base64EncodedWireTransaction } from '@solana/kit'
 import { walletClusterConfig } from './wallet-data-config.ts'
@@ -11,16 +14,18 @@ export type TransactionPreflight =
       message: string
       details?: string
     }
+  | { status: 'blocked'; reason: 'dangerous_effects'; message: string; disposition: Extract<SigningDisposition, { status: 'block' }> }
 
 type Simulate = (bytes: Base64EncodedWireTransaction, cluster: WalletCluster) => Promise<{
   err: unknown
+  innerInstructions?: unknown
   logs?: readonly string[] | null
 }>
 
 const simulate: Simulate = async (bytes, cluster) => {
   const rpc = createSolanaRpc(walletClusterConfig(cluster).rpcUrl)
   const result = await rpc.simulateTransaction(bytes, {
-    encoding: 'base64', commitment: 'confirmed', replaceRecentBlockhash: false, sigVerify: false,
+    encoding: 'base64', commitment: 'confirmed', replaceRecentBlockhash: false, sigVerify: false, innerInstructions: true,
   }).send()
   return result.value
 }
@@ -39,7 +44,10 @@ export async function preflightTransaction(
   }
   try {
     const result = await runSimulation(bytes, cluster)
-    if (result.err === null) return { status: 'valid' }
+    if (result.err === null) {
+      const block = simulationSigningBlock(result.innerInstructions)
+      return block ? { status: 'blocked', reason: 'dangerous_effects', message: signingPolicyMessage(block), disposition: block } : { status: 'valid' }
+    }
     if (result.err === 'BlockhashNotFound') {
       return { status: 'blocked', reason: 'expired', message: 'This transaction’s blockhash is no longer valid. Cancel and start a new request from the app. Nothing was signed.' }
     }

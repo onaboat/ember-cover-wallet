@@ -537,6 +537,10 @@ pre {
   color: var(--ec-ink-faint);
 }
 
+.ec-approval-screen .ec-transaction-instruction {
+  overflow-wrap: anywhere;
+}
+
 /* Body text — one size, muted labels, ink values. */
 .ec-approval-screen .ec-review-card dl dt,
 .ec-approval-screen .ec-review-card dl dd,

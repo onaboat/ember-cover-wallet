@@ -232,3 +232,34 @@ test('reconnects an expired session without offering another payment', () => {
     primaryAction: 'reconnect',
   })
 })
+
+
+test('offers activation after a successful empty coverage response despite an old confirmed payment', () => {
+  const payment = state({ status: 'active' })
+  const view = coveragePaymentStatusView({
+    cluster: 'mainnet-beta', coverEnrolled: true, coverStatusLoading: false,
+    coverStatusSnapshot: null, paymentState: payment,
+    lifecycle: { authority: 'server', coverage: null, error: null },
+  })
+  expect(view).toMatchObject({ badgeLabel: 'NO COVER', primaryAction: 'activate' })
+  expect(view.metrics).toContainEqual({ label: 'Payment', value: 'Confirmed' })
+  expect(payment.status).toBe('active')
+})
+
+test.each(['cache', 'unavailable'] as const)('keeps %s coverage failures unavailable despite old payment', (authority) => {
+  expect(coveragePaymentStatusView({
+    cluster: 'mainnet-beta', coverEnrolled: true, coverStatusLoading: false,
+    coverStatusSnapshot: null, paymentState: state({ status: 'active' }),
+    lifecycle: { authority, coverage: null, error: 'Service unavailable' },
+  })).toMatchObject({ badgeLabel: 'UNAVAILABLE', primaryAction: 'refresh' })
+})
+
+test.each(['broadcast_pending', 'activation_pending', 'failed_recoverable'] as const)(
+  'preserves recovery for %s payments even when no cover is active', (status) => {
+    expect(coveragePaymentStatusView({
+      cluster: 'mainnet-beta', coverEnrolled: true, coverStatusLoading: false,
+      coverStatusSnapshot: null, paymentState: state({ status }),
+      lifecycle: { authority: 'server', coverage: null, error: null },
+    }).primaryAction).toBe('sync')
+  },
+)

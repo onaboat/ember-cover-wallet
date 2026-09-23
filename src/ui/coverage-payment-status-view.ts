@@ -1,4 +1,5 @@
 import type { LocalCoveragePaymentState } from '../background/coverage-payment-service.ts'
+import type { WalletLifecycleSnapshot } from '../background/ember-lifecycle-store.ts'
 import type { WalletCluster } from '../background/wallet-data-config.ts'
 import type { CoverStatusSnapshot } from '../cover/ember-types.ts'
 import { coverPeriodExpired, coverStatusActive } from '../cover/ember-types.ts'
@@ -30,6 +31,7 @@ export interface PaymentStatusInput {
   coverEnrolled: boolean | null
   coverStatusLoading: boolean
   coverStatusSnapshot: CoverStatusSnapshot | null
+  lifecycle?: Pick<WalletLifecycleSnapshot, 'authority' | 'coverage' | 'error'> | null
   nowMs?: number
   paymentState: LocalCoveragePaymentState | null
 }
@@ -156,6 +158,20 @@ export function coveragePaymentStatusView(input: PaymentStatusInput): PaymentSta
         primaryAction: 'activate',
         title: 'Coverage',
       }
+    }
+  }
+
+  // A successful empty response is authoritative absence, not a failed check.
+  // Pending signed payments above still require recovery before another payment.
+  if (coverEnrolled && input.lifecycle?.authority === 'server' &&
+      input.lifecycle.error === null && input.lifecycle.coverage === null) {
+    return {
+      badgeLabel: 'NO COVER',
+      badgeTone: 'none',
+      detail: 'Ember Cover is not active for this wallet. Review a current offer.',
+      metrics: submittedPaymentState ? stateMetrics(submittedPaymentState) : [],
+      primaryAction: 'activate',
+      title: 'Coverage',
     }
   }
 

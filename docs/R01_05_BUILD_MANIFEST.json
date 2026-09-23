@@ -1,0 +1,141 @@
+{
+  "sdkVersion": "1.3.2-beta.3",
+  "sdkArtifactSha256": "2f344615b3f9b00726845cd321a0bc82ac5bda968fef24147268750d4c539b27",
+  "walletBaseCommit": "84d72e787a0710154fb743c0fa306225da8212b3",
+  "backendBaseCommit": "9e2f7a243ea26e0a203341814e64b1cdccfc3f31",
+  "sourceState": "uncommitted repair changes; see sourceFiles",
+  "sourceFiles": [
+    {
+      "repository": "wallet",
+      "path": "src/background/cover-service.ts",
+      "sha256": "fd233d6b53a2dc728cf9f4b639d09b5161d220a71a25370ec93358395ecc0789"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/ember-lifecycle-store.spec.ts",
+      "sha256": "aa3bfe736fa4475b6d66520735be72901d732cc65c1156392ab8080d27f8905f"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/ember-lifecycle-store.ts",
+      "sha256": "ced0736d3c7f9cce12d23bb6859999a04fb2b3c959964243239e06a0e7cfa56b"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/evidence-outbox.spec.ts",
+      "sha256": "e65fb5770d47161ae2651cd34197fc38d6ac582a2dcf4630749f8d4f414cddee"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/evidence-outbox.ts",
+      "sha256": "e24286b7b627e6c81909c3082164192b789027cb0b38ce48bdbbcac750185075"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/request-service.spec.ts",
+      "sha256": "c86bd6cc124d27802828dd2c102fd2348e0b37d752a3bcf04da4d2f3d8847cc6"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/request-service.ts",
+      "sha256": "b6044d8973a5700c14c0c4477acba6ed965788631a2df48fdd94d944a5dd9984"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/sol-transfer-service.spec.ts",
+      "sha256": "877834b99139d1ef237f1ae0c5c5d1d6059568d7a0a746db7ffd23832b70c9c3"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/sol-transfer-service.ts",
+      "sha256": "f8212234bb855dd2d032f321dbe20a90abb6dece5a9a32a43839820b5ba745fc"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/wallet-data-service.spec.ts",
+      "sha256": "e0c34cd42c65ff042b8cd3cb27c6d667a84dac54452af5987f4052f6df592450"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/background/wallet-data-service.ts",
+      "sha256": "f110cb7a820a905dc04d1fb491e1ef37690adc1ec291dd5d1e5f85738eca55e0"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/entrypoints/popup/App.tsx",
+      "sha256": "29301c9d5fbe0e67c0060639f3c3e4558d301df53a8ee2daad9fb02e4e2bd115"
+    },
+    {
+      "repository": "wallet",
+      "path": "src/entrypoints/request/ApprovalScreen.tsx",
+      "sha256": "1998a40424e5553bc6418975b10c3a41b654f841f0d1a82cf2daaf9de58d9517"
+    },
+    {
+      "repository": "backend",
+      "path": "crates/ember-api/src/decisions.rs",
+      "sha256": "3ed98154b43ed8db18fbb6776724f581c89c049e54d05916ffa50f6b282f54e1"
+    }
+  ],
+  "files": [
+    {
+      "path": "assets/App-DktBY0wz.css",
+      "sha256": "e0cc3d4c38b58498515f3f3641810f4918453408d80cab335fe2aa8582b7e2a2"
+    },
+    {
+      "path": "background.js",
+      "sha256": "5bd5029d368c5a1b83b077aef03a039d5f5a033420ee7de2572c2870f85fc2e1"
+    },
+    {
+      "path": "chunks/App-BDr_yVpW.js",
+      "sha256": "fbbd70676d043876f224f8232794544758bebd1d00274fe949bb6561f0c19cea"
+    },
+    {
+      "path": "chunks/ApprovalScreen-B7GVmt13.js",
+      "sha256": "599b2f538e537ebf05d3c993701b55036ca23ba1137107b0e96c70443a7d9efa"
+    },
+    {
+      "path": "chunks/popup-BQntRMKO.js",
+      "sha256": "246bee16dd5599616a62ac54ec54b430da764fd0742d9ed1b20f7fd3fca1daee"
+    },
+    {
+      "path": "chunks/request-Bfq_BaRk.js",
+      "sha256": "2aec2ac9556f4251d370c626e03e7c2292ddfb318f9e20e2a33f2d3edcd83250"
+    },
+    {
+      "path": "content-scripts/content.js",
+      "sha256": "0dbbb5021b494b06a5289b7a4d61a2131427bff655484fdbb7107bd5a03554a1"
+    },
+    {
+      "path": "content-scripts/inpage.js",
+      "sha256": "4da6341030caea61baa6aa8c1a5f2c1393a9ee027d4a1aa576a72a97a6277f2e"
+    },
+    {
+      "path": "icons/128.png",
+      "sha256": "affbd80ef4e19ae33207ba19e313767aa2218172e7f8fedda6ea34e255940bff"
+    },
+    {
+      "path": "icons/16.png",
+      "sha256": "f6b3147fa2bfe933da50d34d4983824bff3fd19e5b730572d020ec8ba986245b"
+    },
+    {
+      "path": "icons/32.png",
+      "sha256": "ce9e5c974e25605fa619fced49ba736dd95f23fca24478928ee4cb5c26682c37"
+    },
+    {
+      "path": "icons/48.png",
+      "sha256": "69bf338ff63956fe30278ab42659386658899d9340df1f2c420522e3cbc14488"
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "923bf62a6ca67a5b35b7d7c35869b168260f1216c27b4a4ee568371016834366"
+    },
+    {
+      "path": "popup.html",
+      "sha256": "28e89055610aaff60a28609860ca7fbe1057c3845170fec3d0d69cc99b822bdc"
+    },
+    {
+      "path": "request.html",
+      "sha256": "9651a7ed5ef512259b1b2e7002935e8e023452296c25a2a877accbd32aaa3559"
+    }
+  ]
+}

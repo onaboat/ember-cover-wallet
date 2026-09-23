@@ -351,3 +351,13 @@ test('claim eligibility and intake use the SDK decision identifier without payou
   expect(createClaim).toHaveBeenCalledOnce()
   expect(Object.keys(client)).not.toContain('createPayout')
 })
+
+test('preserves signing blocks from the SDK independently of the coverage label', async () => {
+  const signingDisposition = { status: 'block' as const, reason: 'authority_handover' as const }
+  const { provider } = await providerWithCoverage(fakeClient({
+    reviewForSigning: vi.fn(async () => ({ status: 'reviewed', decision: { ...DECISION, coverStatus: 'unavailable', signingDisposition } })),
+  }))
+  expect(await provider.preSign({ cluster: 'devnet', transactionBytes: 'AQID' })).toMatchObject({
+    coverStatus: 'unavailable', signingDisposition,
+  })
+})

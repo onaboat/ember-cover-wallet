@@ -37,6 +37,7 @@ export interface WalletLifecycleCache {
 export interface WalletLifecycleSnapshot extends WalletLifecycleCache {
   authority: 'server' | 'cache' | 'unavailable'
   error: string | null
+  historyError?: string | null
 }
 
 export interface WalletCoverageSnapshot {
@@ -136,30 +137,12 @@ export class EmberLifecycleStore {
     })
   }
 
-  /**
-   * Resolve only the coverage authority needed to request a decision.
-   *
-   * A cached active instance is safe as a lookup reference because the
-   * decision endpoint independently revalidates its wallet, environment,
-   * status, and dates. If the cache is not usable, refresh only payment and
-   * coverage; approval must never wait for history, lineage, or claims.
-   */
+  /** Current coverage is server authority; historical IDs are display references. */
   async resolveCoverageForDecision(
     walletAddress: string,
     client: EmberWalletClient,
   ): Promise<WalletCoverageSnapshot> {
-    const cached = await this.load(walletAddress)
-    if (this.isUsableCoverage(cached.coverage, walletAddress)) {
-      return {
-        authority: 'cache',
-        coverage: cached.coverage,
-        error: null,
-        payment: cached.payment,
-        updatedAt: cached.updatedAt,
-        walletAddress,
-      }
-    }
-    return await this.refreshCoverage(walletAddress, client, cached)
+    return await this.refreshCoverage(walletAddress, client)
   }
 
   async refreshCoverage(
@@ -207,55 +190,45 @@ export class EmberLifecycleStore {
     client: EmberWalletClient,
   ): Promise<WalletLifecycleSnapshot> {
     const cached = await this.load(walletAddress)
-    try {
-      const payment = cached.payment ? await client.getPayment(cached.payment.paymentId) : null
-      const currentCoverage = await client.getCurrentCoverage()
-      const coverage = currentCoverage.status === 'active' ? currentCoverage.coverage : null
-      const allowance = currentCoverage.status === 'active' ? currentCoverage.allowance : null
-      const decisions = await Promise.all(
-        cached.decisions.map(async (reference) => ({
-          ...reference,
-          cachedDecision: await client.getDecision(reference.decisionId),
-          cachedLineage: await client.getDecisionLineage(reference.decisionId),
-        })),
-      )
-      const claimList: WalletClaimListResponse = await client.listClaims()
-      const next: WalletLifecycleCache = {
-        ...cached,
-        payment,
-        coverage,
-        allowance,
-        decisions,
-        claims: claimList.claims,
-        updatedAt: this.now().toISOString(),
+    // Save current coverage before history: missing records must never suppress
+    // the live authority or allowance from the current-coverage endpoint.
+    const current = await this.refreshCoverage(walletAddress, client, cached)
+    const historyErrors: string[] = []
+    async function history<T>(read: () => Promise<T>, fallback: T): Promise<T> {
+      try { return await read() } catch (error) {
+        historyErrors.push(error instanceof Error ? error.message : 'History unavailable')
+        return fallback
       }
-      await this.save(next)
-      return { ...next, authority: 'server', error: null }
-    } catch (error) {
-      return {
-        ...cached,
-        authority:
-          cached.payment || cached.coverage || cached.decisions.length > 0 || cached.claims.length > 0
-            ? 'cache'
-            : 'unavailable',
-        error: error instanceof Error ? error.message : 'Ember lifecycle unavailable',
-      }
+    }
+    const [payment, decisions, claimList] = await Promise.all([
+      cached.payment ? history(() => client.getPayment(cached.payment!.paymentId), cached.payment) : null,
+      Promise.all(cached.decisions.map(async (reference) => ({
+        ...reference,
+        cachedDecision: await history(() => client.getDecision(reference.decisionId), reference.cachedDecision),
+        cachedLineage: await history(() => client.getDecisionLineage(reference.decisionId), reference.cachedLineage),
+      }))),
+      history<WalletClaimListResponse>(() => client.listClaims(), { claims: cached.claims }),
+    ])
+    const next: WalletLifecycleCache = {
+      ...cached,
+      payment,
+      coverage: current.coverage,
+      allowance: current.authority === 'server' ? current.allowance ?? null : cached.allowance ?? null,
+      decisions,
+      claims: claimList.claims,
+      updatedAt: current.updatedAt,
+    }
+    await this.save(next)
+    return {
+      ...next,
+      authority: current.authority,
+      error: current.error,
+      historyError: historyErrors.length ? 'Some history could not be refreshed. Saved records are shown.' : null,
     }
   }
 
   async clear(): Promise<void> {
     await storage.removeItem(STORE_KEY)
-  }
-
-  private isUsableCoverage(
-    coverage: CoverageInstanceResponse | null,
-    walletAddress: string,
-  ): coverage is CoverageInstanceResponse {
-    if (!coverage || coverage.protectedWallet !== walletAddress || coverage.status !== 'active') {
-      return false
-    }
-    const now = this.now().getTime()
-    return now >= Date.parse(coverage.coverageStartsAt) && now < Date.parse(coverage.coverageEndsAt)
   }
 
   private async save(value: WalletLifecycleCache): Promise<void> {

@@ -392,6 +392,7 @@ test('retries a persisted wallet-owned signed transaction while its blockhash is
   await storage.setItem('local:ember-cover-records', [
     {
       signature: 'sig-retry',
+      requestId: 'decision-retry',
       walletAddress: ADDRESS,
       coverStatus: 'covered',
       recordedAt: '2026-07-26T00:00:00.000Z',
@@ -413,6 +414,9 @@ test('retries a persisted wallet-owned signed transaction while its blockhash is
       getBlockHeight: () => ({ send: async () => 99n }),
       sendTransaction: () => ({
         send: async () => {
+          expect(await storage.getItem('local:ember-evidence-outbox:v1')).toMatchObject([
+            { decisionId: 'decision-retry', request: { signedBytes: 'signed-transaction' } },
+          ])
           broadcasts += 1
           return 'sig-retry'
         },

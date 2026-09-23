@@ -146,6 +146,8 @@ function decisionView(review: SigningReview): CoverDecision {
   const decision = review.decision
   return {
     requestId: decision.decisionId,
+    ...(decision.simulationEffects === undefined ? {} : { simulationEffects: decision.simulationEffects }),
+    ...(decision.signingDisposition === undefined ? {} : { signingDisposition: decision.signingDisposition }),
     coverStatus: decision.coverStatus,
     riskBand: decision.riskBand,
     decisionReason: decision.decisionReason,
@@ -268,7 +270,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
       signedBytes: args.signedBytes,
     })
     const client = await this.activeClient()
-    if (client) void evidenceOutbox.drain(client)
+    if (client) void evidenceOutbox.drain(client).catch(() => {})
   }
 
   async postSignMessage(args: MessagePostSignArgs): Promise<void> {
@@ -278,7 +280,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
       signature: args.signature,
     })
     const client = await this.activeClient()
-    if (client) void evidenceOutbox.drain(client)
+    if (client) void evidenceOutbox.drain(client).catch(() => {})
   }
 
   async status(): Promise<CoverStatusSnapshot | null> {
@@ -338,7 +340,7 @@ export class EmberCoverProvider implements EmberLifecycleProvider {
       client,
     )
     const coverage = coverageSnapshot.coverage
-    if (!coverage && coverageSnapshot.authority !== 'server') {
+    if (coverageSnapshot.authority !== 'server') {
       return unavailable({
         stage: 'provider_error', apiAttempted: true, walletAddress, enrolled: true,
         error: coverageSnapshot.error ?? 'Coverage could not be verified',

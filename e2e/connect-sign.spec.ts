@@ -5,6 +5,9 @@ import path from 'node:path'
 
 import { type BrowserContext, chromium, expect, type Page, test } from '@playwright/test'
 import {
+  AccountRole,
+  appendTransactionMessageInstructions,
+  type Instruction,
   address as toAddress,
   blockhash as toBlockhash,
   compileTransaction,
@@ -32,9 +35,10 @@ declare global {
   }
 }
 
-function buildTx(feePayer: string): Uint8Array {
+function buildTx(feePayer: string, instructions: Instruction[] = []): Uint8Array {
   const message = pipe(
     createTransactionMessage({ version: 0 }),
+    (m) => appendTransactionMessageInstructions(instructions, m),
     (m) => setTransactionMessageFeePayer(toAddress(feePayer), m),
     (m) =>
       setTransactionMessageLifetimeUsingBlockhash(
@@ -118,7 +122,7 @@ async function acknowledgeApprovalWarnings(page: Page): Promise<void> {
   })
   await expect(page.getByTestId('cover')).toBeVisible({ timeout: 7000 })
   await expect(page.getByTestId('approve')).not.toHaveText('Checking cover...', { timeout: 7000 })
-  for (const testId of ['cover-ack', 'impact-ack', 'message-ack']) {
+  for (const testId of ['cover-ack', 'impact-ack', 'message-ack', 'safety-ack']) {
     const checkbox = page.getByTestId(testId)
     if (await checkbox.isVisible()) {
       await checkbox.check()
@@ -377,6 +381,7 @@ test('risky readable messages require acknowledgement before signing', async () 
   await expect(signWin.getByTestId('message-warning')).toHaveText('This message references a different site.')
   await expect(signWin.getByTestId('approve')).toHaveText('Sign without cover')
   await expect(signWin.getByTestId('approve')).toBeDisabled()
+  await signWin.getByTestId('safety-ack').check()
   await signWin.getByTestId('cover-ack').check()
   await expect(signWin.getByTestId('approve')).toHaveText('Acknowledge message risk')
   await expect(signWin.getByTestId('approve')).toBeDisabled()
@@ -643,4 +648,79 @@ test('closing the approval window rejects the dapp promise', async () => {
   expect(await dapp.locator('#out').getAttribute('data-address')).toBeNull()
 
   await context.close()
+})
+
+
+test('composed approval shows all SOL and enforces safety acknowledgement without signing', async ({}, testInfo) => {
+  const { context, extensionId } = await launch()
+  try {
+    await createVault(context, extensionId)
+    const dapp = await context.newPage()
+    await dapp.goto(dappUrl)
+    await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+    const connection = context.waitForEvent('page')
+    await dapp.getByRole('button', { name: 'Connect' }).click()
+    const connectWindow = await connection
+    await connectWindow.getByTestId('approve').click()
+    await expect.poll(() => dapp.locator('#out').getAttribute('data-address')).not.toBeNull()
+    const walletAddress = (await dapp.locator('#out').getAttribute('data-address'))!
+    const transfers = [10_000_000n, 1_500_000_000n].map((amount): Instruction => {
+      const data = new Uint8Array(12)
+      const view = new DataView(data.buffer)
+      view.setUint32(0, 2, true)
+      view.setBigUint64(4, amount, true)
+      return {
+        programAddress: toAddress('11111111111111111111111111111111'),
+        accounts: [
+          { address: toAddress(walletAddress), role: AccountRole.WRITABLE_SIGNER },
+          { address: toAddress(SEND_DESTINATION), role: AccountRole.WRITABLE },
+        ],
+        data,
+      }
+    })
+    const bytes = buildTx(walletAddress, [...transfers, {
+      programAddress: toAddress('BPFLoaderUpgradeab1e11111111111111111111111'), data: new Uint8Array([99]),
+    }])
+    await dapp.evaluate((data) => window.__setTxBytes?.(data), Array.from(bytes))
+    const approval = context.waitForEvent('page')
+    await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
+    const page = await approval
+    await page.setViewportSize({ width: 440, height: 820 })
+    await expect(page.getByTestId('estimated-changes')).toContainText('-0.01 SOL')
+    await expect(page.getByTestId('estimated-changes')).toContainText('-1.5 SOL')
+    await expect(page.getByTestId('estimated-changes')).toContainText('-1.51 SOL')
+    await expect(page.getByTestId('estimated-changes')).toContainText('Effects unknown')
+    await expect(page.getByTestId('impact-warning')).toBeVisible()
+    await page.getByTestId('cover-ack').check()
+    await page.getByTestId('impact-ack').check()
+    await expect(page.getByTestId('approve')).toBeDisabled()
+    await page.getByTestId('safety-ack').check()
+    await expect(page.getByTestId('approve')).toBeEnabled()
+    await page.getByTestId('estimated-changes').screenshot({ path: testInfo.outputPath('composed-impact.png') })
+    await page.getByTestId('safety-ack').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('composed-approval.png') })
+    await page.getByTestId('reject').click()
+    await expect.poll(() => dapp.locator('#out').getAttribute('data-error')).not.toBeNull()
+    expect(await dapp.locator('#out').getAttribute('data-signedtx')).toBeNull()
+    const dangerous = buildTx(walletAddress, [{
+      programAddress: toAddress('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+      accounts: [
+        { address: toAddress(SEND_DESTINATION), role: AccountRole.WRITABLE },
+        { address: toAddress('11111111111111111111111111111111'), role: AccountRole.READONLY },
+        { address: toAddress(walletAddress), role: AccountRole.READONLY_SIGNER },
+      ], data: Uint8Array.from([4, ...Array<number>(8).fill(255), 0]),
+    }])
+    await dapp.evaluate((data) => window.__setTxBytes?.(data), Array.from(dangerous))
+    const blockedApproval = context.waitForEvent('page')
+    await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
+    const blockedPage = await blockedApproval
+    await blockedPage.setViewportSize({ width: 440, height: 820 })
+    await expect(blockedPage.getByTestId('signing-blocked')).toContainText('unlimited token access')
+    await expect(blockedPage.getByTestId('approve')).toBeDisabled()
+    await blockedPage.screenshot({ path: testInfo.outputPath('local-unlimited-block.png') })
+    await blockedPage.getByTestId('reject').click()
+    expect(await dapp.locator('#out').getAttribute('data-signedtx')).toBeNull()
+  } finally {
+    await context.close()
+  }
 })

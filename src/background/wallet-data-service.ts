@@ -12,6 +12,7 @@ import {
   walletClusterConfig,
 } from './wallet-data-config.ts'
 import { coverRecords } from './cover-records.ts'
+import { evidenceOutbox, wakeEvidenceOutbox } from './evidence-outbox.ts'
 import type {
   CoverRecord,
   CoverRecordStateUpdate,
@@ -614,6 +615,14 @@ export class WalletDataProvider implements WalletDataUI {
     if (rpc.sendTransaction) {
       for (const record of retryCandidates) {
         try {
+          // Activity can recover after the signed record was saved but the
+          // original evidence write failed. Restore evidence before broadcast.
+          if (record.requestId) {
+            await evidenceOutbox.put(record.requestId, {
+              kind: 'transaction', signedBytes: record.signedTransactionBase64!,
+            })
+            void wakeEvidenceOutbox().catch(() => {})
+          }
           const returnedSignature = await rpc
             .sendTransaction(record.signedTransactionBase64!, {
               encoding: 'base64',

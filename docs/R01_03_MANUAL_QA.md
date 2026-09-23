@@ -1,8 +1,14 @@
 # R01 SDK/Chrome candidate — 22 September 2026
 
-Local implementation and automated integration are complete for this slice.
-Live Manual QA is pending the Devnet backend cutover. This is not a public SDK
-release, underwriting certification, or Android implementation completion.
+**Superseded checkpoint:** use [R01_05_REPAIR_CHECKPOINT.md](R01_05_REPAIR_CHECKPOINT.md)
+for the repaired candidate, actual validation and remaining live QA. The earlier
+build manifest and readiness statements below are historical records.
+
+Candidate readiness was withdrawn by the 22 September correctness audit.
+See [R01_04_CODE_AUDIT.md](R01_04_CODE_AUDIT.md) for confirmed defects and the
+repair plan. Do not execute the promotion/cutover instructions below as a ready
+release handoff until those defects are repaired. The delivered/evidence sections
+below record the earlier checkpoint; their completion claims are superseded.
 
 ## Delivered
 

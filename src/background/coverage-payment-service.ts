@@ -146,6 +146,7 @@ interface ProviderDependencies {
   now?: () => number
   rpcFactory?: (cluster: WalletCluster) => CoveragePaymentRpc
   statusAttempts?: number
+  wait?: (milliseconds: number) => Promise<void>
 }
 
 interface PreparedPayment extends PreparedCoveragePaymentTransaction {
@@ -187,6 +188,7 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
   private readonly rpcFactory: (cluster: WalletCluster) => CoveragePaymentRpc
   private readonly signer: CoveragePaymentSigner
   private readonly statusAttempts: number
+  private readonly wait: (milliseconds: number) => Promise<void>
 
   constructor(
     signer: CoveragePaymentSigner,
@@ -198,7 +200,8 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
     this.signer = signer
     this.now = dependencies.now ?? Date.now
     this.rpcFactory = dependencies.rpcFactory ?? createPaymentRpc
-    this.statusAttempts = dependencies.statusAttempts ?? 2
+    this.statusAttempts = Math.max(1, Math.min(6, dependencies.statusAttempts ?? 6))
+    this.wait = dependencies.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   }
 
   async offers(): Promise<CoverageOfferView[]> {
@@ -413,8 +416,13 @@ export class CoveragePaymentProvider implements CoveragePaymentUI {
         },
         { idempotencyKey: `payment-${state.quote.payload.quoteId}` },
       ))
+    // Persist registration before polling: a suspended worker or failed read
+    // resumes this payment ID and the already signed transaction.
+    state = await this.update(state, { payment, status: 'activation_pending' })
     for (let attempt = 1; attempt < this.statusAttempts && payment.status === 'pending'; attempt += 1) {
+      await this.wait(Math.min(4_000, 1_000 * 2 ** (attempt - 1)))
       payment = await client.getPayment(payment.paymentId)
+      state = await this.update(state, { payment })
     }
     let coverage = null
     if (payment.coverageInstanceId) {

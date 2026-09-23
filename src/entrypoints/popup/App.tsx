@@ -1,3 +1,4 @@
+import { signingPolicyMessage } from '../../signing/signing-policy.ts'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { address as toAddress } from '@solana/kit'
 import type {
@@ -263,6 +264,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const [sendPreviewLoading, setSendPreviewLoading] = useState(false)
   const [uncoveredAck, setUncoveredAck] = useState(false)
   const [highRiskAck, setHighRiskAck] = useState(false)
+  const [safetyAck, setSafetyAck] = useState(false)
   const [nowMs, setNowMs] = useState(Date.now())
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null)
   const [claimEligibility, setClaimEligibility] = useState<ClaimEligibilityResponse | null>(null)
@@ -305,6 +307,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
   const selfSendError = recipientIsSelf ? `You cannot send ${sendAsset.symbol} to this wallet.` : ''
   const sendAmountError = amountValidation(sendAmount, snapshot, sendAsset)
   const paymentStatusView = coveragePaymentStatusView({
+    lifecycle: coverLifecycle,
     cluster,
     coverEnrolled,
     coverStatusLoading,
@@ -335,6 +338,18 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
     setView('unlock')
   }
+
+  useEffect(() => {
+    let active = true
+    void transfers.pendingSignedTransfer().then((pending) => {
+      if (active && pending) {
+        setSendResult(pending)
+        setSendStep('complete')
+        setAccountScreen('send')
+      }
+    }).catch(() => {})
+    return () => { active = false }
+  }, [])
 
   useEffect(() => {
     void refresh()
@@ -552,6 +567,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setSendError('')
     setUncoveredAck(false)
     setHighRiskAck(false)
+    setSafetyAck(false)
   }
 
   function openCoverActivation() {
@@ -963,6 +979,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     setSendPreview(null)
     setUncoveredAck(false)
     setHighRiskAck(false)
+    setSafetyAck(false)
     setNowMs(Date.now())
     try {
       const preview = await transfers.previewTransfer({
@@ -999,6 +1016,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         destination: recipientTrimmed,
         acknowledgeHighRisk: highRiskAck,
         acknowledgeUncovered: uncoveredAck,
+        acknowledgeSafety: safetyAck,
       })
       setSendResult(result)
       setSendStep('complete')
@@ -1008,6 +1026,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
       setSendPreview(null)
       setUncoveredAck(false)
       setHighRiskAck(false)
+      setSafetyAck(false)
       setSendError(errorMessage(e, `Could not send ${sendAsset.symbol}`))
     } finally {
       sendAttemptInFlight.current = false
@@ -1894,12 +1913,12 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
           <div className="ec-screen-head">
             <span className="ec-screen-head__spacer" />
             <div>
-              <span className="ec-control-label">{sendResult?.status === 'broadcast_pending' ? 'Saved' : 'Submitted'}</span>
-              <h2>{sendResult?.status === 'broadcast_pending' ? 'Send awaiting broadcast' : 'Send submitted'}</h2>
+              <span className="ec-control-label">{sendResult?.status === 'save_pending' ? 'Signed' : sendResult?.status === 'broadcast_pending' ? 'Saved' : 'Submitted'}</span>
+              <h2>{sendResult?.status === 'save_pending' ? 'Signature awaiting save' : sendResult?.status === 'broadcast_pending' ? 'Send awaiting broadcast' : 'Send submitted'}</h2>
             </div>
           </div>
           <p className="ec-help">{sendResult?.cover.label ?? 'Submitted'}</p>
-          {sendResult?.status === 'broadcast_pending' ? <p role="status">{sendResult.message}</p> : null}
+          {sendResult && sendResult.status !== 'submitted' ? <p role="status">{sendResult.message}</p> : null}
           {sendResult ? (
             <p>
               <a href={sendResult.explorerUrl} rel="noreferrer" target="_blank">
@@ -1907,8 +1926,19 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               </a>
             </p>
           ) : null}
+          {sendError ? <p role="alert">{sendError}</p> : null}
           <div className="ec-flow-actions">
-            <button
+            {sendResult?.status === 'save_pending' ? (
+              <button className="ec-primary" disabled={sendBusy} onClick={() => {
+                if (sendResult.status !== 'save_pending') return
+                setSendBusy(true)
+                setSendError('')
+                void transfers.retrySignedTransfer(sendResult.reviewId)
+                  .then(setSendResult)
+                  .catch((error) => setSendError(errorMessage(error, 'Could not save the signed transaction')))
+                  .finally(() => setSendBusy(false))
+              }}>{sendBusy ? 'Saving…' : 'Retry saving signature'}</button>
+            ) : <button
               className="ec-primary"
               onClick={() => {
                 setAccountScreen('home')
@@ -1917,7 +1947,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               }}
             >
               {sendResult?.status === 'broadcast_pending' ? 'View Activity' : 'Done'}
-            </button>
+            </button>}
           </div>
         </section>
       )
@@ -1944,6 +1974,8 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
         !sendBusy &&
         !coverExpired &&
         sendPreview.simulation.status === 'success' &&
+        sendPreview.cover.signingDisposition.status !== 'block' &&
+        (sendPreview.cover.signingDisposition.status !== 'acknowledge' || safetyAck) &&
         (!sendPreview.cover.requiresUncoveredAck || uncoveredAck) &&
         (!sendPreview.cover.requiresHighRiskAck || highRiskAck)
       return (
@@ -2041,6 +2073,13 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                 ) : coverSecondsLeft !== null && coverSecondsLeft <= 10 ? (
                   <p data-testid="send-cover-expiring">Cover check expires soon.</p>
                 ) : null}
+                {sendPreview.cover.signingDisposition.status === 'block' ? <p role="alert">{signingPolicyMessage(sendPreview.cover.signingDisposition)}</p> : null}
+                {sendPreview.cover.signingDisposition.status === 'acknowledge' ? (
+                  <label className="ec-ack">
+                    <input type="checkbox" checked={safetyAck} onChange={(event) => setSafetyAck(event.target.checked)} />
+                    <span>{signingPolicyMessage(sendPreview.cover.signingDisposition)} I understand and want to proceed.</span>
+                  </label>
+                ) : null}
                 {sendPreview.cover.requiresUncoveredAck ? (
                   <label className="ec-ack">
                     <input
@@ -2077,6 +2116,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
             <button className="ec-primary" data-testid="send-submit" disabled={!canSend} onClick={() => void onSendSol()}>
               {sendBusy
                 ? 'Sending...'
+                : sendPreview?.cover.signingDisposition.status === 'block' ? 'Signing blocked'
                 : sendPreview?.cover.requiresHighRiskAck
                   ? 'Send high-risk transaction'
                   : sendPreview?.cover.requiresUncoveredAck
@@ -2483,7 +2523,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
               ) : null}
               <div>
                 <dt>Record authority</dt>
-                <dd>{coverLifecycle?.authority ?? 'unavailable'}</dd>
+                <dd>{coverLifecycle?.historyError ? 'cache' : coverLifecycle?.authority ?? 'unavailable'}</dd>
               </div>
             </dl>
           </section>

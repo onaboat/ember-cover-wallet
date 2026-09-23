@@ -69,8 +69,8 @@ export function bannerView(
       }
     case 'unsupported':
       return {
-        label: 'Not covered',
-        body: 'This approval is outside Ember Cover.',
+        label: 'Effects not understood',
+        body: 'Ember could not sufficiently understand this approval. Cover does not apply.',
         tone: 'none',
         showAck: true,
         ackLabel: 'I understand I am signing without cover.',

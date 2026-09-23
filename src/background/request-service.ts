@@ -21,7 +21,11 @@ import type { CoverProvider } from './cover-service.ts'
 import { topRightPopupPosition } from './popup-position.ts'
 import { buildSignMessageOutputs } from './sign-message-output.ts'
 import { buildSignTransactionOutputs } from './sign-transaction-output.ts'
-import { decodeTransactionSummary } from '../entrypoints/request/decode-transaction.ts'
+import { decodeTransactionSummary, estimateWalletImpact } from '../signing/transaction-summary.ts'
+import { decodeMessages } from '../signing/message-display.ts'
+import { messageRisk } from '../signing/message-risk.ts'
+import { assertSigningConsent, signingDisposition } from '../signing/signing-policy.ts'
+import type { SigningConsent, SigningReviewView } from '../signing/signing-policy.ts'
 import { walletClusterForChain } from '../wallet-standard/chains.ts'
 import { preflightTransaction } from './transaction-preflight.ts'
 import type { TransactionPreflight } from './transaction-preflight.ts'
@@ -40,6 +44,7 @@ export interface CoverSummary {
   capContext?: CoverCapContext
   coveredTxCountImpact?: number
   debug?: CoverDebugInfo
+  simulationEffects?: CoverDecision['simulationEffects']
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -52,6 +57,7 @@ function toBase64(bytes: Uint8Array): string {
 
 function coverSummary(decision: CoverDecision): CoverSummary {
   return {
+    simulationEffects: decision.simulationEffects ? structuredClone(decision.simulationEffects) : decision.simulationEffects,
     coverStatus: decision.coverStatus,
     riskBand: decision.riskBand,
     decisionExpiresAt: decision.decisionExpiresAt,
@@ -59,6 +65,12 @@ function coverSummary(decision: CoverDecision): CoverSummary {
     ...(decision.coveredTxCountImpact === undefined ? {} : { coveredTxCountImpact: decision.coveredTxCountImpact }),
     ...(decision.debug === undefined ? {} : { debug: decision.debug }),
   }
+}
+
+interface BoundSigningReview extends SigningReviewView {
+  bytesBase64: string
+  walletAddress: string | null
+  chain: string | undefined
 }
 
 type PendingRequest =
@@ -79,6 +91,7 @@ type PendingRequest =
       origin?: string
       resolve: (data: TransportSignMessageOutput[]) => void
       reject: (reason: Error) => void
+      signingReview?: BoundSigningReview
       coverDecision?: CoverDecision | null
       coverCheck?: Promise<void>
       coverChecking?: boolean
@@ -92,6 +105,7 @@ type PendingRequest =
       origin?: string
       resolve: (data: TransportSignTransactionOutput[]) => void
       reject: (reason: Error) => void
+      signingReview?: BoundSigningReview
       coverDecision?: CoverDecision | null
       coverCheck?: Promise<void>
       coverChecking?: boolean
@@ -107,7 +121,9 @@ type ResolveType<T extends RequestType> =
 
 /** Read-only view of the pending request, safe to send to the popup. */
 export interface PendingRequestView {
+  signingReview?: SigningReviewView
   signingStarted?: boolean
+  recoveryRequired?: boolean
   /** Per-request nonce. The approval UI captures this and passes it to approve/reject so a
    *  stale still-open window can never act on a different, later request. */
   id: string
@@ -126,9 +142,10 @@ export interface PendingRequestView {
 export interface RequestApproval {
   get(): PendingRequestView | null
   refreshCover(): Promise<PendingRequestView | null>
+  retrySigned(id: string): Promise<void>
   approveConnect(id?: string): Promise<void>
-  approveSignMessage(id?: string): Promise<void>
-  approveSignTransaction(id?: string): Promise<void>
+  approveSignMessage(id?: string, consent?: SigningConsent): Promise<void>
+  approveSignTransaction(id?: string, consent?: SigningConsent): Promise<void>
   reject(id?: string): void
 }
 
@@ -149,6 +166,11 @@ export class RequestService implements RequestApproval {
   #transactionApprovalInFlight = false
   #signedTransactionRequestId: string | null = null
   #signingRequestId: string | null = null
+  #signedCompletion: {
+    id: string
+    phase: 'pending' | 'saving'
+    deliver: () => Promise<void>
+  } | null = null
   #messageApprovalInFlight = false
   #signer: VaultSigner
   #cover: CoverProvider | undefined
@@ -191,7 +213,7 @@ export class RequestService implements RequestApproval {
     })
     const request = this.#request as PendingRequest | null
     if (
-      (request?.type === 'signTransaction' || (this.#cover && request?.type === 'signMessage')) &&
+      (request?.type === 'signTransaction' || request?.type === 'signMessage') &&
       request.data.length === 1
     ) {
       void this.#startCoverCheck(request)
@@ -211,7 +233,15 @@ export class RequestService implements RequestApproval {
     }
     request.coverChecking = true
     let check!: Promise<void>
-    check = this.#fetchCover(request)
+    const bytesBase64 = this.#requestBytes(request)
+    const chain = request.type === 'signTransaction' ? request.data[0]?.chain : undefined
+    const previous = request.signingReview
+    delete request.signingReview
+    let walletAddress: string | null = null
+    check = this.#signer.getAddress().then(async (address) => {
+      walletAddress = address
+      await this.#fetchCover(request)
+    })
       .catch((error: unknown) => {
         if (this.#request !== request) {
           return
@@ -234,10 +264,42 @@ export class RequestService implements RequestApproval {
         if (request.coverCheck === check) {
           delete request.coverCheck
           request.coverChecking = false
+          if (this.#request === request) {
+            const localBlock = request.type === 'signTransaction'
+              ? request.transactionPreflight?.status === 'blocked' && request.transactionPreflight.reason === 'dangerous_effects'
+                ? request.transactionPreflight.disposition : decodeTransactionSummary(request.data[0]!.transaction)?.signingBlock
+              : null
+            const disposition = localBlock ?? (previous?.disposition.status === 'block' && previous.bytesBase64 === bytesBase64 && previous.walletAddress === walletAddress && previous.chain === chain
+              ? previous.disposition : signingDisposition(request.coverDecision?.signingDisposition))
+            const requiredAcknowledgements: SigningReviewView['requiredAcknowledgements'] = []
+            const cover = request.coverDecision
+            if (!cover || cover.coverStatus !== 'covered' || cover.riskBand === 'high' || cover.riskBand === 'severe') requiredAcknowledgements.push('coverage')
+            if (disposition.status === 'acknowledge') requiredAcknowledgements.push('safety')
+            if (request.type === 'signTransaction' && !estimateWalletImpact(decodeTransactionSummary(request.data[0]!.transaction), walletAddress).isComplete) requiredAcknowledgements.push('effects')
+            if (request.type === 'signMessage' && (request.data[0]?.message == null || messageRisk(decodeMessages(request.data), request.origin).requiresAck)) requiredAcknowledgements.push('message')
+            request.signingReview = { ...(cover?.requestId ? { expiresAt: cover.decisionExpiresAt } : {}), reviewId: crypto.randomUUID(), bytesBase64, chain, walletAddress, disposition, requiredAcknowledgements }
+          }
         }
       })
     request.coverCheck = check
     return check
+  }
+
+  #requestBytes(request: PendingSignRequest): string {
+    const first = request.data[0]
+    if (!first) return ''
+    const bytes = 'transaction' in first ? first.transaction : first.message
+    return bytes == null ? '' : toBase64(decodeTransportBytes(bytes))
+  }
+
+  #assertSigningReview(request: PendingSignRequest, address: string, consent: SigningConsent | undefined): void {
+    const review = request.signingReview
+    if (!review || request.coverChecking) throw new Error('Signing review is still in progress')
+    if (review.walletAddress !== address) throw new Error('Wallet changed. Cancel and review a new request.')
+    const chain = request.type === 'signTransaction' ? request.data[0]?.chain : undefined
+    if (review.bytesBase64 !== this.#requestBytes(request) || review.chain !== chain) throw new Error('Signing bytes or chain changed after review')
+    assertSigningConsent(review, consent)
+    if (review.expiresAt && !(Date.now() < Date.parse(review.expiresAt))) throw new Error('Signing review expired. Review this request again.')
   }
 
   /** Perform pre-sign review and attach only the opaque public decision. */
@@ -306,8 +368,17 @@ export class RequestService implements RequestApproval {
     return {
       id,
       signingStarted: this.#signingRequestId === id,
+      recoveryRequired: this.#signedCompletion?.id === id && this.#signedCompletion.phase === 'pending',
       type,
       data,
+      ...((this.#request.type === 'signTransaction' || this.#request.type === 'signMessage') && this.#request.signingReview ? {
+        signingReview: {
+          reviewId: this.#request.signingReview.reviewId,
+          ...(this.#request.signingReview.expiresAt ? { expiresAt: this.#request.signingReview.expiresAt } : {}),
+          disposition: { ...this.#request.signingReview.disposition },
+          requiredAcknowledgements: [...this.#request.signingReview.requiredAcknowledgements],
+        },
+      } : {}),
       ...(origin === undefined ? {} : { origin }),
       ...(cover === undefined ? {} : { cover }),
       ...(coverChecking === undefined ? {} : { coverChecking }),
@@ -363,13 +434,13 @@ export class RequestService implements RequestApproval {
   }
 
   /** SW-side: sign through the injected vault signer (key never leaves SW). */
-  async approveSignMessage(id?: string): Promise<void> {
+  async approveSignMessage(id?: string, consent?: SigningConsent): Promise<void> {
     if (this.#messageApprovalInFlight || this.#signingRequestId === this.#request?.id) throw new Error('Message approval is already in progress')
     this.#messageApprovalInFlight = true
-    try { await this.#approveSignMessage(id) } finally { this.#messageApprovalInFlight = false }
+    try { await this.#approveSignMessage(id, consent) } finally { this.#messageApprovalInFlight = false }
   }
 
-  async #approveSignMessage(id?: string): Promise<void> {
+  async #approveSignMessage(id?: string, consent?: SigningConsent): Promise<void> {
     const request = this.#request
     if (!request || request.type !== 'signMessage') {
       throw new Error('No signMessage request to approve')
@@ -400,6 +471,10 @@ export class RequestService implements RequestApproval {
       throw new Error('Signing bytes changed after Ember review')
     }
     if (this.#request !== request) throw new Error('Request closed')
+    this.#assertSigningReview(request, address, consent)
+    if (await this.#signer.getAddress() !== address) throw new Error('Wallet changed. Cancel and review a new request.')
+    if (this.#request !== request) throw new Error('Request closed')
+    this.#assertSigningReview(request, address, consent)
     this.#signingRequestId = request.id
     const outputs = await buildSignMessageOutputs(request.data, (m) => this.#signer.sign(m), address).catch((error: unknown) => {
       // A failed signing attempt ends this request. Never leave the dapp waiting
@@ -411,47 +486,53 @@ export class RequestService implements RequestApproval {
       }
       throw error
     })
-    // The user may have closed the window mid-sign; if so onRemoved already rejected the dapp.
-    // Bail before resolving or sending post-sign evidence so the cancelled request yields nothing.
+    // Once signing starts, popup closure cannot cancel this operation.
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
-    const first = outputs[0]
-    if (
-      this.#cover &&
-      decision &&
-      decision.coverStatus !== 'unavailable' &&
-      decision.requestId &&
-      first?.signedMessage &&
-      first.signature
-    ) {
-      await this.#cover.postSignMessage({
-        requestId: decision.requestId,
-        signedMessage: toBase64(new Uint8Array(first.signedMessage)),
-        signature: base58Encode(new Uint8Array(first.signature)),
-        signingWalletPublicKey: address,
-        walletTimestamp: new Date().toISOString(),
-      })
+    this.#signedCompletion = {
+      id: request.id,
+      phase: 'pending',
+      deliver: async () => {
+        const first = outputs[0]
+        if (
+          this.#cover &&
+          decision &&
+          decision.coverStatus !== 'unavailable' &&
+          decision.requestId &&
+          first?.signedMessage &&
+          first.signature
+        ) {
+          await this.#cover.postSignMessage({
+            requestId: decision.requestId,
+            signedMessage: toBase64(new Uint8Array(first.signedMessage)),
+            signature: base58Encode(new Uint8Array(first.signature)),
+            signingWalletPublicKey: address,
+            walletTimestamp: new Date().toISOString(),
+          })
+        }
+        request.resolve(outputs as unknown as TransportSignMessageOutput[])
+        this.#clear()
+        void this.#closeWindow(request.windowId)
+      },
     }
-    request.resolve(outputs as unknown as TransportSignMessageOutput[])
-    this.#clear()
-    void this.#closeWindow(request.windowId)
+    await this.retrySigned(request.id)
   }
 
-  async approveSignTransaction(id?: string): Promise<void> {
+  async approveSignTransaction(id?: string, consent?: SigningConsent): Promise<void> {
     if (this.#transactionApprovalInFlight) throw new Error('Transaction approval is already in progress')
     if (this.#request && (this.#signedTransactionRequestId === this.#request.id || this.#signingRequestId === this.#request.id)) {
       throw new Error('Signing has already started. Check Activity and evidence recovery; do not sign this request again.')
     }
     this.#transactionApprovalInFlight = true
     try {
-      await this.#approveSignTransaction(id)
+      await this.#approveSignTransaction(id, consent)
     } finally {
       this.#transactionApprovalInFlight = false
     }
   }
 
-  async #approveSignTransaction(id?: string): Promise<void> {
+  async #approveSignTransaction(id?: string, consent?: SigningConsent): Promise<void> {
     const request = this.#request
     if (!request || request.type !== 'signTransaction') {
       throw new Error('No signTransaction request to approve')
@@ -487,13 +568,17 @@ export class RequestService implements RequestApproval {
     ) {
       throw new Error('Signing bytes changed after Ember review')
     }
+    this.#assertSigningReview(request, address, consent)
     const validation = await preflightTransaction(
       decodeTransportBytes(request.data[0]!.transaction),
       walletClusterForChain(request.data[0]!.chain),
     )
     if (this.#request !== request) throw new Error('Request closed')
     request.transactionPreflight = validation
-    if (validation.status === 'blocked') throw new Error(validation.message)
+    if (validation.status === 'blocked') {
+      if (validation.reason === 'dangerous_effects' && request.signingReview) request.signingReview.disposition = validation.disposition
+      throw new Error(validation.message)
+    }
     if (await this.#signer.getAddress() !== address) throw new Error('Wallet changed. Cancel and review a new request.')
     if (this.#request !== request) throw new Error('Request closed')
     if (decision && isCoverable(decision) && !(Date.now() < Date.parse(decision.decisionExpiresAt))) {
@@ -502,6 +587,7 @@ export class RequestService implements RequestApproval {
     if (currentTransactionBytes !== toBase64(decodeTransportBytes(request.data[0]!.transaction))) {
       throw new Error('Signing bytes changed during transaction validation')
     }
+    this.#assertSigningReview(request, address, consent)
     this.#signingRequestId = request.id
     const outputs = await buildSignTransactionOutputs(request.data, (m) => this.#signer.sign(m), address).catch((error: unknown) => {
       // A failed signing attempt ends this request. Never leave the dapp waiting
@@ -519,66 +605,90 @@ export class RequestService implements RequestApproval {
     if (this.#request !== request) {
       throw new Error('Request closed')
     }
-    const signedTransaction = outputs[0]?.signedTransaction
-    // The transaction's primary (fee-payer) signature is its on-chain id — the same
-    // base58 value getSignaturesForAddress returns — so the Activity feed can match it.
-    let signature: string | null = null
-    if (signedTransaction) {
-      try {
-        signature = getSignatureFromTransaction(getTransactionDecoder().decode(signedTransaction))
-      } catch {
-        signature = null
-      }
+    this.#signedCompletion = {
+      id: request.id,
+      phase: 'pending',
+      deliver: async () => {
+        const signedTransaction = outputs[0]?.signedTransaction
+        // The transaction's primary (fee-payer) signature is its on-chain id — the same
+        // base58 value getSignaturesForAddress returns — so the Activity feed can match it.
+        let signature: string | null = null
+        if (signedTransaction) {
+          try {
+            signature = getSignatureFromTransaction(getTransactionDecoder().decode(signedTransaction))
+          } catch {
+            signature = null
+          }
+        }
+        // Record the cover verdict locally for the Activity feed. This is a display
+        // cache only; Ember's lifecycle endpoints remain authoritative.
+        if (decision && signature) {
+          try {
+            const unsignedTransaction = request.data[0]?.transaction
+            const summary = unsignedTransaction ? decodeTransactionSummary(unsignedTransaction) : null
+            await coverRecords.record({
+              signature,
+              walletAddress: address,
+              coverStatus: toWalletCoverStatus(decision.coverStatus),
+              riskBand: decision.riskBand,
+              requestId: decision.requestId ?? null,
+              dappOrigin: request.origin ?? null,
+              title: summary?.primaryAction.label ?? null,
+              actionKind: summary?.primaryAction.kind ?? null,
+              amount: summary?.primaryAction.amount ?? null,
+              tokenSymbol: summary?.primaryAction.kind === 'sol_transfer' ? 'SOL' : null,
+              tokenMint: summary?.primaryAction.tokenMint ?? null,
+              recipient: summary?.primaryAction.recipient ?? null,
+              source: summary?.primaryAction.source ?? null,
+              feePayer: summary?.feePayer ?? address,
+              programs: summary?.instructions.map((instruction) => instruction.programName) ?? [],
+              cluster: walletClusterForChain(request.data[0]?.chain),
+              transactionStatus: 'signed',
+              broadcastOwner: 'dapp',
+              signedTransactionBase64: signedTransaction ? toBase64(new Uint8Array(signedTransaction)) : null,
+            })
+          } catch {
+            // Activity cache failure does not change the Ember evidence invariant.
+          }
+        }
+        // The exact signed bytes must be durable before the dapp receives them.
+        if (
+          this.#cover &&
+          decision &&
+          decision.coverStatus !== 'unavailable' &&
+          decision.requestId &&
+          signedTransaction
+        ) {
+          await this.#cover.postSign({
+            requestId: decision.requestId,
+            signedBytes: toBase64(new Uint8Array(signedTransaction)),
+            ...(signature ? { signature } : {}),
+            signingWalletPublicKey: address,
+            walletTimestamp: new Date().toISOString(),
+          })
+        }
+        request.resolve(outputs as unknown as TransportSignTransactionOutput[])
+        this.#clear()
+        void this.#closeWindow(request.windowId)
+      },
     }
-    // Record the cover verdict locally for the Activity feed. This is a display
-    // cache only; Ember's lifecycle endpoints remain authoritative.
-    if (decision && signature) {
-      try {
-        const unsignedTransaction = request.data[0]?.transaction
-        const summary = unsignedTransaction ? decodeTransactionSummary(unsignedTransaction) : null
-        await coverRecords.record({
-          signature,
-          walletAddress: address,
-          coverStatus: toWalletCoverStatus(decision.coverStatus),
-          riskBand: decision.riskBand,
-          requestId: decision.requestId ?? null,
-          dappOrigin: request.origin ?? null,
-          title: summary?.primaryAction.label ?? null,
-          actionKind: summary?.primaryAction.kind ?? null,
-          amount: summary?.primaryAction.amount ?? null,
-          tokenSymbol: summary?.primaryAction.kind === 'sol_transfer' ? 'SOL' : null,
-          tokenMint: summary?.primaryAction.tokenMint ?? null,
-          recipient: summary?.primaryAction.recipient ?? null,
-          source: summary?.primaryAction.source ?? null,
-          feePayer: summary?.feePayer ?? address,
-          programs: summary?.instructions.map((instruction) => instruction.programName) ?? [],
-          cluster: walletClusterForChain(request.data[0]?.chain),
-          transactionStatus: 'signed',
-          broadcastOwner: 'dapp',
-        })
-      } catch {
-        // Activity cache failure does not change the Ember evidence invariant.
-      }
+    await this.retrySigned(request.id)
+  }
+
+  /** Retry delivery of the retained output; this path never calls the vault. */
+  async retrySigned(id: string): Promise<void> {
+    const completion = this.#signedCompletion
+    if (!completion || completion.id !== id || this.#request?.id !== id) {
+      throw new Error('No signed request to recover')
     }
-    // The exact signed bytes must be durable before the dapp receives them.
-    if (
-      this.#cover &&
-      decision &&
-      decision.coverStatus !== 'unavailable' &&
-      decision.requestId &&
-      signedTransaction
-    ) {
-      await this.#cover.postSign({
-        requestId: decision.requestId,
-        signedBytes: toBase64(new Uint8Array(signedTransaction)),
-        ...(signature ? { signature } : {}),
-        signingWalletPublicKey: address,
-        walletTimestamp: new Date().toISOString(),
-      })
+    if (completion.phase === 'saving') throw new Error('Saving signed request is already in progress')
+    completion.phase = 'saving'
+    try {
+      await completion.deliver()
+    } catch (error) {
+      completion.phase = 'pending'
+      throw new Error('The signature was created but could not be saved. Retry saving; do not create another transaction.', { cause: error })
     }
-    request.resolve(outputs as unknown as TransportSignTransactionOutput[])
-    this.#clear()
-    void this.#closeWindow(request.windowId)
   }
 
   reject(id?: string): void {
@@ -642,6 +752,9 @@ export class RequestService implements RequestApproval {
 
   #clear(): void {
     this.#request = null
+    this.#signedCompletion = null
+    this.#signingRequestId = null
+    this.#signedTransactionRequestId = null
   }
 
   async #close(): Promise<void> {
@@ -670,12 +783,14 @@ export function registerRequestService(signer: VaultSigner, cover?: CoverProvide
   const approval: RequestApproval = {
     get: () => realRequestService?.get() ?? null,
     refreshCover: () => realRequestService?.refreshCover() ?? Promise.resolve(null),
+    retrySigned: (id: string) =>
+      realRequestService?.retrySigned(id) ?? Promise.reject(new Error('RequestService not registered')),
     approveConnect: (id?: string) =>
       realRequestService?.approveConnect(id) ?? Promise.reject(new Error('RequestService not registered')),
-    approveSignMessage: (id?: string) =>
-      realRequestService?.approveSignMessage(id) ?? Promise.reject(new Error('RequestService not registered')),
-    approveSignTransaction: (id?: string) =>
-      realRequestService?.approveSignTransaction(id) ?? Promise.reject(new Error('RequestService not registered')),
+    approveSignMessage: (id?: string, consent?: SigningConsent) =>
+      realRequestService?.approveSignMessage(id, consent) ?? Promise.reject(new Error('RequestService not registered')),
+    approveSignTransaction: (id?: string, consent?: SigningConsent) =>
+      realRequestService?.approveSignTransaction(id, consent) ?? Promise.reject(new Error('RequestService not registered')),
     reject: (id?: string) => {
       if (!realRequestService) {
         throw new Error('RequestService not registered')

@@ -239,6 +239,7 @@ function decisionResponse(
 ): CoverageDecisionResponse {
   return {
     coverStatus: 'covered',
+    signingDisposition: { status: 'allow' },
     coverageInstanceId: COVERAGE_INSTANCE_ID,
     decisionExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
     decisionId,

@@ -1,3 +1,5 @@
+import type { SimulationEffects } from '../signing/simulation-effects.ts'
+import type { SigningDisposition } from '../signing/signing-policy.ts'
 import type { PublicDecisionReason } from '@embercover/wallet-sdk'
 
 export type CoverStatus = 'covered' | 'not_covered' | 'unsupported' | 'unavailable'
@@ -49,6 +51,8 @@ export interface CoverDebugInfo {
 
 /** Pre-sign cover decision, mirroring the Ember API response. */
 export interface CoverDecision {
+  simulationEffects?: SimulationEffects | null
+  signingDisposition?: SigningDisposition | null
   requestId: string
   coverStatus: CoverStatus
   riskBand: RiskBand

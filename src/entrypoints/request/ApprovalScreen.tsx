@@ -1,3 +1,7 @@
+import { simulatedWalletImpact } from '../../signing/simulation-effects.ts'
+import { signingPolicyMessage } from '../../signing/signing-policy.ts'
+import type { SigningAcknowledgement, SigningConsent } from '../../signing/signing-policy.ts'
+import { messageRisk } from '../../signing/message-risk.ts'
 import { useEffect, useState } from 'react'
 
 import type { PendingRequestView } from '../../background/request-service.ts'
@@ -89,61 +93,6 @@ function debugValue(value: unknown): string {
   return String(value)
 }
 
-function hostFromOrigin(origin: string | undefined): string | null {
-  if (!origin) {
-    return null
-  }
-  try {
-    return new URL(origin).host.toLowerCase()
-  } catch {
-    return null
-  }
-}
-
-function hostsFromMessage(message: string): string[] {
-  const hosts = new Set<string>()
-  for (const match of message.matchAll(/\bhttps?:\/\/[^\s"'<>]+/gi)) {
-    try {
-      hosts.add(new URL(match[0]).host.toLowerCase())
-    } catch {
-      // Ignore text that looks like a URL but is not valid enough to compare.
-    }
-  }
-  for (const match of message.matchAll(/^\s*(domain|uri):\s*([^\s]+)\s*$/gim)) {
-    const value = match[2] ?? ''
-    try {
-      hosts.add(new URL(value.startsWith('http') ? value : `https://${value}`).host.toLowerCase())
-    } catch {
-      // Ignore non-host values.
-    }
-  }
-  return [...hosts]
-}
-
-function messageRisk(message: string, origin: string | undefined): { requiresAck: boolean; warning: string | null } {
-  if (message.startsWith('0x') || message.length > 500) {
-    return {
-      requiresAck: true,
-      warning: 'This message is not human-readable or is unusually long.',
-    }
-  }
-  const originHost = hostFromOrigin(origin)
-  const mismatchedHost = originHost ? hostsFromMessage(message).find((host) => host !== originHost) : null
-  if (mismatchedHost) {
-    return {
-      requiresAck: true,
-      warning: 'This message references a different site.',
-    }
-  }
-  if (/\b(authorize|permission|delegate|sign in|login|access|session|nonce|withdraw|transfer)\b/i.test(message)) {
-    return {
-      requiresAck: true,
-      warning: 'This message may authorize access with this site.',
-    }
-  }
-  return { requiresAck: false, warning: null }
-}
-
 function approvalLabel(args: {
   pending: PendingRequestView
   busy: boolean
@@ -200,19 +149,19 @@ function approvalLabel(args: {
   return 'Approve and sign'
 }
 
-function ImpactRows({ impact }: { impact: TxWalletImpact }) {
+function ImpactRows({ impact, testId = 'estimated-changes' }: { impact: TxWalletImpact; testId?: 'estimated-changes' | 'simulated-changes' }) {
   return (
-    <section className="ec-review-card" data-testid="estimated-changes">
+    <section className="ec-review-card" data-testid={testId}>
       <h2>{impact.title}</h2>
       <dl>
-        {impact.rows.map((row) => (
-          <div key={`${row.label}:${row.value}`} data-tone={row.tone}>
+        {impact.rows.map((row, index) => (
+          <div key={`${index}:${row.label}`} data-tone={row.tone}>
             <dt>{row.label}</dt>
             <dd>{row.value}</dd>
           </div>
         ))}
       </dl>
-      {impact.warning ? <p data-testid="impact-warning">{impact.warning}</p> : null}
+      {impact.warning ? <p data-testid={testId === 'estimated-changes' ? 'impact-warning' : 'simulation-warning'}>{impact.warning}</p> : null}
     </section>
   )
 }
@@ -242,6 +191,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const [txTab, setTxTab] = useState<TxTab>('details')
   const [messageTab, setMessageTab] = useState<MessageTab>('message')
   const [coverAcknowledged, setCoverAcknowledged] = useState(false)
+  const [safetyAcknowledged, setSafetyAcknowledged] = useState(false)
   const [impactAcknowledged, setImpactAcknowledged] = useState(false)
   const [messageAcknowledged, setMessageAcknowledged] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
@@ -308,13 +258,12 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     (refreshingCover || pending.coverChecking === true)
   const transactionBlocked = pending?.transactionPreflight?.status === 'blocked' ? pending.transactionPreflight : null
   const displayedCover = checkingCover || transactionBlocked ? null : cover
-  const coverExpired =
-    displayedCover?.coverStatus === 'covered' &&
-    displayedCover.decisionExpiresAt !== undefined &&
-    nowMs >= Date.parse(displayedCover.decisionExpiresAt)
+  const simulatedImpact = simulatedWalletImpact(displayedCover?.simulationEffects)
+  const reviewExpiry = pending?.signingReview?.expiresAt ?? (displayedCover?.coverStatus === 'covered' ? displayedCover.decisionExpiresAt : undefined)
+  const coverExpired = reviewExpiry !== undefined && !(nowMs < Date.parse(reviewExpiry))
   const coverBanner =
     pending?.type === 'signTransaction' || pending?.type === 'signMessage'
-      ? bannerView(displayedCover, checkingCover)
+      ? bannerView(displayedCover ?? (!checkingCover ? { coverStatus: 'unavailable', riskBand: 'low' } : null), checkingCover)
       : null
   const coverDisplayView = coverDisplay(displayedCover, coverBanner, coverExpired)
   const decodedMessage =
@@ -324,19 +273,23 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const messageRiskView = pending?.type === 'signMessage'
     ? messageRisk(decodedMessage, pending.origin)
     : { requiresAck: false, warning: null }
+  const signingReview = pending?.signingReview
+  const signingBlocked = signingReview?.disposition.status === 'block'
+  const safetyAckRequired = signingReview?.requiredAcknowledgements.includes('safety') ?? false
   const coverAckRequired = coverBanner?.showAck ?? false
   const impactAckRequired = pending?.type === 'signTransaction' && !!transactionImpact && !transactionImpact.isComplete
   const messageAckRequired = pending?.type === 'signMessage' && messageRiskView.requiresAck
-  const approveDisabled =
+  const approveDisabled = pending?.recoveryRequired ? busy :
     busy || pending?.signingStarted === true ||
-    !!transactionBlocked ||
+    !!transactionBlocked || signingBlocked ||
+    (pending?.type !== 'connect' && (!signingReview || (!coverExpired && safetyAckRequired && !safetyAcknowledged))) ||
     batchUnsupported ||
     (!coverExpired &&
       (checkingCover ||
         (coverAckRequired && !coverAcknowledged) ||
         (impactAckRequired && !impactAcknowledged) ||
         (messageAckRequired && !messageAcknowledged)))
-  const approveText = pending
+  const approveText = pending?.recoveryRequired ? (busy ? 'Saving…' : 'Retry saving signature') : signingBlocked ? 'Signing blocked' : pending
     ? approvalLabel({
         pending,
         busy,
@@ -362,6 +315,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     if (batchUnsupported) {
       return { label: 'BATCH', tone: 'failed' }
     }
+    if (signingBlocked) return { label: 'SIGNING BLOCKED', tone: 'failed' }
     if (transactionBlocked) {
       return { label: transactionBlocked.reason === 'expired' ? 'EXPIRED' : 'CANNOT SIGN', tone: 'failed' }
     }
@@ -388,15 +342,16 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
 
   useEffect(() => {
     setCoverAcknowledged(false)
-  }, [coverBanner?.label, coverBanner?.ackLabel])
+    setSafetyAcknowledged(false)
+  }, [coverBanner?.label, coverBanner?.ackLabel, signingReview?.reviewId])
 
   useEffect(() => {
     setImpactAcknowledged(false)
-  }, [transactionImpact?.warning])
+  }, [transactionImpact?.warning, signingReview?.reviewId])
 
   useEffect(() => {
     setMessageAcknowledged(false)
-  }, [decodedMessage])
+  }, [decodedMessage, signingReview?.reviewId])
 
   useEffect(() => {
     setTxTab('details')
@@ -447,23 +402,34 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     if (!pending || approveDisabled) {
       return
     }
-    if (coverExpired) {
+    if (coverExpired && !pending.recoveryRequired) {
       await refreshCoverDecision()
       return
     }
     setBusy(true)
     setError('')
     try {
+      if (pending.recoveryRequired) {
+        await request.retrySigned(pending.id)
+        onApproved()
+        return
+      }
       if (!(await ensureUnlocked())) {
         setBusy(false)
         return
       }
+      const acknowledged: SigningAcknowledgement[] = []
+      if (coverAcknowledged) acknowledged.push('coverage')
+      if (impactAcknowledged) acknowledged.push('effects')
+      if (messageAcknowledged) acknowledged.push('message')
+      if (safetyAcknowledged) acknowledged.push('safety')
+      const consent: SigningConsent = { reviewId: signingReview?.reviewId ?? '', acknowledged }
       if (pending.type === 'connect') {
         await request.approveConnect(pending.id)
       } else if (pending.type === 'signMessage') {
-        await request.approveSignMessage(pending.id)
+        await request.approveSignMessage(pending.id, consent)
       } else {
-        await request.approveSignTransaction(pending.id)
+        await request.approveSignTransaction(pending.id, consent)
       }
       onApproved()
     } catch (e) {
@@ -519,12 +485,18 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   }
 
   function CoverDecisionPanel() {
+    if (signingBlocked && signingReview) {
+      return <section className="ec-review-card" role="alert" data-testid="signing-blocked">
+        <h3>Signing blocked</h3>
+        <p>{signingPolicyMessage(signingReview.disposition)}</p>
+      </section>
+    }
     if (transactionBlocked) {
       return (
         <section className="ec-review-card" role="alert" data-testid="transaction-preflight-error">
           <h3>{transactionBlocked.reason === 'expired' ? 'Transaction expired' : 'Transaction cannot be signed'}</h3>
           <p>{transactionBlocked.message}</p>
-          {transactionBlocked.details ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{transactionBlocked.details}</pre> : null}
+          {'details' in transactionBlocked && transactionBlocked.details ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{transactionBlocked.details}</pre> : null}
           {transactionBlocked.reason !== 'expired' && transactionBlocked.reason !== 'invalid_transaction' ? (
             <button className="ec-secondary" disabled={busy || checkingCover} onClick={() => void refreshCoverDecision()}>Retry transaction check</button>
           ) : null}
@@ -581,7 +553,13 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   function renderActionFooter() {
     return (
       <>
-        {!coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
+        {!coverExpired && safetyAckRequired && signingReview && !signingBlocked ? (
+          <label className="ec-ack">
+            <input data-testid="safety-ack" type="checkbox" checked={safetyAcknowledged} onChange={(event) => setSafetyAcknowledged(event.target.checked)} />
+            <span>{signingPolicyMessage(signingReview.disposition)} I understand and want to proceed.</span>
+          </label>
+        ) : null}
+        {!signingBlocked && !coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
           <label className="ec-ack">
             <input
               data-testid="cover-ack"
@@ -592,7 +570,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
             {coverBanner.ackLabel}
           </label>
         ) : null}
-        {impactAckRequired ? (
+        {!signingBlocked && impactAckRequired ? (
           <label className="ec-ack">
             <input
               data-testid="impact-ack"
@@ -603,7 +581,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
             I understand balance changes could not be fully estimated.
           </label>
         ) : null}
-        {messageAckRequired ? (
+        {!signingBlocked && messageAckRequired ? (
           <label className="ec-ack">
             <input
               data-testid="message-ack"
@@ -735,6 +713,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
           ) : transactionImpact ? (
             <>
               <ImpactRows impact={transactionImpact} />
+              {simulatedImpact ? <ImpactRows impact={simulatedImpact} testId="simulated-changes" /> : null}
               {transactionSummary?.warnings.length ? (
                 <ul data-testid="tx-warnings">
                   {transactionSummary.warnings.map((warning) => (
@@ -761,14 +740,23 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
               {transactionSummary ? (
                 <>
                   <h2>Transaction details</h2>
-                  {transactionSummary.primaryAction.amount ? <p>Amount {transactionSummary.primaryAction.amount}</p> : null}
-                  {transactionSummary.primaryAction.recipient ? <p>To {shortAddress(transactionSummary.primaryAction.recipient)}</p> : null}
-                  {transactionSummary.primaryAction.tokenMint ? <p>Token {shortAddress(transactionSummary.primaryAction.tokenMint)}</p> : null}
                   <p>Fee payer {shortAddress(transactionSummary.feePayer)}</p>
                   <h3>Instructions</h3>
                   <ul>
                     {transactionSummary.instructions.map((ix, i) => (
-                      <li key={i}>{ix.instructionName ? `${ix.programName}: ${ix.instructionName}` : ix.programName}</li>
+                      <li key={i} className="ec-transaction-instruction">
+                        {ix.instructionName ? `${ix.programName}: ${ix.instructionName}` : ix.programName}
+                        {ix.effect.status === 'understood' ? (
+                          <>
+                            <p>{ix.effect.action.label}{ix.effect.action.amount ? `: ${ix.effect.action.amount}` : ''}</p>
+                            {ix.effect.action.source ? <p>Source account {ix.effect.action.source}</p> : null}
+                            {ix.effect.action.kind === 'authority_change'
+                              ? <p>New authority {ix.effect.action.recipient ?? 'Authority removed'}</p>
+                              : ix.effect.action.recipient ? <p>Destination account {ix.effect.action.recipient}</p> : null}
+                            {ix.effect.action.tokenMint ? <p>Token mint {ix.effect.action.tokenMint}</p> : null}
+                          </>
+                        ) : ix.effect.status === 'unknown' ? <p>Effects unknown</p> : <p>Compute configuration</p>}
+                      </li>
                     ))}
                   </ul>
                   {transactionSummary.instructions.length === 0 ? <p>No instructions</p> : null}

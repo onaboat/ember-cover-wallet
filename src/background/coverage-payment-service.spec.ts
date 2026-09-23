@@ -252,14 +252,14 @@ function clientStub(
       termsVersion: offer.termsVersion,
       walletSubjectId: 'wallet_subject_test',
     })),
-    createPayment: vi.fn(async (request: { paymentSignature: string }) => ({
+    createPayment: vi.fn(async (request: { paymentSignature: string }): Promise<PaymentResponse> => ({
       ...PAYMENT,
       paymentSignature: request.paymentSignature,
     })),
     createQuote: vi.fn(async () => quote),
     getCoverageInstance: vi.fn(async () => COVERAGE),
     getOffer: vi.fn(async () => offer),
-    getPayment: vi.fn(async () => PAYMENT),
+    getPayment: vi.fn(async (): Promise<PaymentResponse> => PAYMENT),
     listOffers: vi.fn(async () => ({ offers: [offer] })),
     verifyQuote: vi.fn(async () => {}),
   }
@@ -582,4 +582,25 @@ test('persists the signed quote-bound transaction before its first broadcast', a
   )
   expect(result.coverActive).toBe(true)
   expect(result.state.coverageEndsAt).toBe(COVERAGE.coverageEndsAt)
+})
+
+
+test('paces pending activation reads and persists registration before waiting', async () => {
+  const client = clientStub()
+  const pending: PaymentResponse = { ...PAYMENT, status: 'pending', coverageInstanceId: null }
+  client.createPayment.mockResolvedValue(pending)
+  client.getPayment.mockResolvedValueOnce(pending).mockResolvedValue(PAYMENT)
+  const wait = vi.fn(async (_milliseconds: number) => {
+    const state = await storage.getItem<{ payment: PaymentResponse }>('local:ember-coverage-payment:v3')
+    expect(state?.payment.paymentId).toBe(pending.paymentId)
+  })
+  const provider = new CoveragePaymentProvider(signer, coverStub(client), {
+    config: CONFIG, now: () => NOW, rpcFactory: () => rpcStub(), wait,
+  })
+  const preview = await provider.previewPayment({ acceptedTerms: true, cluster: 'mainnet-beta', offerId: OFFER.offerId })
+  const result = await provider.activatePayment(preview.quoteId)
+  expect(result.coverActive).toBe(true)
+  expect(wait.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([1000, 2000])
+  expect(client.createPayment).toHaveBeenCalledTimes(1)
+  expect(signer.sign).toHaveBeenCalledTimes(1)
 })

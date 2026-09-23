@@ -14,11 +14,11 @@ import {
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUTPUT = path.join(ROOT, '.output', ...(process.env.EMBER_BUILD_PROFILE === 'candidate-devnet-qa' ? ['qa-candidate'] : []), 'chrome-mv3')
 const SDK_PACKAGE = '@embercover/wallet-sdk'
-const EXPECTED_SDK_VERSION = '1.3.2-beta.3'
-const SDK_TARBALL = 'vendor/embercover-wallet-sdk-1.3.2-beta.3.tgz'
+const EXPECTED_SDK_VERSION = '1.3.2-beta.5'
+const SDK_TARBALL = 'vendor/embercover-wallet-sdk-1.3.2-beta.5.tgz'
 const EXPECTED_SDK_SPEC = `file:${SDK_TARBALL}`
 const EXPECTED_SDK_SHA256 =
-  '2f344615b3f9b00726845cd321a0bc82ac5bda968fef24147268750d4c539b27'
+  'fdb8ee286f525f8986ea807ff3bf315613e9017d5161801ddb9ff1f643251214'
 const RETIRED_BUNDLE_MARKERS = [
   'EMBER_PARTNER_API_KEY',
   'test-partner-key',

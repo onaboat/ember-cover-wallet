@@ -123,7 +123,7 @@ test('API failure marks cached records as non-authoritative', async () => {
   const store = new EmberLifecycleStore()
   await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, null)
   const snapshot = await store.refresh(COVERAGE.protectedWallet, {
-    getPayment: async () => {
+    getCurrentCoverage: async () => {
       throw new Error('offline')
     },
   } as never)
@@ -153,7 +153,7 @@ test('decision coverage lookup never synchronizes decisions, lineage, or claims'
     client as never,
   )
 
-  expect(snapshot.authority).toBe('cache')
+  expect(snapshot.authority).toBe('server')
   expect(snapshot.coverage?.coverageInstanceId).toBe(COVERAGE.coverageInstanceId)
   expect(client.getPayment).not.toHaveBeenCalled()
   expect(client.getCoverageInstance).not.toHaveBeenCalled()
@@ -197,4 +197,52 @@ test('discovers paid coverage without any saved payment or coverage references',
   expect(getCurrentCoverage).toHaveBeenCalledOnce()
   expect(snapshot.coverage?.coverageInstanceId).toBe(COVERAGE.coverageInstanceId)
   expect(snapshot.allowance?.available).toBe(95)
+})
+
+test('old payment failure does not prevent discovery of current active coverage', async () => {
+  const store = new EmberLifecycleStore(() => new Date('2026-09-22T00:00:00Z'))
+  await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, COVERAGE)
+  const getCurrentCoverage = vi.fn(async () => ({ status: 'active', coverage: { ...COVERAGE, coverageInstanceId: 'fresh-coverage' }, allowance: { limit: 10, committed: 0, reserved: 0, available: 10 } }))
+  const client = { getPayment: async () => { throw new Error('payment not found') }, getCurrentCoverage } as never
+  const refreshed = await store.refresh(COVERAGE.protectedWallet, client)
+  expect(refreshed.authority).toBe('server')
+  expect(refreshed.historyError).toContain('history')
+  expect(getCurrentCoverage).toHaveBeenCalled()
+  const resolved = await store.resolveCoverageForDecision(COVERAGE.protectedWallet, client)
+  expect(resolved.coverage?.coverageInstanceId).toBe('fresh-coverage')
+  expect(getCurrentCoverage).toHaveBeenCalled()
+})
+
+test('missing decision history preserves fresh coverage and identifies cached history', async () => {
+  const store = new EmberLifecycleStore()
+  await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, COVERAGE)
+  await store.recordDecision({ walletAddress: COVERAGE.protectedWallet, decision: DECISION })
+  const fresh = { ...COVERAGE, coverageInstanceId: 'new-authority' }
+  const snapshot = await store.refresh(COVERAGE.protectedWallet, {
+    getPayment: async () => PAYMENT,
+    getCurrentCoverage: async () => ({ status: 'active', coverage: fresh, allowance: { limit: 10, committed: 0, reserved: 0, available: 10 } }),
+    getDecision: async () => { throw new Error('not found') },
+    getDecisionLineage: async () => { throw new Error('not found') },
+    listClaims: async () => ({ claims: [] }),
+  } as never)
+  expect(snapshot.authority).toBe('server')
+  expect(snapshot.coverage?.coverageInstanceId).toBe('new-authority')
+  expect(snapshot.allowance?.available).toBe(10)
+  expect(snapshot.historyError).toContain('history')
+  expect(snapshot.decisions[0]?.decisionId).toBe(DECISION.decisionId)
+})
+
+
+test('fresh backend absence stays authoritative when old payment history no longer exists', async () => {
+  const store = new EmberLifecycleStore()
+  await store.recordPayment(COVERAGE.protectedWallet, PAYMENT, COVERAGE)
+  const client = {
+    getCurrentCoverage: async () => ({ status: 'none' as const }),
+    getPayment: async () => { throw new Error('payment not found') },
+    listClaims: async () => ({ claims: [] }),
+  }
+  const snapshot = await store.refresh(COVERAGE.protectedWallet, client as never)
+  expect(snapshot).toMatchObject({ authority: 'server', coverage: null, allowance: null, error: null })
+  expect(snapshot.payment).toEqual(PAYMENT)
+  expect(snapshot.historyError).toContain('history')
 })
