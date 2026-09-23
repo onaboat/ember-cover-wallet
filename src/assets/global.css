@@ -491,11 +491,8 @@ pre {
   margin: 0;
 }
 
-/* ── Approval review: a calm bank-statement system ──────────────────────────
-   The approval renders as a task screen inside the wallet shell (App owns the app
-   bar). The screen's own 16px gutter (.ec-task-screen padding) aligns every block;
-   review cards go flat so only the tinted coverage band reads as emphasis. One
-   tight type scale: eyebrow 11 / body 13 / verdict 14. */
+/* Approval review lives inside the existing wallet shell. Coverage state wraps
+   the amount summary; warnings and technical details remain separate. */
 .ec-approval-screen {
   font-size: 13px;
 }
@@ -556,12 +553,12 @@ pre {
 /* Coverage: a tinted assurance block, boxed inboard at the screen gutter. */
 .ec-approval-screen .ec-cover-decision {
   margin: 0;
-  padding: var(--ec-space-4);
+  padding: 14px;
   border-radius: var(--ec-radius-md);
   box-shadow: none;
   background: var(--ec-paper-muted);
   border: 1px solid var(--ec-rule);
-  gap: var(--ec-space-2);
+  gap: 14px;
 }
 .ec-approval-screen .ec-cover-decision[data-tone='covered'] {
   background: var(--ec-covered-soft);
@@ -1556,3 +1553,78 @@ label {
     animation: none !important;
   }
 }
+
+/* Transaction approval: the same coverage frame contains the amount in every state. */
+.ec-approval-screen .ec-cover-callout-title { font-size: 18px; }
+.ec-approval-screen .ec-approval-amounts {
+  background: var(--ec-paper-raised);
+  border: 1px solid var(--ec-rule);
+  border-radius: var(--ec-radius-md);
+  padding: 14px;
+  min-width: 0;
+}
+.ec-approval-screen .ec-approval-amounts .ec-amount-label,
+.ec-approval-screen .ec-approval-amounts .ec-amount-note {
+  margin: 0;
+  color: var(--ec-ink-muted);
+  font-size: 12px;
+}
+.ec-approval-screen .ec-approval-amounts .ec-amount-total {
+  margin: 5px 0;
+  font-size: clamp(20px, 6vw, 28px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.ec-approval-screen .ec-amount-total[data-tone='negative'] { color: var(--ec-blocked); }
+.ec-approval-screen .ec-amount-total[data-tone='positive'] { color: var(--ec-covered); }
+.ec-approval-screen .ec-approval-amounts dl {
+  border-top: 1px solid var(--ec-rule);
+  padding-top: 10px;
+  margin-top: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ec-approval-screen .ec-approval-amounts dl dt,
+.ec-approval-screen .ec-approval-amounts dl dd { font-size: 12px; overflow-wrap: anywhere; }
+.ec-approval-recipients { display: grid; gap: 5px; min-width: 0; }
+.ec-approval-recipients p { margin: 0; }
+.ec-approval-recipients summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 5px 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.ec-recipient-address { font-family: var(--ec-font-mono); text-decoration: underline; text-underline-offset: 3px; }
+.ec-approval-screen .ec-full-address { overflow-wrap: anywhere; font-size: 12px; }
+.ec-approval-warning {
+  display: grid;
+  gap: 10px;
+  background: var(--ec-warning-soft);
+  border-radius: var(--ec-radius-md);
+  padding: 12px;
+  font-size: 12px;
+}
+.ec-approval-warning p { margin: 4px 0 0; }
+.ec-cover-details, .ec-transaction-details { border-top: 1px solid var(--ec-rule); min-width: 0; }
+.ec-cover-details > summary, .ec-transaction-details > summary { padding: 10px 0 0; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ec-cover-details p { margin: 10px 0 0; }
+.ec-transaction-details .ec-tablist { margin: 12px 0; }
+.ec-approval-screen .ec-approval-actions {
+  flex-direction: row;
+  position: sticky;
+  bottom: -1px;
+  z-index: 2;
+  margin: 0 calc(-1 * var(--ec-space-4)) calc(-1 * var(--ec-space-5));
+  padding: 12px var(--ec-space-4) 16px;
+  background: var(--ec-paper-raised);
+  border-top: 1px solid var(--ec-rule);
+}
+.ec-approval-actions button { flex: 1; min-width: 0; padding: 10px 8px; font-size: 13px; }
+.ec-approval-actions button.ec-primary { flex: 1.5; }
+.ec-approval-screen .ec-ack { font-size: 12px; }

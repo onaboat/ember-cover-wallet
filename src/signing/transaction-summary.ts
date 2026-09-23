@@ -57,6 +57,7 @@ export type TxPrimaryAction = TxActionDetails & (
 
 export interface TxSummary {
   feePayer: string
+  baseNetworkFeeLamports: bigint | null
   estimatedNetworkFee: string | null
   instructions: TxInstructionSummary[]
   primaryAction: TxPrimaryAction
@@ -392,7 +393,8 @@ export function decodeTransactionSummary(
       ? actions[0]!
       : defaultAction(materialInstructions.length)
     const requiredSignatureCount = Object.keys(tx.signatures).length
-    const estimatedNetworkFee = requiredSignatureCount > 0 ? `${formatIntegerAmount(BigInt(requiredSignatureCount) * 5000n, 9)} SOL` : null
+    const baseNetworkFeeLamports = requiredSignatureCount > 0 ? BigInt(requiredSignatureCount) * 5000n : null
+    const estimatedNetworkFee = baseNetworkFeeLamports !== null ? `${formatIntegerAmount(baseNetworkFeeLamports, 9)} SOL` : null
     const warnings: string[] = []
     const solMovements = actions.filter((action) => action.kind === 'sol_transfer' || action.kind === 'account_creation')
     if (solMovements.length > 1) {
@@ -409,7 +411,7 @@ export function decodeTransactionSummary(
     if (materialInstructions.some((instruction) => instruction.effect.status === 'unknown')) {
       warnings.push('The wallet cannot explain every instruction in this transaction. A program may change balances or account control beyond the effects shown here.')
     }
-    return { feePayer: String(feePayer), estimatedNetworkFee, instructions, primaryAction, warnings, signingBlock }
+    return { feePayer: String(feePayer), baseNetworkFeeLamports, estimatedNetworkFee, instructions, primaryAction, warnings, signingBlock }
   } catch {
     return null
   }

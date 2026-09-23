@@ -1,8 +1,11 @@
 import { simulatedWalletImpact } from '../../signing/simulation-effects.ts'
 import { signingPolicyMessage } from '../../signing/signing-policy.ts'
-import type { SigningAcknowledgement, SigningConsent } from '../../signing/signing-policy.ts'
+import type { SigningAcknowledgement, SigningConsent, SigningDisposition } from '../../signing/signing-policy.ts'
 import { messageRisk } from '../../signing/message-risk.ts'
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { approvalPresentation } from '../../signing/approval-presentation.ts'
+import { TransactionAmounts, TransactionRecipients, TransactionWarnings } from './TransactionPresentation.tsx'
 
 import type { PendingRequestView } from '../../background/request-service.ts'
 import { getRequestApproval } from '../../background/request-service.ts'
@@ -90,9 +93,9 @@ export function coverDisplay(
   }
   if (cover?.coverStatus === 'covered' && fallback.tone === 'covered' && impactIncomplete) {
     return {
-      label: 'Cover available; effects unclear',
-      body: 'Cover is available for this approval, but the wallet cannot fully estimate its balance changes.',
-      tone: 'warning',
+      label: 'Covered',
+      body: 'Cover is available for this approval. Some effects remain unknown.',
+      tone: 'covered',
       nextAction: null,
     }
   }
@@ -108,6 +111,12 @@ function debugValue(value: unknown): string {
   if (value === undefined || value === null || value === '') return 'Unknown'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   return String(value)
+}
+
+/** Only omit safety copy when the combined effects sentence covers the same fact. */
+export function transactionSafetyAcknowledgement(disposition: SigningDisposition, effectsAcknowledgement: boolean): string | null {
+  if (effectsAcknowledgement && disposition.status === 'acknowledge' && disposition.reason === 'unsupported_effects') return null
+  return signingPolicyMessage(disposition)
 }
 
 function approvalLabel(args: {
@@ -166,7 +175,7 @@ function approvalLabel(args: {
   return 'Approve and sign'
 }
 
-function ImpactRows({ impact, testId = 'estimated-changes' }: { impact: TxWalletImpact; testId?: 'estimated-changes' | 'simulated-changes' }) {
+function ImpactRows({ impact, testId = 'estimated-changes' }: { impact: TxWalletImpact; testId?: 'estimated-changes' | 'simulated-changes' | 'decoded-changes' }) {
   return (
     <section className="ec-review-card" data-testid={testId}>
       <h2>{impact.title}</h2>
@@ -178,7 +187,7 @@ function ImpactRows({ impact, testId = 'estimated-changes' }: { impact: TxWallet
           </div>
         ))}
       </dl>
-      {impact.warning ? <p data-testid={testId === 'estimated-changes' ? 'impact-warning' : 'simulation-warning'}>{impact.warning}</p> : null}
+      {impact.warning ? <p data-testid={testId === 'simulated-changes' ? 'simulation-warning' : 'decoded-impact-warning'}>{impact.warning}</p> : null}
     </section>
   )
 }
@@ -278,6 +287,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
   const transactionBlocked = pending?.transactionPreflight?.status === 'blocked' ? pending.transactionPreflight : null
   const displayedCover = checkingCover || transactionBlocked ? null : cover
   const simulatedImpact = simulatedWalletImpact(displayedCover?.simulationEffects)
+  const presentation = approvalPresentation(transactionSummary, signingAddress, displayedCover?.simulationEffects)
   const reviewExpiry = pending?.signingReview?.expiresAt ?? (displayedCover?.coverStatus === 'covered' ? displayedCover.decisionExpiresAt : undefined)
   const coverExpired = reviewExpiry !== undefined && !(nowMs < Date.parse(reviewExpiry))
   const coverBanner =
@@ -508,18 +518,20 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
     )
   }
 
-  function CoverDecisionPanel() {
+  function renderCoverDecisionPanel(amounts?: ReactNode) {
     if (signingBlocked && signingReview) {
-      return <section className="ec-review-card" role="alert" data-testid="signing-blocked">
+      return <section className="ec-review-card ec-cover-decision" data-tone="blocked" data-testid="cover-section"><div role="alert" data-testid="signing-blocked">
         <h3>Signing blocked</h3>
-        <p>{signingPolicyMessage(signingReview.disposition)}</p>
+        <p>{signingPolicyMessage(signingReview.disposition)}</p></div>
+        {amounts}
       </section>
     }
     if (transactionBlocked) {
       return (
-        <section className="ec-review-card" role="alert" data-testid="transaction-preflight-error">
+        <section className="ec-review-card ec-cover-decision" data-tone="blocked" data-testid="cover-section"><div role="alert" data-testid="transaction-preflight-error">
           <h3>{transactionBlocked.reason === 'expired' ? 'Transaction expired' : 'Transaction cannot be signed'}</h3>
-          <p>{transactionBlocked.message}</p>
+          <p>{transactionBlocked.message}</p></div>
+          {amounts}
           {'details' in transactionBlocked && transactionBlocked.details ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{transactionBlocked.details}</pre> : null}
           {transactionBlocked.reason !== 'expired' && transactionBlocked.reason !== 'invalid_transaction' ? (
             <button className="ec-secondary" disabled={busy || checkingCover} onClick={() => void refreshCoverDecision()}>Retry transaction check</button>
@@ -528,7 +540,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
       )
     }
     if (!coverDisplayView) {
-      return null
+      return amounts ? <section className="ec-review-card ec-cover-decision" data-tone="checking" data-testid="cover-section">{amounts}</section> : null
     }
     return (
       <section
@@ -549,6 +561,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
             <span className="ec-help" data-testid="cover-body">{coverDisplayView.body}</span>
           </span>
         </div>
+        {amounts}
         {coverDisplayView.nextAction === 'setup' ? (
           <div className="ec-actions">
             <button className="ec-secondary" data-testid="cover-next-step" onClick={onSetupCover} type="button">
@@ -582,7 +595,16 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
             </button>
           </div>
         ) : null}
-        {displayedCover?.debug ? <CoverDebugPanel debug={displayedCover.debug} /> : null}
+        <details className="ec-cover-details" data-testid="cover-details">
+          <summary>Cover details</summary>
+          <p>{coverDisplayView.body}</p>
+          {displayedCover?.debug?.decisionReason === 'coverage_limit_reached' ? <p>Your cover allowance has been reached.</p> : null}
+          {displayedCover?.capContext ? <p>Cover checks remaining: {displayedCover.capContext.remainingCoveredTxThisMonth}</p> : null}
+          {displayedCover?.decisionExpiresAt ? <p>Assessment valid until {new Date(displayedCover.decisionExpiresAt).toLocaleTimeString()}. The wallet rechecks expired assessments before signing.</p> : null}
+          {displayedCover?.debug?.requestId ? <p className="ec-full-address">Support reference: {displayedCover.debug?.requestId}</p> : null}
+          {displayedCover?.coverStatus === 'covered' ? <p>Cover applies subject to the terms for this approval. Coverage does not remove transaction risks.</p> : null}
+          {displayedCover?.debug ? <CoverDebugPanel debug={displayedCover.debug} /> : null}
+        </details>
       </section>
     )
   }
@@ -590,13 +612,30 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
   function renderActionFooter() {
     return (
       <>
-        {!coverExpired && safetyAckRequired && signingReview && !signingBlocked ? (
+        {pending?.type === 'signTransaction' && !coverExpired && !signingBlocked && !transactionBlocked && (safetyAckRequired || coverAckRequired || impactAckRequired) ? (
+          <label className="ec-ack">
+            <input data-testid="transaction-ack" type="checkbox"
+              checked={(!safetyAckRequired || safetyAcknowledged) && (!coverAckRequired || coverAcknowledged) && (!impactAckRequired || impactAcknowledged)}
+              onChange={event => {
+                setSafetyAcknowledged(safetyAckRequired && event.currentTarget.checked)
+                setCoverAcknowledged(coverAckRequired && event.currentTarget.checked)
+                setImpactAcknowledged(impactAckRequired && event.currentTarget.checked)
+              }} />
+            <span>{[
+              coverAckRequired && displayedCover?.coverStatus !== 'covered' ? 'I understand I am signing without cover.' : null,
+              impactAckRequired ? 'Some balance or permission changes could not be fully estimated.' : null,
+              safetyAckRequired && signingReview ? transactionSafetyAcknowledgement(signingReview.disposition, impactAckRequired) : null,
+              coverAckRequired && displayedCover?.coverStatus === 'covered' ? 'I understand this transaction is high risk.' : null,
+            ].filter(Boolean).join(' ')}</span>
+          </label>
+        ) : null}
+        {pending?.type !== 'signTransaction' && !coverExpired && safetyAckRequired && signingReview && !signingBlocked ? (
           <label className="ec-ack">
             <input data-testid="safety-ack" type="checkbox" checked={safetyAcknowledged} onChange={(event) => setSafetyAcknowledged(event.target.checked)} />
             <span>{signingPolicyMessage(signingReview.disposition)} I understand and want to proceed.</span>
           </label>
         ) : null}
-        {!signingBlocked && !coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
+        {pending?.type !== 'signTransaction' && !signingBlocked && !coverExpired && coverAckRequired && coverBanner?.ackLabel ? (
           <label className="ec-ack">
             <input
               data-testid="cover-ack"
@@ -605,17 +644,6 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
               onChange={(e) => setCoverAcknowledged(e.currentTarget.checked)}
             />
             {coverBanner.ackLabel}
-          </label>
-        ) : null}
-        {!signingBlocked && impactAckRequired ? (
-          <label className="ec-ack">
-            <input
-              data-testid="impact-ack"
-              type="checkbox"
-              checked={impactAcknowledged}
-              onChange={(e) => setImpactAcknowledged(e.currentTarget.checked)}
-            />
-            I understand balance changes could not be fully estimated.
           </label>
         ) : null}
         {!signingBlocked && messageAckRequired ? (
@@ -652,13 +680,13 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
             </span>
           </label>
         ) : null}
-        <div className="ec-actions">
+        <div className="ec-actions ec-approval-actions">
+          <button className="ec-secondary" data-testid="reject" disabled={busy || pending?.signingStarted} onClick={() => void onReject()}>
+            Cancel
+          </button>
           <button className="ec-primary" data-testid="approve" disabled={approveDisabled} onClick={() => void onApprove()}>
             {checkingCover ? <span className="ec-button-spinner" aria-hidden="true" /> : null}
             {approveText}
-          </button>
-          <button className="ec-secondary" data-testid="reject" disabled={busy || pending?.signingStarted} onClick={() => void onReject()}>
-            Cancel
           </button>
         </div>
         {error ? <p data-testid="error">{error}</p> : null}
@@ -679,7 +707,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
       <div className="ec-screen-head">
         <div>
           <span className="ec-control-label">Approval</span>
-          <h2>{requestTitle(pending, transactionSummary)}</h2>
+          <h2>{pending.type === 'signTransaction' && !batchUnsupported ? presentation.title : requestTitle(pending, transactionSummary)}</h2>
         </div>
         <span className="ec-status-badge" data-tone={requestBadge.tone}>
           {requestBadge.label}
@@ -691,7 +719,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
           {pending.origin}
         </p>
       ) : null}
-      <p className="ec-account" data-testid="account">{address}</p>
+      <p className="ec-account" data-testid="account">Wallet · {shortAddress(signingAddress)}</p>
       </div>
 
       {pending.type === 'connect' ? (
@@ -715,7 +743,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
                 <p>This will not move funds, but it may prove ownership or authorize access.</p>
                 {messageRiskView.warning ? <p data-testid="message-warning">{messageRiskView.warning}</p> : null}
               </section>
-              <CoverDecisionPanel />
+              {renderCoverDecisionPanel()}
               <div className="ec-tablist" role="tablist" aria-label="Message request">
                 <button type="button" aria-selected={messageTab === 'message'} onClick={() => setMessageTab('message')}>
                   Message
@@ -747,21 +775,15 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
               <h2>Multiple transactions</h2>
               <p>Ember can review one transaction at a time. Cancel and retry with a single transaction.</p>
             </section>
-          ) : transactionImpact ? (
+          ) : (
             <>
-              <ImpactRows impact={transactionImpact} />
-              {simulatedImpact ? <ImpactRows impact={simulatedImpact} testId="simulated-changes" /> : null}
-              {transactionSummary?.warnings.length ? (
-                <ul data-testid="tx-warnings">
-                  {transactionSummary.warnings.map((warning) => (
-                    <li key={warning}>{warning}</li>
-                  ))}
-                </ul>
-              ) : null}
+              <TransactionRecipients view={presentation} />
+              {!signingBlocked && !transactionBlocked ? <TransactionWarnings view={presentation} /> : null}
+              {renderCoverDecisionPanel(<TransactionAmounts view={presentation} />)}
             </>
-          ) : null}
-          {!batchUnsupported && pending.type === 'signTransaction' ? <CoverDecisionPanel /> : null}
-          {renderActionFooter()}
+          )}
+          {!batchUnsupported ? <details className="ec-transaction-details" data-testid="transaction-details-disclosure">
+            <summary>Transaction details</summary>
           {!batchUnsupported ? (
             <div className="ec-tablist" role="tablist" aria-label="Transaction request">
               <button type="button" aria-selected={txTab === 'details'} onClick={() => setTxTab('details')}>
@@ -777,6 +799,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
               {transactionSummary ? (
                 <>
                   <h2>Transaction details</h2>
+                  {transactionImpact ? <ImpactRows impact={transactionImpact} testId="decoded-changes" /> : null}
+                  {simulatedImpact ? <ImpactRows impact={simulatedImpact} testId="simulated-changes" /> : null}
                   <p>Fee payer {shortAddress(transactionSummary.feePayer)}</p>
                   <h3>Instructions</h3>
                   <ul>
@@ -809,6 +833,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
               <pre>{JSON.stringify(pending.data, null, 2)}</pre>
             </section>
           ) : null}
+          </details> : null}
+          {renderActionFooter()}
         </div>
       ) : null}
 

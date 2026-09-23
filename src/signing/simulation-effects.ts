@@ -14,6 +14,15 @@ function amount(value: string): bigint {
   return result
 }
 
+/** A validated wallet-relative net observation, already including fees. */
+export function observedSolChange(effects: SimulationEffects | null | undefined): bigint | null {
+  if (!effects || effects.solBalanceBefore == null || effects.solBalanceAfter == null) return null
+  try {
+    amount(effects.contextSlot)
+    return amount(effects.solBalanceAfter) - amount(effects.solBalanceBefore)
+  } catch { return null }
+}
+
 function change(before: string, after: string, decimals: number): Pick<TxImpactRow, 'value' | 'tone'> {
   const delta = amount(after) - amount(before)
   const absolute = delta < 0n ? -delta : delta

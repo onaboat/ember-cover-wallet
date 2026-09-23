@@ -30,6 +30,8 @@ interface SessionChallenge {
 }
 
 export interface EmberApiFixture {
+  /** Seed test-only entitlement state without a payment or network transaction. */
+  setActiveCoverage(walletAddress: string | null): void
   decisionEvidence: Array<{
     decisionId: string
     request: SubmitDecisionEvidenceRequest
@@ -714,7 +716,12 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
   })
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () =>
-      resolve({ decisionEvidence, origins, requests, rpcTransactions, server }),
+      resolve({ decisionEvidence, origins, requests, rpcTransactions, server,
+        setActiveCoverage(walletAddress) {
+          activatedWalletAddress = walletAddress
+          activatedPayment = walletAddress ? paymentResponse(base58Encode(new Uint8Array(64).fill(47))) : null
+        },
+      }),
     )
   })
 }
