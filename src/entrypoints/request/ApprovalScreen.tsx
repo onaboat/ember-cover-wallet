@@ -47,11 +47,12 @@ function requestTitle(pending: PendingRequestView, summary: TxSummary | null): s
   return summary?.primaryAction.label ?? 'Review transaction'
 }
 
-function coverDisplay(
+export function coverDisplay(
   cover: NonNullable<PendingRequestView['cover']> | null,
   fallback: ReturnType<typeof bannerView> | null,
   expired: boolean,
-): { label: string; body: string; tone: string; nextAction: 'setup' | 'retry' | null } | null {
+  impactIncomplete: boolean,
+): { label: string; body: string; tone: string; nextAction: 'setup' | 'retry' | 'reconnect' | null } | null {
   if (!fallback?.label) {
     return null
   }
@@ -64,9 +65,17 @@ function coverDisplay(
     }
   }
   if (cover?.debug?.stage === 'not_enrolled') {
+    if (cover.debug.apiAttempted === false) {
+      return {
+        label: 'Ember connection needed',
+        body: 'Reconnect this wallet so Ember can check whether your cover is active.',
+        tone: 'unavailable',
+        nextAction: 'reconnect',
+      }
+    }
     return {
-      label: 'Cover is not active',
-      body: 'This wallet is not linked to an active Ember Cover entitlement.',
+      label: 'No active cover found',
+      body: 'Ember checked this wallet but found no active cover entitlement.',
       tone: 'none',
       nextAction: 'setup',
     }
@@ -77,6 +86,14 @@ function coverDisplay(
       body: 'Ember could not complete the cover assessment for this transaction.',
       tone: 'unavailable',
       nextAction: 'retry',
+    }
+  }
+  if (cover?.coverStatus === 'covered' && fallback.tone === 'covered' && impactIncomplete) {
+    return {
+      label: 'Cover available; effects unclear',
+      body: 'Cover is available for this approval, but the wallet cannot fully estimate its balance changes.',
+      tone: 'warning',
+      nextAction: null,
     }
   }
   return {
@@ -173,9 +190,11 @@ export interface ApprovalScreenProps {
   onRejected: () => void
   /** Called when the user chooses to set up cover; the host navigates to the in-app cover screen. */
   onSetupCover: () => void
+  /** Reconnect the wallet's Ember session before rechecking this exact approval. */
+  onReconnectCover: () => Promise<void>
 }
 
-export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: ApprovalScreenProps) {
+export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconnectCover }: ApprovalScreenProps) {
   const request = getRequestApproval()
   const vault = getVaultService()
 
@@ -265,7 +284,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     pending?.type === 'signTransaction' || pending?.type === 'signMessage'
       ? bannerView(displayedCover ?? (!checkingCover ? { coverStatus: 'unavailable', riskBand: 'low' } : null), checkingCover)
       : null
-  const coverDisplayView = coverDisplay(displayedCover, coverBanner, coverExpired)
+  const impactIncomplete = pending?.type === 'signTransaction' && !!transactionImpact && !transactionImpact.isComplete
+  const coverDisplayView = coverDisplay(displayedCover, coverBanner, coverExpired, impactIncomplete)
   const decodedMessage =
     pending?.type === 'signMessage'
       ? decodeMessages(pending.data as { message: Uint8Array | Record<string, number> }[])
@@ -277,7 +297,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
   const signingBlocked = signingReview?.disposition.status === 'block'
   const safetyAckRequired = signingReview?.requiredAcknowledgements.includes('safety') ?? false
   const coverAckRequired = coverBanner?.showAck ?? false
-  const impactAckRequired = pending?.type === 'signTransaction' && !!transactionImpact && !transactionImpact.isComplete
+  const impactAckRequired = impactIncomplete
   const messageAckRequired = pending?.type === 'signMessage' && messageRiskView.requiresAck
   const approveDisabled = pending?.recoveryRequired ? busy :
     busy || pending?.signingStarted === true ||
@@ -326,7 +346,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
       return { label: 'REVIEW', tone: 'pending' }
     }
     if (coverBanner?.tone === 'covered') {
-      return { label: 'COVERED', tone: 'protected' }
+      return impactIncomplete ? { label: 'REVIEW EFFECTS', tone: 'warning' } : { label: 'COVERED', tone: 'protected' }
     }
     if (coverBanner?.tone === 'warning') {
       return { label: 'WARNING', tone: 'setup' }
@@ -369,10 +389,14 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
     return () => clearInterval(timer)
   }, [pending?.type, cover?.decisionExpiresAt])
 
-  async function refreshCoverDecision(): Promise<void> {
+  async function refreshCoverDecision(reconnect = false): Promise<void> {
     setRefreshingCover(true)
     setError('')
     try {
+      if (reconnect) {
+        if (!(await ensureUnlocked())) return
+        await onReconnectCover()
+      }
       const view = await request.refreshCover()
       setPending(view)
     } catch (e) {
@@ -542,6 +566,19 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover }: Approva
               type="button"
             >
               Retry cover check
+            </button>
+          </div>
+        ) : null}
+        {coverDisplayView.nextAction === 'reconnect' ? (
+          <div className="ec-actions">
+            <button
+              className="ec-secondary"
+              data-testid="cover-reconnect"
+              disabled={busy || checkingCover}
+              onClick={() => void refreshCoverDecision(true)}
+              type="button"
+            >
+              Reconnect and check cover
             </button>
           </div>
         ) : null}

@@ -165,15 +165,34 @@ test('shows both transfers and exact total, rather than presenting the first as 
   expect(impact.rows.filter(row => row.label === 'Base network fee')).toHaveLength(1)
   expect(impact.isComplete).toBe(true)
   expect(summary?.primaryAction).toMatchObject({ kind: 'program_interaction', amount: null, recipient: null })
+  expect(summary?.warnings).toContain('This transaction moves SOL in 2 separate instructions. Review the amounts and addresses shown below.')
+  expect(summary?.warnings).not.toContain('This is not a simple transfer.')
 })
 
 test.each([true, false])('unknown instructions keep known movements visible and incomplete (unknown first: %s)', (first) => {
   const instructions = first ? [unknownInstruction, transfer(10_000_000n)] : [transfer(10_000_000n), unknownInstruction]
-  const impact = estimateWalletImpact(decodeTransactionSummary(buildTxBytes(FEE_PAYER, instructions)), FEE_PAYER)
+  const summary = decodeTransactionSummary(buildTxBytes(FEE_PAYER, instructions))
+  const impact = estimateWalletImpact(summary, FEE_PAYER)
   expect(impact.rows).toContainEqual({ label: 'Outgoing', value: '-0.01 SOL', tone: 'negative' })
   expect(impact.rows.some(row => row.value === 'Effects unknown')).toBe(true)
   expect(impact.isComplete).toBe(false)
   expect(impact.warning).toContain('may not be the full transaction impact')
+  expect(summary?.warnings).toContain('The wallet cannot explain every instruction in this transaction. A program may change balances or account control beyond the effects shown here.')
+})
+
+test('a known SOL subtotal stays explicitly partial when an unknown program also runs', () => {
+  const summary = decodeTransactionSummary(buildTxBytes(FEE_PAYER, [transfer(10_000_000n), transfer(1_500_000_000n), unknownInstruction]))
+  const impact = estimateWalletImpact(summary, FEE_PAYER)
+  expect(impact.rows).toContainEqual({ label: 'Known outgoing SOL', value: '-1.51 SOL', tone: 'negative' })
+  expect(impact.rows.some((row) => row.label === 'Total outgoing SOL')).toBe(false)
+  expect(impact.isComplete).toBe(false)
+})
+
+test('explains a single unknown program without calling it a transfer', () => {
+  const summary = decodeTransactionSummary(buildTxBytes(FEE_PAYER, unknownInstruction))
+  expect(summary?.primaryAction.kind).toBe('program_interaction')
+  expect(summary?.warnings).toContain('The wallet cannot explain every instruction in this transaction. A program may change balances or account control beyond the effects shown here.')
+  expect(summary?.warnings).not.toContain('This is not a simple transfer.')
 })
 
 test('keeps incoming and outgoing totals separate and treats self-transfers as neutral', () => {

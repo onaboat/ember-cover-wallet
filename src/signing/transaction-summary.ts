@@ -325,8 +325,8 @@ export function estimateWalletImpact(summary: TxSummary | null, walletAddress: s
     }
   }
   if (solTransferCount > 1) {
-    if (outgoing > 0n) rows.push({ label: 'Total outgoing SOL', value: `-${formatIntegerAmount(outgoing, 9)} SOL`, tone: 'negative' })
-    if (incoming > 0n) rows.push({ label: 'Total incoming SOL', value: `+${formatIntegerAmount(incoming, 9)} SOL`, tone: 'positive' })
+    if (outgoing > 0n) rows.push({ label: warnings.size ? 'Known outgoing SOL' : 'Total outgoing SOL', value: `-${formatIntegerAmount(outgoing, 9)} SOL`, tone: 'negative' })
+    if (incoming > 0n) rows.push({ label: warnings.size ? 'Known incoming SOL' : 'Total incoming SOL', value: `+${formatIntegerAmount(incoming, 9)} SOL`, tone: 'positive' })
   }
   if (rows.length === 0) {
     rows.push(...unknownImpact().rows)
@@ -394,8 +394,11 @@ export function decodeTransactionSummary(
     const requiredSignatureCount = Object.keys(tx.signatures).length
     const estimatedNetworkFee = requiredSignatureCount > 0 ? `${formatIntegerAmount(BigInt(requiredSignatureCount) * 5000n, 9)} SOL` : null
     const warnings: string[] = []
-    if (materialInstructions.length > 1) {
-      warnings.push('This transaction has multiple instructions.')
+    const solMovements = actions.filter((action) => action.kind === 'sol_transfer' || action.kind === 'account_creation')
+    if (solMovements.length > 1) {
+      warnings.push(`This transaction moves SOL in ${solMovements.length} separate instructions. Review the amounts and addresses shown below.`)
+    } else if (materialInstructions.length > 1 && actions.length > 0) {
+      warnings.push(`This transaction combines ${materialInstructions.length} instructions, including ${[...new Set(actions.map((action) => action.label.toLowerCase()))].join(' and ')}. Review each action below.`)
     }
     if (actions.some((action) => action.kind === 'token_approval')) {
       warnings.push('This transaction can grant another account token access.')
@@ -403,8 +406,8 @@ export function decodeTransactionSummary(
     if (actions.some((action) => action.kind === 'authority_change')) {
       warnings.push('This transaction can change token authority.')
     }
-    if (primaryAction.kind === 'program_interaction') {
-      warnings.push('This is not a simple transfer.')
+    if (materialInstructions.some((instruction) => instruction.effect.status === 'unknown')) {
+      warnings.push('The wallet cannot explain every instruction in this transaction. A program may change balances or account control beyond the effects shown here.')
     }
     return { feePayer: String(feePayer), estimatedNetworkFee, instructions, primaryAction, warnings, signingBlock }
   } catch {

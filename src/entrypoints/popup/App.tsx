@@ -806,6 +806,15 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
     }
   }
 
+  async function reconnectCoverForApproval() {
+    if (!(await vault.isUnlocked())) {
+      throw new Error('Unlock the wallet before reconnecting Ember Cover.')
+    }
+    if (!(await cover.enroll())) {
+      throw new Error('The Ember session challenge was not completed')
+    }
+  }
+
   async function disconnectEmberSession() {
     setPaymentBusy(true)
     setPaymentError('')
@@ -2675,6 +2684,7 @@ export function App({ mode = 'wallet' }: AppProps = {}) {
                 onApproved={onApprovalApproved}
                 onRejected={onApprovalRejected}
                 onSetupCover={openCoverActivation}
+                onReconnectCover={reconnectCoverForApproval}
               />
             </Suspense>
           ) : null}
