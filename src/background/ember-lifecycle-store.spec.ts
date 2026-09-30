@@ -1,7 +1,8 @@
-import type {
-  CoverageDecisionResponse,
-  CoverageInstanceResponse,
-  PaymentResponse,
+import {
+  EmberApiError,
+  type CoverageDecisionResponse,
+  type CoverageInstanceResponse,
+  type PaymentResponse,
 } from '@embercover/wallet-sdk'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
@@ -232,6 +233,42 @@ test('missing decision history preserves fresh coverage and identifies cached hi
   expect(snapshot.decisions[0]?.decisionId).toBe(DECISION.decisionId)
 })
 
+
+function historyClient(getDecision: () => Promise<CoverageDecisionResponse>) {
+  return {
+    getPayment: async () => PAYMENT,
+    getCurrentCoverage: async () => ({ status: 'active', coverage: COVERAGE, allowance: { limit: 100, committed: 0, reserved: 0, available: 100 } }),
+    getDecision: vi.fn(getDecision),
+    getDecisionLineage: vi.fn(async () => ({ lifecycle: [] })),
+    listClaims: async () => ({ claims: [] }),
+  }
+}
+
+test('does not refetch a decision once its evidence is settled', async () => {
+  const store = new EmberLifecycleStore()
+  await store.recordDecision({ walletAddress: COVERAGE.protectedWallet, decision: DECISION })
+  const client = historyClient(async () => ({ ...DECISION, evidenceState: 'sealed' }))
+  await store.refresh(COVERAGE.protectedWallet, client as never)
+  await store.refresh(COVERAGE.protectedWallet, client as never)
+  expect(client.getDecision).toHaveBeenCalledOnce()
+})
+
+test('keeps refreshing a decision that is still awaiting evidence', async () => {
+  const store = new EmberLifecycleStore()
+  await store.recordDecision({ walletAddress: COVERAGE.protectedWallet, decision: DECISION })
+  const client = historyClient(async () => DECISION)
+  await store.refresh(COVERAGE.protectedWallet, client as never)
+  await store.refresh(COVERAGE.protectedWallet, client as never)
+  expect(client.getDecision).toHaveBeenCalledTimes(2)
+})
+
+test('forgets a decision the server reports as not found', async () => {
+  const store = new EmberLifecycleStore()
+  await store.recordDecision({ walletAddress: COVERAGE.protectedWallet, decision: DECISION })
+  const client = historyClient(async () => { throw new EmberApiError(404, undefined, undefined) })
+  const snapshot = await store.refresh(COVERAGE.protectedWallet, client as never)
+  expect(snapshot.decisions).toEqual([])
+})
 
 test('fresh backend absence stays authoritative when old payment history no longer exists', async () => {
   const store = new EmberLifecycleStore()

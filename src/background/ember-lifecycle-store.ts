@@ -1,18 +1,27 @@
-import type {
-  AllowanceSnapshot,
-  CoverageDecisionResponse,
-  CoverageInstanceResponse,
-  DecisionLineageResponse,
-  EmberWalletClient,
-  PaymentResponse,
-  WalletClaimListResponse,
-  WalletClaimResponse,
+import {
+  EmberApiError,
+  type AllowanceSnapshot,
+  type CoverageDecisionResponse,
+  type CoverageInstanceResponse,
+  type DecisionLineageResponse,
+  type EmberWalletClient,
+  type PaymentResponse,
+  type WalletClaimListResponse,
+  type WalletClaimResponse,
 } from '@embercover/wallet-sdk'
 import { storage } from 'wxt/utils/storage'
 
 const LEGACY_STORE_KEY = 'local:ember-authoritative-lifecycle-cache:v1' as const
 const STORE_KEY = 'local:ember-authoritative-lifecycle-cache:v2' as const
 const MAX_DECISION_REFERENCES = 50
+// Evidence in these states can no longer change, so once its lineage is
+// cached there is nothing new to fetch on each popup open.
+const SETTLED_EVIDENCE_STATES: ReadonlySet<string> = new Set(['sealed', 'conflict', 'dropped'])
+
+function isSettled(reference: DecisionReference): boolean {
+  return SETTLED_EVIDENCE_STATES.has(reference.cachedDecision.evidenceState) &&
+    reference.cachedLineage !== null
+}
 
 export interface DecisionReference {
   cachedDecision: CoverageDecisionResponse
@@ -200,15 +209,28 @@ export class EmberLifecycleStore {
         return fallback
       }
     }
-    const [payment, decisions, claimList] = await Promise.all([
-      cached.payment ? history(() => client.getPayment(cached.payment!.paymentId), cached.payment) : null,
-      Promise.all(cached.decisions.map(async (reference) => ({
+    async function refreshDecision(reference: DecisionReference): Promise<DecisionReference | null> {
+      if (isSettled(reference)) return reference
+      let cachedDecision = reference.cachedDecision
+      try {
+        cachedDecision = await client.getDecision(reference.decisionId)
+      } catch (error) {
+        // The server no longer has this decision; refetching it every open only repeats the 404.
+        if (error instanceof EmberApiError && error.status === 404) return null
+        historyErrors.push(error instanceof Error ? error.message : 'History unavailable')
+      }
+      return {
         ...reference,
-        cachedDecision: await history(() => client.getDecision(reference.decisionId), reference.cachedDecision),
+        cachedDecision,
         cachedLineage: await history(() => client.getDecisionLineage(reference.decisionId), reference.cachedLineage),
-      }))),
+      }
+    }
+    const [payment, refreshedDecisions, claimList] = await Promise.all([
+      cached.payment ? history(() => client.getPayment(cached.payment!.paymentId), cached.payment) : null,
+      Promise.all(cached.decisions.map(refreshDecision)),
       history<WalletClaimListResponse>(() => client.listClaims(), { claims: cached.claims }),
     ])
+    const decisions = refreshedDecisions.filter((reference): reference is DecisionReference => reference !== null)
     const next: WalletLifecycleCache = {
       ...cached,
       payment,
