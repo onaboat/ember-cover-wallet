@@ -1,6 +1,7 @@
-import type {
-  EmberWalletClient,
-  SubmitDecisionEvidenceRequest,
+import {
+  EmberApiError,
+  type EmberWalletClient,
+  type SubmitDecisionEvidenceRequest,
 } from '@embercover/wallet-sdk'
 import { browser } from 'wxt/browser'
 import { storage } from 'wxt/utils/storage'
@@ -29,6 +30,13 @@ function normalizeEntries(value: unknown): EvidenceOutboxEntry[] {
         typeof (entry as EvidenceOutboxEntry).attempts === 'number' &&
         typeof (entry as EvidenceOutboxEntry).request === 'object',
     )
+}
+
+// The server answers 404 when the decision no longer exists and 409 when it has
+// expired or its evidence lifecycle is terminal. Neither can ever be accepted,
+// so retrying them only repeats the same rejection every drain.
+function isFinalRejection(error: unknown): boolean {
+  return error instanceof EmberApiError && (error.status === 404 || error.status === 409)
 }
 
 export class EvidenceOutbox {
@@ -108,6 +116,10 @@ export class EvidenceOutbox {
         }
         await this.mutate(async (current) => current.filter((candidate) => candidate.decisionId !== entry.decisionId))
       } catch (error) {
+        if (isFinalRejection(error)) {
+          await this.mutate(async (current) => current.filter((candidate) => candidate.decisionId !== entry.decisionId))
+          continue
+        }
         const now = this.now().toISOString()
         await this.mutate(async (current) => current.map((candidate) =>
           candidate.decisionId === entry.decisionId

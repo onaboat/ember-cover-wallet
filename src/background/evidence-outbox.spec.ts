@@ -1,4 +1,4 @@
-import type { SubmitDecisionEvidenceRequest } from '@embercover/wallet-sdk'
+import { EmberApiError, type SubmitDecisionEvidenceRequest } from '@embercover/wallet-sdk'
 import { beforeEach, expect, test } from 'vitest'
 import { fakeBrowser } from 'wxt/testing'
 
@@ -89,4 +89,37 @@ test('a wakeup delivers new evidence without repeatedly retrying an old failure'
   await queue.drain(client)
   expect(calls).toEqual(['old', 'new'])
   expect(await queue.list()).toMatchObject([{ decisionId: 'old', attempts: 1 }])
+})
+
+function rejectingClient(status: number) {
+  const calls: string[] = []
+  const client = { submitDecisionEvidence: async (id: string) => {
+    calls.push(id)
+    throw new EmberApiError(status, undefined, undefined)
+  } } as never
+  return { calls, client }
+}
+
+test('stops retrying evidence the server rejects as a conflict', async () => {
+  const queue = new EvidenceOutbox()
+  await queue.put('decision_expired', REQUEST)
+  const { client } = rejectingClient(409)
+  await queue.drain(client)
+  expect(await queue.list()).toEqual([])
+})
+
+test('stops retrying evidence for a decision the server no longer has', async () => {
+  const queue = new EvidenceOutbox()
+  await queue.put('decision_missing', REQUEST)
+  const { client } = rejectingClient(404)
+  await queue.drain(client)
+  expect(await queue.list()).toEqual([])
+})
+
+test('keeps evidence queued after a server error so it can retry', async () => {
+  const queue = new EvidenceOutbox()
+  await queue.put('decision_test', REQUEST)
+  const { client } = rejectingClient(503)
+  await queue.drain(client)
+  expect(await queue.list()).toMatchObject([{ decisionId: 'decision_test', attempts: 1 }])
 })
