@@ -729,6 +729,49 @@ test('composed approval shows all SOL and enforces safety acknowledgement withou
   }
 })
 
+// Ember's promise, end to end in the real extension: a transaction Ember judges to empty
+// the wallet is shown as uncovered with a specific warning, cannot be approved until the
+// owner acknowledges it, and can still be signed once they do.
+test('a wallet drain is uncovered, explained, and still the owner\'s choice', async ({}, testInfo) => {
+  const { context, extensionId } = await launch()
+  try {
+    await createVault(context, extensionId)
+    const dapp = await context.newPage()
+    await dapp.goto(dappUrl)
+    await expect.poll(() => dapp.evaluate(() => window.__getWallets?.() ?? [])).toContain('Ember')
+    const connection = context.waitForEvent('page')
+    await dapp.getByRole('button', { name: 'Connect', exact: true }).click()
+    await (await connection).getByTestId('approve').click()
+    await expect.poll(() => dapp.locator('#out').getAttribute('data-address')).not.toBeNull()
+    const wallet = (await dapp.locator('#out').getAttribute('data-address'))!
+    emberApi!.setActiveCoverage(wallet)
+    emberApi!.setDecisionOverrides({
+      coverStatus: 'not_covered', riskBand: 'severe', decisionReason: 'not_eligible',
+      signingDisposition: { status: 'acknowledge', reason: 'wallet_drain' },
+    })
+    await dapp.evaluate(bytes => window.__setTxBytes?.(bytes), Array.from(buildTx(wallet)))
+    const request = context.waitForEvent('page')
+    await dapp.getByRole('button', { name: 'Sign Tx', exact: true }).click()
+    const page = await request
+    await page.getByTestId('cover-reconnect').click()
+    // The headline names the danger, not only the missing cover.
+    await expect(page.getByTestId('cover')).toHaveText('Looks like a wallet drain', { timeout: 15000 })
+    await expect(page.getByTestId('cover-section')).toContainText('nearly all your SOL')
+    const acknowledgement = page.getByRole('checkbox', { name: /may empty my wallet/ })
+    await expect(acknowledgement).toBeVisible()
+    await expect(page.getByTestId('approve')).toBeDisabled()
+    await acknowledgement.check()
+    await expect(page.getByTestId('approve')).toHaveText('Sign anyway without cover')
+    await page.screenshot({ path: testInfo.outputPath('wallet-drain-warning.png') })
+    await page.getByTestId('approve').click()
+    await expect.poll(() => dapp.locator('#out').getAttribute('data-signedtx'), { timeout: 15000 }).not.toBeNull()
+  } finally {
+    emberApi?.setDecisionOverrides(null)
+    emberApi?.setActiveCoverage(null)
+    await context.close()
+  }
+})
+
 test('approval keeps amounts in the same frame when reconnect changes uncovered to covered', async ({}, testInfo) => {
   const { context, extensionId } = await launch()
   try {

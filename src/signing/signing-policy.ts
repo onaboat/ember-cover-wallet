@@ -1,7 +1,7 @@
 /** Product signing policy; independent of SDK, UI, storage and RPC. */
 export type SigningDisposition =
   | { status: 'allow' }
-  | { status: 'acknowledge'; reason: 'high_risk' | 'without_coverage' | 'unsupported_effects' | 'assessment_unavailable' }
+  | { status: 'acknowledge'; reason: 'high_risk' | 'without_coverage' | 'unsupported_effects' | 'assessment_unavailable' | 'wallet_drain' }
   | { status: 'block'; reason: 'unlimited_token_access' | 'authority_handover' | 'native_token_redirection' }
 
 export type SigningAcknowledgement = 'coverage' | 'effects' | 'message' | 'safety'
@@ -32,6 +32,7 @@ export function signingPolicyMessage(disposition: SigningDisposition): string {
     case 'without_coverage': return 'You are signing without cover.'
     case 'unsupported_effects': return 'The transaction effects could not be sufficiently understood.'
     case 'assessment_unavailable': return 'A safety assessment is unavailable. The wallet cannot establish whether this request has dangerous effects.'
+    case 'wallet_drain': return 'This transaction looks like it empties your wallet: it sends out a whole token balance, or nearly all your SOL, and nothing comes back. It is not covered. Only continue if you are sure.'
   }
 }
 

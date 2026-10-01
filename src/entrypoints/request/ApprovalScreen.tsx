@@ -292,7 +292,8 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
   const coverExpired = reviewExpiry !== undefined && !(nowMs < Date.parse(reviewExpiry))
   const coverBanner =
     pending?.type === 'signTransaction' || pending?.type === 'signMessage'
-      ? bannerView(displayedCover ?? (!checkingCover ? { coverStatus: 'unavailable', riskBand: 'low' } : null), checkingCover)
+      // The review-bound disposition is the same verdict the acknowledgement enforces.
+      ? bannerView(displayedCover ? { ...displayedCover, signingDisposition: pending.signingReview?.disposition ?? null } : (!checkingCover ? { coverStatus: 'unavailable', riskBand: 'low' } : null), checkingCover)
       : null
   const impactIncomplete = pending?.type === 'signTransaction' && !!transactionImpact && !transactionImpact.isComplete
   const coverDisplayView = coverDisplay(displayedCover, coverBanner, coverExpired, impactIncomplete)
@@ -304,6 +305,9 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
     ? messageRisk(decodedMessage, pending.origin)
     : { requiresAck: false, warning: null }
   const signingReview = pending?.signingReview
+  // A drain leads with one plain sentence in the owner's own words; the banner above
+  // already explains what happens to the funds.
+  const walletDrain = signingReview?.disposition.status === 'acknowledge' && signingReview.disposition.reason === 'wallet_drain'
   const signingBlocked = signingReview?.disposition.status === 'block'
   const safetyAckRequired = signingReview?.requiredAcknowledgements.includes('safety') ?? false
   const coverAckRequired = coverBanner?.showAck ?? false
@@ -621,7 +625,7 @@ export function ApprovalScreen({ onApproved, onRejected, onSetupCover, onReconne
                 setCoverAcknowledged(coverAckRequired && event.currentTarget.checked)
                 setImpactAcknowledged(impactAckRequired && event.currentTarget.checked)
               }} />
-            <span>{[
+            <span>{walletDrain && coverBanner?.ackLabel ? coverBanner.ackLabel : [
               coverAckRequired && displayedCover?.coverStatus !== 'covered' ? 'I understand I am signing without cover.' : null,
               impactAckRequired ? 'Some balance or permission changes could not be fully estimated.' : null,
               safetyAckRequired && signingReview ? transactionSafetyAcknowledgement(signingReview.disposition, impactAckRequired) : null,

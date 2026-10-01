@@ -1,6 +1,6 @@
 import type { CoverDecision } from './ember-types.ts'
 
-export type BannerTone = 'covered' | 'warning' | 'none' | 'unavailable'
+export type BannerTone = 'covered' | 'warning' | 'none' | 'unavailable' | 'blocked'
 
 export interface BannerView {
   label: string
@@ -14,10 +14,12 @@ export interface BannerView {
 /**
  * Maps a decision to user-facing banner copy. Deliberately uses ONLY
  * `coverStatus` + `riskBand` — never `decisionReason` — so the approval action
- * is driven by protection state and risk, not backend policy detail.
+ * is driven by protection state and risk, not backend policy detail. The one
+ * exception is the signing disposition's `wallet_drain` safety verdict, which
+ * names the danger so a skimming owner cannot miss it.
  */
 export function bannerView(
-  decision: Pick<CoverDecision, 'coverStatus' | 'riskBand'> | null,
+  decision: (Pick<CoverDecision, 'coverStatus' | 'riskBand'> & Partial<Pick<CoverDecision, 'signingDisposition'>>) | null,
   isLoading: boolean,
 ): BannerView {
   if (!decision) {
@@ -38,6 +40,17 @@ export function bannerView(
           ackLabel: null,
           approveLabel: 'Approve and sign',
         }
+  }
+  const disposition = decision.signingDisposition
+  if (disposition?.status === 'acknowledge' && disposition.reason === 'wallet_drain') {
+    return {
+      label: 'Looks like a wallet drain',
+      body: 'This sends out a whole token balance, or nearly all your SOL, and nothing comes back. Ember will not cover it.',
+      tone: 'blocked',
+      showAck: true,
+      ackLabel: 'I understand this may empty my wallet and is not covered.',
+      approveLabel: 'Sign anyway without cover',
+    }
   }
   switch (decision.coverStatus) {
     case 'covered':

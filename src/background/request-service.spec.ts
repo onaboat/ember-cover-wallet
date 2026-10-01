@@ -862,6 +862,50 @@ test('an uncovered review cannot be signed after its assessment expires', async 
   svc.reject()
 })
 
+// Ember's promise for a drain: it is not covered, the owner is told specifically why,
+// and signing remains their choice once they acknowledge both the missing cover and the risk.
+function walletDrainService(sign: typeof signer.sign) {
+  return new RequestService({ ...signer, sign }, coverProvider({ preSign: async () => ({
+    requestId: 'wallet-drain-review', coverStatus: 'not_covered', riskBand: 'severe', decisionReason: 'not_eligible',
+    decisionExpiresAt: new Date(Date.now() + 60000).toISOString(),
+    signingDisposition: { status: 'acknowledge', reason: 'wallet_drain' },
+  }) }))
+}
+
+async function openWalletDrainReview(svc: RequestService) {
+  vi.spyOn(fakeBrowser.windows, 'create').mockResolvedValue({ id: 1 } as never)
+  const pending = svc.create('signTransaction', [transactionInput()])
+  pending.catch(() => {})
+  await vi.waitFor(() => expect(svc.get()?.signingReview).toBeDefined())
+  // Wrapped so awaiting this helper does not wait for the request itself to settle.
+  return { pending }
+}
+
+test('a wallet drain requires acknowledging both the missing cover and the risk', async () => {
+  const svc = walletDrainService(signer.sign)
+  await openWalletDrainReview(svc)
+  expect(svc.get()?.signingReview?.requiredAcknowledgements).toEqual(expect.arrayContaining(['coverage', 'safety']))
+  svc.reject()
+})
+
+test('a wallet drain cannot be signed without the safety acknowledgement', async () => {
+  const sign = vi.fn(signer.sign)
+  const svc = walletDrainService(sign)
+  await openWalletDrainReview(svc)
+  const coverageOnly = { reviewId: svc.get()?.signingReview?.reviewId ?? '', acknowledged: ['coverage', 'effects'] as const }
+  await expect(svc.approveSignTransaction(undefined, coverageOnly)).rejects.toThrow('acknowledgements are missing')
+  svc.reject()
+})
+
+test('the owner can still sign a wallet drain after acknowledging it', async () => {
+  const sign = vi.fn(signer.sign)
+  const svc = walletDrainService(sign)
+  const { pending } = await openWalletDrainReview(svc)
+  await svc.approveSignTransaction(undefined, consent(svc))
+  await pending
+  expect(sign).toHaveBeenCalledOnce()
+})
+
 test('a review refreshed during final preflight invalidates consent before custody', async () => {
   const sign = vi.fn(signer.sign)
   const svc = new RequestService({ ...signer, sign })

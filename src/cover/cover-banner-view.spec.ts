@@ -61,3 +61,27 @@ test('loading before a decision reads as checking', () => {
     approveLabel: 'Checking cover...',
   })
 })
+
+// A drain must be unmistakable at a glance: the headline names the danger, not only the
+// missing cover, so a skimming owner cannot miss that the transaction empties their wallet.
+const walletDrain = {
+  coverStatus: 'not_covered',
+  riskBand: 'severe',
+  signingDisposition: { status: 'acknowledge', reason: 'wallet_drain' },
+} as const
+
+test('a wallet drain is headlined as a wallet drain', () => {
+  expect(bannerView(walletDrain, false).label).toBe('Looks like a wallet drain')
+})
+
+test('a wallet drain says what will happen to the funds', () => {
+  expect(bannerView(walletDrain, false).body).toMatch(/whole token balance|nearly all your SOL/)
+})
+
+test('a wallet drain is shown in the danger tone', () => {
+  expect(bannerView(walletDrain, false).tone).toBe('blocked')
+})
+
+test('a wallet drain asks the owner to accept losing the funds before signing', () => {
+  expect(bannerView(walletDrain, false).ackLabel).toMatch(/empty my wallet/)
+})

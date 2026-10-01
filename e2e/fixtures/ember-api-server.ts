@@ -32,6 +32,8 @@ interface SessionChallenge {
 export interface EmberApiFixture {
   /** Seed test-only entitlement state without a payment or network transaction. */
   setActiveCoverage(walletAddress: string | null): void
+  /** Override fields of every following decision, for example to return a wallet drain. */
+  setDecisionOverrides(overrides: Partial<CoverageDecisionResponse> | null): void
   decisionEvidence: Array<{
     decisionId: string
     request: SubmitDecisionEvidenceRequest
@@ -312,6 +314,7 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
   const rpcTransactions: string[] = []
   const decisions = new Map<string, CoverageDecisionResponse>()
   let decisionSequence = 0
+  let decisionOverrides: Partial<CoverageDecisionResponse> = {}
   let challenge: SessionChallenge | null = null
   let activatedPayment: PaymentResponse | null = null
   let activatedWalletAddress: string | null = null
@@ -607,11 +610,10 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
           return
         }
         decisionSequence += 1
-        const decision = decisionResponse(
-          `decision_devnet-qa-e2e-${decisionSequence}`,
-          body.kind,
-          challenge.walletAddress,
-        )
+        const decision = {
+          ...decisionResponse(`decision_devnet-qa-e2e-${decisionSequence}`, body.kind, challenge.walletAddress),
+          ...decisionOverrides,
+        }
         decisions.set(decision.decisionId, decision)
         response(res, 200, decision, origin)
         return
@@ -720,6 +722,9 @@ export function startEmberApiFixture(port = 18787): Promise<EmberApiFixture> {
         setActiveCoverage(walletAddress) {
           activatedWalletAddress = walletAddress
           activatedPayment = walletAddress ? paymentResponse(base58Encode(new Uint8Array(64).fill(47))) : null
+        },
+        setDecisionOverrides(overrides) {
+          decisionOverrides = overrides ?? {}
         },
       }),
     )
