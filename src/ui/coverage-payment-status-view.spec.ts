@@ -263,3 +263,16 @@ test.each(['broadcast_pending', 'activation_pending', 'failed_recoverable'] as c
     }).primaryAction).toBe('sync')
   },
 )
+
+test('an authoritative empty server response says cover is not active', () => {
+  expect(
+    coveragePaymentStatusView({
+      cluster: 'mainnet-beta',
+      coverEnrolled: true,
+      coverStatusLoading: false,
+      coverStatusSnapshot: null,
+      lifecycle: { authority: 'server', coverage: null, error: null },
+      paymentState: null,
+    }).detail,
+  ).toBe('Ember Cover is not active for this wallet. Review a current offer.')
+})

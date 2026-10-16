@@ -1586,8 +1586,18 @@ label {
   margin-top: 12px;
   font-variant-numeric: tabular-nums;
 }
+.ec-approval-screen .ec-approval-amounts dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: baseline;
+}
 .ec-approval-screen .ec-approval-amounts dl dt,
-.ec-approval-screen .ec-approval-amounts dl dd { font-size: 12px; overflow-wrap: anywhere; }
+.ec-approval-screen .ec-approval-amounts dl dd {
+  min-width: 0;
+  font-size: 12px;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
 .ec-approval-recipients { display: grid; gap: 5px; min-width: 0; }
 .ec-approval-recipients p { margin: 0; }
 .ec-approval-recipients summary {

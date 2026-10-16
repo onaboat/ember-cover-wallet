@@ -194,7 +194,7 @@ test('opens a direct secretless SDK session from the exact Chrome extension orig
   await popup.getByRole('button', { name: 'Back' }).click()
   await expect(popup.getByTestId('cover-status')).toHaveText('NO COVER')
   await expect(popup.getByTestId('wallet-cover-status')).toContainText(
-    'Review your Ember Cover offer.',
+    'Ember Cover is not active for this wallet. Review a current offer.',
   )
   await expect(popup.getByTestId('wallet-cover-status')).not.toContainText('Pending')
   await expect(popup.getByRole('button', { name: 'View offer' })).toBeVisible()
@@ -537,7 +537,7 @@ test('signTransaction shows not covered while the cover entitlement is inactive'
   const label = await banner.textContent()
   const tone = await banner.getAttribute('data-tone')
   console.log(`[COVER DECISION] label="${label}" tone="${tone}"`)
-  expect(label).toBe('Cover is not active')
+  expect(label).toBe('No active cover found')
   await expect(signWin.getByTestId('cover-next-step')).toContainText('Set up cover')
 
   // approve (vault unlocked earlier; post-sign fires best-effort)
@@ -592,7 +592,7 @@ test('inactive cover resolves while the vault is LOCKED (before unlock)', async 
   await expect(banner).not.toHaveText('Checking cover...', { timeout: 20000 })
   const label = await banner.textContent()
   console.log(`[COVER DECISION B] label="${label}" (vault locked)`)
-  expect(label).toBe('Cover is not active')
+  expect(label).toBe('No active cover found')
 
   // 5. Unlock + approve to finish.
   await signWin.getByTestId('password').fill(PASSWORD)
